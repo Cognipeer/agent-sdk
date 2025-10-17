@@ -8,6 +8,8 @@ permalink: /core-concepts/
 
 This page distills the mental model of `@cognipeer/agent-sdk` before you dive into the detailed guides.
 
+> **Note:** The SDK provides two agent types: `createAgent` (minimal loop using `AgentState`) and `createSmartAgent` (batteries-included using `SmartState` which extends `AgentState`). This guide focuses on `SmartAgent` features. For basic agent usage, see the [Agent API docs](../api/agent.md).
+
 ## 1. State container
 A `SmartState` object flows through the loop. Key fields:
 - `messages`: Conversation list (user, assistant, tool, system)
@@ -57,7 +59,7 @@ Provide `outputSchema` (Zod). The framework:
 
 ## 7. Limits
 
-`SmartAgentLimits` control throughput and summarization:
+`AgentLimits` control throughput and summarization (also exported as `SmartAgentLimits` for backward compatibility):
 - `maxToolCalls` – total tool executions allowed per invocation.
 - `maxParallelTools` – concurrent tool executions per agent turn.
 - `maxToken` – token threshold before the next model call; exceeding it triggers `contextSummarize`.
@@ -125,7 +127,8 @@ Optional metadata (`approvalPrompt`, `approvalDefaults`) can be attached to tool
 
 ## 11. Events & observability
 
-`onEvent` (global or per-invoke) surfaces:
+## 12. Events
+`onEvent` (per-invoke via `InvokeConfig`) surfaces:
 - `tool_call` lifecycle events (start/success/error/skipped).
 - `plan` write/read events from `manage_todo_list`.
 - `summarization` notifications when context is compacted.

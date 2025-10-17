@@ -1,6 +1,13 @@
 # Agent API
 
-The Agent SDK provides two main entry points for creating agents, each with different levels of control and features.
+The Agent SDK provides two main entry points for creating agents, each with different levels of control and features:
+
+- **`createSmartAgent`** - Batteries-included agent with planning, summarization, and structured output (uses `SmartState`)
+- **`createAgent`** - Minimal agent loop without system prompt or auto-summarization (uses `AgentState`)
+
+Both share the same core capabilities (tools, limits, handoffs, tracing) but `SmartAgent` adds opinionated features like planning enforcement and token-aware summarization.
+
+---
 
 ## createSmartAgent
 
@@ -9,7 +16,7 @@ The batteries-included agent with planning, summarization, and structured output
 ### Signature
 
 ```typescript
-function createSmartAgent(options: SmartAgentOptions): SmartAgent
+function createSmartAgent(options: SmartAgentOptions): SmartAgentInstance
 ```
 
 ### Options
@@ -25,7 +32,7 @@ interface SmartAgentOptions {
   handoffs?: HandoffDescriptor[];   // Pre-configured agent handoffs
   
   // Limits & Optimization
-  limits?: SmartAgentLimits;        // Token and execution limits
+  limits?: AgentLimits;             // Token and execution limits
   summarization?: boolean;          // Enable summarization (default: true)
   
   // Output & Validation
@@ -36,18 +43,17 @@ interface SmartAgentOptions {
   name?: string;                    // Agent name for logging/handoffs
   
   // Observability
-  tracing?: TracingOptions;         // Structured JSON tracing
-  onEvent?: (event: SmartAgentEvent) => void;  // Event listener
+  tracing?: TracingConfig;          // Structured JSON tracing
   
   // Advanced
   usageConverter?: UsageConverter;  // Custom usage normalization
 }
 ```
 
-### SmartAgentLimits
+### AgentLimits
 
 ```typescript
-interface SmartAgentLimits {
+interface AgentLimits {
   maxToolCalls?: number;           // Total tool executions per invocation
   maxParallelTools?: number;       // Concurrent tools per agent turn
   maxToken?: number;               // Token threshold for summarization
@@ -59,20 +65,23 @@ interface SmartAgentLimits {
 ### Return Value
 
 ```typescript
-interface SmartAgent {
+interface SmartAgentInstance {
   // Core methods
-  invoke(state: Partial<SmartState>, options?: InvokeOptions): Promise<AgentInvokeResult>;
+  invoke(state: Partial<SmartState>, config?: InvokeConfig): Promise<AgentInvokeResult>;
   
   // Multi-agent composition
-  asTool(options: { toolName: string; toolDescription?: string }): ToolInterface;
-  asHandoff(): HandoffDescriptor;
+  asTool(options: { toolName: string; description?: string; inputDescription?: string }): ToolInterface;
+  asHandoff(options: { toolName?: string; description?: string; schema?: ZodSchema }): HandoffDescriptor;
   
   // State management
   snapshot(state: SmartState, options?: SnapshotOptions): AgentSnapshot;
-  resume(snapshot: AgentSnapshot, options?: ResumeOptions): Promise<AgentInvokeResult>;
+  resume(snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions): Promise<AgentInvokeResult>;
   
-  // Metadata
-  runtime: AgentRuntime;
+  // Tool approval
+  resolveToolApproval(state: SmartState, resolution: ToolApprovalResolution): SmartState;
+  
+  // Runtime metadata (read-only)
+  __runtime: AgentRuntimeConfig;
 }
 ```
 
@@ -120,16 +129,43 @@ Minimal control loop without system prompt or automatic summarization.
 ### Signature
 
 ```typescript
-function createAgent(options: AgentOptions): Agent
+function createAgent(options: AgentOptions): AgentInstance
 ```
 
 ### Options
 
-Similar to `SmartAgentOptions` but:
-- No automatic system prompt injection
-- No planning/TODO tools by default
-- Summarization disabled by default
-- Useful when you need full control over prompts and flow
+```typescript
+interface AgentOptions {
+  // Required
+  model: ModelAdapter;              // Model with invoke(messages) => message
+  
+  // Tools & Features
+  tools?: ToolInterface[];          // Zod tools, LangChain, MCP, or custom
+  handoffs?: HandoffDescriptor[];   // Pre-configured agent handoffs
+  
+  // Limits & Optimization
+  limits?: AgentLimits;             // Token and execution limits
+  
+  // Output & Validation
+  outputSchema?: ZodSchema;         // Structured output schema
+  
+  // Prompts & Behavior
+  name?: string;                    // Agent name for logging/handoffs
+  
+  // Observability
+  tracing?: TracingConfig;          // Structured JSON tracing
+  
+  // Advanced
+  usageConverter?: UsageConverter;  // Custom usage normalization
+}
+```
+
+### Differences from createSmartAgent
+
+- **No automatic system prompt** - you control all messages
+- **No planning/TODO tools** - no `manage_todo_list` or `get_tool_response`
+- **No automatic summarization** - summarization field ignored
+- **Useful for**: Full control over prompts and conversation flow
 
 ### Example
 
@@ -150,12 +186,12 @@ const result = await agent.invoke({
 });
 ```
 
-## InvokeOptions
+## InvokeConfig
 
 Additional options passed to `invoke()` method:
 
 ```typescript
-interface InvokeOptions {
+interface InvokeConfig {
   // State monitoring
   onStateChange?: (state: SmartState) => boolean | void;
   
@@ -164,7 +200,6 @@ interface InvokeOptions {
   
   // Per-invocation overrides
   onEvent?: (event: SmartAgentEvent) => void;
-  maxIterations?: number;
 }
 ```
 

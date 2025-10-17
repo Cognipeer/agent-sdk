@@ -107,13 +107,11 @@ export type GuardrailOutcome = {
   incidents: GuardrailIncident[];
 };
 
-export type SmartAgentLimits = {
+// Common limits for both Agent and SmartAgent
+export type AgentLimits = {
   maxToolCalls?: number;
-  toolOutputTokenLimit?: number;
   contextTokenLimit?: number;
   summaryTokenLimit?: number;
-  // Back-compat snake_case alias; if provided, used as summary token limit
-  summary_token_limit?: number;
   // If provided, before the next agent call we will estimate the token length
   // of the upcoming AI input with tiktoken and, if it exceeds this limit,
   // we will trigger a summarization pass over prior tool calls/responses.
@@ -121,6 +119,9 @@ export type SmartAgentLimits = {
   // Maximum number of tools to execute in parallel per turn
   maxParallelTools?: number;
 };
+
+// Alias for backward compatibility
+export type SmartAgentLimits = AgentLimits;
 
 export type TraceSinkFileConfig = {
   type: "file";
@@ -151,12 +152,38 @@ export type TraceSinkConfig =
   | TraceSinkCognipeerConfig
   | TraceSinkHttpConfig;
 
-export type SmartAgentTracingConfig = {
+export type TracingConfig = {
   enabled: boolean;
   logData?: boolean;
   sink?: TraceSinkConfig;
 };
 
+// Alias for backward compatibility
+export type SmartAgentTracingConfig = TracingConfig;
+
+// --- Base Agent (simple, minimal) ---
+export type AgentOptions = {
+  // Human-friendly agent name used in prompts and logging
+  name?: string;
+  version?: string;
+  model: any; // A BaseChatModel-like object with invoke(messages[]) => assistant message
+  // Accept any tool implementation matching minimal ToolInterface (LangChain Tool compatible)
+  tools?: Array<ToolInterface<any, any, any>>;
+  // Optional guard layer descriptors to evaluate before sending requests and after receiving responses
+  guardrails?: ConversationGuardrail[];
+  // Predefined handoff targets exposed as tools automatically
+  handoffs?: HandoffDescriptor[];
+  limits?: AgentLimits;
+  // Optional: normalize provider-specific usage into a common shape
+  usageConverter?: (finalMessage: AIMessage, fullState: SmartState, model: any) => any;
+  // Optional Zod schema for structured output; when provided, invoke() will attempt to parse
+  // the final assistant content as JSON and validate it. Parsed value is returned as result.output
+  // with full TypeScript inference.
+  outputSchema?: ZodSchema<any>;
+  tracing?: TracingConfig;
+};
+
+// --- Smart Agent (batteries-included with planning & summarization) ---
 export type SmartAgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
@@ -168,7 +195,7 @@ export type SmartAgentOptions = {
   guardrails?: ConversationGuardrail[];
   // Predefined handoff targets exposed as tools automatically
   handoffs?: HandoffDescriptor[];
-  limits?: SmartAgentLimits;
+  limits?: AgentLimits;
   // Toggle token-aware context summarization. Default: true. Set to false to disable.
   summarization?: boolean;
   // System prompt configuration
@@ -181,7 +208,7 @@ export type SmartAgentOptions = {
   // the final assistant content as JSON and validate it. Parsed value is returned as result.output
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
-  tracing?: SmartAgentTracingConfig;
+  tracing?: TracingConfig;
 };
 
 // Runtime representation of an agent (used inside state.agent)
@@ -192,10 +219,10 @@ export type AgentRuntimeConfig = {
   tools: Array<ToolInterface<any, any, any>>;
   guardrails?: ConversationGuardrail[];
   systemPrompt?: string;
-  limits?: SmartAgentLimits;
+  limits?: AgentLimits;
   useTodoList?: boolean;
   outputSchema?: ZodSchema<any>;
-  tracing?: SmartAgentTracingConfig;
+  tracing?: TracingConfig;
 };
 
 export type TraceMessageSection = {
@@ -369,25 +396,12 @@ export type HandoffDescriptor<TParsed = any> = {
   target: SmartAgentInstance<TParsed> & { __runtime: AgentRuntimeConfig };
 };
 
-export type SmartState = {
+// Base Agent State (minimal)
+export type AgentState = {
   messages: Message[];
   // Active agent runtime parameters (dynamically swapped on handoff)
   agent?: AgentRuntimeConfig;
-  summaries?: string[];
   toolHistory?: Array<{
-    executionId: string;
-    toolName: string;
-    args: any;
-    output: any;
-    rawOutput?: any;
-    timestamp?: string;
-    summarized?: boolean;
-    originalTokenCount?: number | null;
-    messageId?: string;
-    tool_call_id?: string;
-    fromCache?: boolean;
-  }>;
-  toolHistoryArchived?: Array<{
     executionId: string;
     toolName: string;
     args: any;
@@ -402,8 +416,6 @@ export type SmartState = {
   }>;
   toolCache?: Record<string, any>;
   toolCallCount?: number;
-  plan?: { version: number; steps: Array<{ index: number; title: string; status: string }>; lastUpdated?: string } | null;
-  planVersion?: number;
   metadata?: Record<string, any>;
   ctx?: Record<string, any>;
   pendingApprovals?: PendingToolApproval[];
@@ -421,6 +433,26 @@ export type SmartState = {
     totals: Record<string, { input: number; output: number; total: number; cachedInput: number }>;
   };
   guardrailResult?: GuardrailOutcome;
+};
+
+// Smart Agent State (extends base with planning & summarization)
+export type SmartState = AgentState & {
+  summaries?: string[];
+  toolHistoryArchived?: Array<{
+    executionId: string;
+    toolName: string;
+    args: any;
+    output: any;
+    rawOutput?: any;
+    timestamp?: string;
+    summarized?: boolean;
+    originalTokenCount?: number | null;
+    messageId?: string;
+    tool_call_id?: string;
+    fromCache?: boolean;
+  }>;
+  plan?: { version: number; steps: Array<{ index: number; title: string; status: string }>; lastUpdated?: string } | null;
+  planVersion?: number;
 };
 
 // Event types for observability and future streaming support
@@ -575,7 +607,7 @@ export type RestoreSnapshotOptions = {
 // Structured agent result returned by invoke
 export type AgentInvokeResult<TOutput = unknown> = {
   content: string;
-  // If SmartAgentOptions.outputSchema is set, this will contain the parsed and validated output.
+  // If outputSchema is set, this will contain the parsed and validated output.
   // TOutput will be inferred from the provided Zod schema.
   output?: TOutput;
   metadata: { usage?: any };
@@ -583,8 +615,8 @@ export type AgentInvokeResult<TOutput = unknown> = {
   state?: SmartState;
 };
 
-// Public shape returned by the agent factory
-export type SmartAgentInstance<TOutput = unknown> = {
+// Base Agent instance (minimal)
+export type AgentInstance<TOutput = unknown> = {
   invoke: (input: SmartState, config?: InvokeConfig) => Promise<AgentInvokeResult<TOutput>>;
   snapshot: (state: SmartState, options?: SnapshotOptions) => AgentSnapshot;
   resume: (snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions) => Promise<AgentInvokeResult<TOutput>>;
@@ -596,10 +628,5 @@ export type SmartAgentInstance<TOutput = unknown> = {
   __runtime: AgentRuntimeConfig;
 };
 
-// --- Generic aliases for migration to agent-sdk naming ---
-export type AgentLimits = SmartAgentLimits;
-export type AgentOptions = SmartAgentOptions;
-export type AgentState = SmartState;
-export type AgentEvent = SmartAgentEvent;
-export type AgentResult<T = unknown> = AgentInvokeResult<T>;
-export type AgentInstance<T = unknown> = SmartAgentInstance<T>;
+// Smart Agent instance (same as AgentInstance for now, but semantically separate)
+export type SmartAgentInstance<TOutput = unknown> = AgentInstance<TOutput>;

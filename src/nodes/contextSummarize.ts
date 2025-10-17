@@ -14,7 +14,7 @@ import { countApproxTokens } from "../utils/utilTokens.js";
 export function createContextSummarizeNode(opts: SmartAgentOptions) {
     return async (state: SmartState): Promise<Partial<SmartState>> => {
         const messages = state.messages || [];
-    const summaryTokenLimit = (opts.limits as any)?.summaryTokenLimit ?? (opts.limits as any)?.summary_token_limit ?? 100000;
+    const summaryTokenLimit = opts.limits?.summaryTokenLimit ?? 100000;
     const model = (opts as any).model;
 
         // Identify all tool calls and responses prior to the last assistant/tool-call turn

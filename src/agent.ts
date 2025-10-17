@@ -1,5 +1,5 @@
 // A minimal agent builder: no system prompt, no summarization, with tool limit and optional structured output finalize.
-import type { AgentResult as AgentInvokeResult, InvokeConfig, AgentEvent as SmartAgentEvent, AgentOptions as SmartAgentOptions, AgentState as SmartState, AgentInstance as SmartAgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution } from "./types.js";
+import type { AgentInvokeResult, InvokeConfig, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution } from "./types.js";
 import { GuardrailPhase } from "./types.js";
 import { z, ZodSchema } from "zod";
 import { createResolverNode } from "./nodes/resolver.js";
@@ -12,7 +12,7 @@ import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
 
-export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
+export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
   const agentCore = createAgentCoreNode(opts);
   // Prepare tools list: base tools + structured output finalize if schema provided
@@ -42,7 +42,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
     };
   };
 
-  const ensureGuardrailStore = (state: SmartState): GuardrailStore => {
+  const ensureGuardrailStore = (state: AgentState): GuardrailStore => {
     const ctx = (state.ctx = state.ctx || {});
     const existing = (ctx.__guardrailStore as GuardrailStore | undefined) || {
       lastRequestLength: -1,
@@ -52,7 +52,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
     return existing;
   };
 
-  const getGuardrailConfig = (state: SmartState) => {
+  const getGuardrailConfig = (state: AgentState) => {
     const agentGuardrails = state.agent?.guardrails;
     return Array.isArray(agentGuardrails)
       ? agentGuardrails
@@ -75,15 +75,15 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
   };
 
   async function runLoop(
-    initial: SmartState,
+    initial: AgentState,
     config: InvokeConfig | undefined,
     emit?: (event: SmartAgentEvent) => void
-  ): Promise<SmartState> {
+  ): Promise<AgentState> {
     let state = await resolver(initial);
     if (state.ctx?.__paused) {
       const nextCtx = { ...state.ctx };
       delete nextCtx.__paused;
-      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as SmartState;
+      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
     let resumeStage: "tools" | null = null;
     if (state.ctx?.__resumeStage) {
@@ -92,7 +92,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
         resumeStage = "tools";
       }
       delete nextCtx.__resumeStage;
-      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as SmartState;
+      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
 
     const maxToolCalls = (opts.limits?.maxToolCalls ?? 10) as number;
@@ -118,7 +118,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
         reason: checkpointReason,
         timestamp: new Date().toISOString(),
       };
-      state = { ...state, ctx } as SmartState;
+      state = { ...state, ctx } as AgentState;
       pausedStage = stage;
       return true;
     };
@@ -157,7 +157,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
                   },
                 },
               };
-              state = { ...state, messages: [...state.messages, guardMessage] } as SmartState;
+              state = { ...state, messages: [...state.messages, guardMessage] } as AgentState;
               const ctx = (state.ctx = state.ctx || {});
               (ctx as any).__guardrailBlocked = {
                 phase: GuardrailPhase.Request,
@@ -169,7 +169,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
         }
 
         // Agent step
-  state = { ...state, ...(await agentCore(state)) } as SmartState;
+  state = { ...state, ...(await agentCore(state)) } as AgentState;
 
   if (checkpointIfRequested("after_agent")) break;
 
@@ -203,7 +203,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
                   },
                 },
               } as any);
-              state = { ...state, messages: updatedMessages } as SmartState;
+              state = { ...state, messages: updatedMessages } as AgentState;
               const ctx = (state.ctx = state.ctx || {});
               (ctx as any).__guardrailBlocked = {
                 phase: GuardrailPhase.Response,
@@ -238,7 +238,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
         break;
       }
       if (toolCallCount >= maxToolCalls && toolCalls.length > 0) {
-        state = { ...state, ...(await finalizeNode(state)) } as SmartState;
+        state = { ...state, ...(await finalizeNode(state)) } as AgentState;
         // One more assistant turn will occur, but without more tools ideally
         continue;
       }
@@ -246,7 +246,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
       if (toolCalls.length === 0) break;
 
       // Run tools
-      state = { ...state, ...(await toolsNode(state)) } as SmartState;
+      state = { ...state, ...(await toolsNode(state)) } as AgentState;
       if (state.ctx?.__awaitingApproval) break;
       if (checkpointIfRequested("after_tools")) break;
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
@@ -259,7 +259,7 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
     return state;
   }
 
-  const invokeAgent = async (input: SmartState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
+  const invokeAgent = async (input: AgentState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
     const onEvent = config?.onEvent;
     const emit = (e: SmartAgentEvent) => { try { onEvent?.(e); } catch {} };
     const traceSession = createTraceSession(opts);
@@ -267,23 +267,19 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
     const ctx: Record<string, any> = { ...(input.ctx || {}), __onEvent: onEvent };
     if (traceSession) ctx.__traceSession = traceSession;
 
-    const initial: SmartState = {
+    const initial: AgentState = {
       messages: input.messages || [],
-      summaries: input.summaries || [],
       toolCallCount: input.toolCallCount || 0,
       toolCache: input.toolCache || {},
       toolHistory: input.toolHistory || [],
-      toolHistoryArchived: input.toolHistoryArchived || [],
       metadata: input.metadata,
       ctx,
-      plan: input.plan || null,
-      planVersion: input.planVersion || 0,
       pendingApprovals: input.pendingApprovals || [],
       agent: input.agent || runtime,
       usage: input.usage || { perRequest: [], totals: {} },
     };
 
-    let res: SmartState;
+    let res: AgentState;
     try {
       res = await runLoop(initial, config, emit);
     } catch (err: any) {
@@ -333,21 +329,21 @@ export function createAgent<TOutput = unknown>(opts: SmartAgentOptions & { outpu
       output: parsed as TOutput | undefined,
       metadata: { usage: (res as any).usage },
       messages: res.messages,
-      state: res as SmartState,
+      state: res as AgentState,
     };
   };
 
-  const snapshotState = (state: SmartState, options?: SnapshotOptions) => captureSnapshot(state, options);
+  const snapshotState = (state: AgentState, options?: SnapshotOptions) => captureSnapshot(state, options);
 
   const resumeAgent = async (snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions) => {
     const restoredState = restoreSnapshot(snapshot, restoreOptions);
     return invokeAgent(restoredState, config);
   };
 
-  const resolveToolApproval = (state: SmartState, resolution: ToolApprovalResolution) =>
+  const resolveToolApproval = (state: AgentState, resolution: ToolApprovalResolution) =>
     resolveToolApprovalState(state, resolution);
 
-  const instance: SmartAgentInstance<TOutput> = {
+  const instance: AgentInstance<TOutput> = {
     invoke: invokeAgent,
     snapshot: snapshotState,
     resume: resumeAgent,

@@ -1,4 +1,4 @@
-import type { AgentResult as AgentInvokeResult, InvokeConfig, AgentOptions as SmartAgentOptions, AgentState as SmartState, AgentInstance as SmartAgentInstance } from "../types.js";
+import type { AgentInvokeResult, InvokeConfig, SmartAgentOptions, SmartState, SmartAgentInstance } from "../types.js";
 import { ZodSchema } from "zod";
 import { createAgent } from "../agent.js";
 import { createContextTools } from "../contextTools.js";

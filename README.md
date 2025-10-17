@@ -137,7 +137,7 @@ console.log(res.content);
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
 - **MCP + LangChain tools** – any object satisfying the minimal tool interface works; LangChain’s `Tool` implementations plug in directly.
 - **Vision input** – message parts accept OpenAI-style `image_url` entries (see `examples/vision`).
-- **Observability hooks** – `onEvent` surfaces tool lifecycle, summarization, metadata, and final answer events for streaming UIs or CLIs.
+- **Observability hooks** – `config.onEvent` surfaces tool lifecycle, summarization, metadata, and final answer events for streaming UIs or CLIs.
 
 ## Examples
 
@@ -190,7 +190,7 @@ Exported helpers (`agent-sdk/src/index.ts`):
 - `buildSystemPrompt(extra?, planning?, name?)`
 - Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
 
-`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `useTodoList`, `summarization`, `usageConverter`, `tracing`, `onEvent`). See `docs/api/` for detailed type references.
+`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `useTodoList`, `summarization`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
 
 ## Tracing & observability
 

@@ -19,34 +19,47 @@
 
 ## Options
 
-`createSmartAgent` and `createAgent` accept `SmartAgentOptions` (aliases: `AgentOptions`). Key fields:
+### Base Agent (createAgent)
+
+`createAgent` accepts `AgentOptions` - a minimal configuration:
 
 - `model` *(required)* – object with `invoke(messages[]) => assistantMessage`; optional `bindTools(tools)` method.
 - `tools?: ToolInterface[]` – Zod tools, LangChain `ToolInterface`, MCP adapters, or any object with `invoke`/`call`.
-- `limits?: SmartAgentLimits` – limit configuration:
+- `limits?: AgentLimits` – limit configuration:
 	- `maxToolCalls?`
 	- `maxParallelTools?`
-	- `maxToken?` (summarization trigger threshold)
+	- `maxToken?`
 	- `contextTokenLimit?`
-	- `summaryTokenLimit?` (or `summary_token_limit` alias)
-- `useTodoList?: boolean` – enable planning mode & `manage_todo_list` tool.
-- `summarization?: boolean` – default `true`; set `false` to disable summarization entirely.
-- `systemPrompt?: string` – additional message appended inside the smart prompt (ignored by `createAgent`).
+	- `summaryTokenLimit?`
 - `outputSchema?: ZodSchema` – enables structured output finalize tool + parsed `result.output`.
 - `handoffs?: HandoffDescriptor[]` – pre-configured agent handoffs exposed as tools.
 - `usageConverter?: (finalMessage, fullState, model) => any` – override usage normalization.
-- `tracing?: { enabled: boolean; logData?: boolean; sink?: TraceSinkConfig }` – structured JSON traces with pluggable sinks (`fileSink`, `httpSink`, `cognipeerSink`, `customSink`).
-- `onEvent?: (event: SmartAgentEvent) => void` – global event listener (per-invoke listener can override).
+- `tracing?: { enabled: boolean; logData?: boolean; sink?: TraceSinkConfig }` – structured JSON traces.
 
-### SmartAgent-specific behavior
+### Smart Agent (createSmartAgent)
 
-When using `createSmartAgent`:
+`createSmartAgent` accepts `SmartAgentOptions` - extends `AgentOptions` with:
 
-- A system message is automatically injected (unless one already exists) using `buildSystemPrompt`.
+- All `AgentOptions` fields above, plus:
+- `useTodoList?: boolean` – enable planning mode & `manage_todo_list` tool.
+- `summarization?: boolean` – default `true`; set `false` to disable summarization entirely.
+- `systemPrompt?: string` – additional message appended inside the smart prompt.
+
+> **Note:** Use `config.onEvent` in the `invoke()` call to receive structured events during execution (see InvokeConfig below).
+
+### Agent vs SmartAgent behavior
+
+**createAgent** (minimal):
+- No automatic system prompt injection
+- No planning/TODO tools
+- No automatic summarization
+- You provide all messages and control flow explicitly
+- Useful when you need full control over prompts
+
+**createSmartAgent** (batteries-included):
+- A system message is automatically injected using `buildSystemPrompt`.
 - Context tools (`manage_todo_list`, `get_tool_response`, and `response` when `outputSchema` is set) are appended to the provided tool list.
-- Summarization decisions run before and after tool execution when `limits.maxToken` is exceeded.
-
-`createAgent` skips all of the above and simply wires resolver → agentCore → tools → toolLimitFinalize in a loop.
+- Summarization decisions run before and after tool execution when `limits.maxToken` is exceeded (unless disabled with `summarization: false`).
 
 ## Return shape
 
@@ -62,7 +75,7 @@ type AgentInvokeResult<TOutput = unknown> = {
 };
 ```
 
-Pass `config.onEvent` to receive structured events during the invocation (overrides the option-level listener if provided).
+Use `config.onEvent` in the `invoke()` call to receive structured events during execution.
 
 ## Events
 

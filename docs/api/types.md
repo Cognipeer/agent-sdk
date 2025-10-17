@@ -4,35 +4,53 @@ Complete TypeScript type definitions for Agent SDK.
 
 ## Core Types
 
-### SmartState
+### AgentState
 
-The state object that flows through the agent loop:
+The base state object for minimal agents:
 
 ```typescript
-interface SmartState {
+interface AgentState {
   // Messages
   messages: Message[];                    // Conversation history
   
   // Tool tracking
-  toolCallCount: number;                  // Total tool calls in session
-  toolHistory: ToolExecution[];           // Recent tool results
-  toolHistoryArchived: ToolExecution[];   // Archived tool results
-  
-  // Summarization
-  summaries: SummaryMessage[];            // Summarization messages
-  
-  // Planning
-  plan?: TodoList;                        // Current plan
-  planVersion?: number;                   // Plan version counter
+  toolCallCount?: number;                 // Total tool calls in session
+  toolHistory?: ToolExecution[];          // Tool execution history
+  toolCache?: Record<string, any>;        // Tool result cache
   
   // Usage tracking
   usage?: UsageInfo;                      // Aggregated token usage
   
   // Runtime
-  agent: AgentRuntime;                    // Active agent metadata
+  agent?: AgentRuntimeConfig;             // Active agent metadata
+  
+  // Approvals
+  pendingApprovals?: PendingToolApproval[]; // Tool approval queue
+  
+  // Guardrails
+  guardrailResult?: GuardrailOutcome;     // Guardrail evaluation results
+  
+  // Metadata
+  metadata?: Record<string, any>;         // User-defined metadata
   
   // Internal context
-  ctx?: StateContext;                     // System internal state
+  ctx?: Record<string, any>;              // System internal state
+}
+```
+
+### SmartState
+
+Extended state for SmartAgent (includes planning & summarization):
+
+```typescript
+interface SmartState extends AgentState {
+  // Summarization (SmartAgent-specific)
+  summaries?: string[];                   // Summarization messages
+  toolHistoryArchived?: ToolExecution[];  // Archived tool results
+  
+  // Planning (SmartAgent-specific)
+  plan?: TodoList;                        // Current plan
+  planVersion?: number;                   // Plan version counter
 }
 ```
 
@@ -150,10 +168,10 @@ type TodoStatus = "not-started" | "in-progress" | "completed";
 
 ## Limits & Configuration
 
-### SmartAgentLimits
+### AgentLimits
 
 ```typescript
-interface SmartAgentLimits {
+interface AgentLimits {
   maxToolCalls?: number;                  // Default: 50
   maxParallelTools?: number;              // Default: 5
   maxToken?: number;                      // Default: 10000
@@ -162,21 +180,25 @@ interface SmartAgentLimits {
 }
 ```
 
-### TracingOptions
+Note: `SmartAgentLimits` is an alias for `AgentLimits` (both agents use the same limits structure).
+
+### TracingConfig
 
 ```typescript
-interface TracingOptions {
+interface TracingConfig {
   enabled: boolean;
   logData?: boolean;                      // Include payloads in trace
   sink?: TraceSinkConfig;
 }
 
 type TraceSinkConfig = 
-  | { type: "file"; directory?: string }
+  | { type: "file"; path?: string }
   | { type: "http"; url: string; headers?: Record<string, string> }
-  | { type: "cognipeer"; apiKey: string }
-  | { type: "custom"; handler: (event: TraceEvent) => void };
+  | { type: "cognipeer"; apiKey: string; url?: string }
+  | { type: "custom"; onEvent?: (event: TraceEventRecord) => void; onSession?: (session: TraceSessionFile) => void };
 ```
+
+Note: `SmartAgentTracingConfig` is an alias for `TracingConfig`.
 
 ## Events
 
@@ -298,25 +320,27 @@ interface SerializedState {
 
 ```typescript
 interface HandoffDescriptor {
-  targetAgent: SmartAgent;
+  targetAgent: SmartAgentInstance<any>;
   handoffName: string;
   handoffDescription?: string;
   returnOnFinalize?: boolean;
 }
 ```
 
-### AgentRuntime
+### AgentRuntimeConfig
 
 ```typescript
-interface AgentRuntime {
+interface AgentRuntimeConfig {
   name: string;
   tools: ToolInterface[];
-  limits: SmartAgentLimits;
+  limits: AgentLimits;
   handoffs?: HandoffDescriptor[];
   useTodoList: boolean;
   summarization: boolean;
 }
 ```
+
+Note: This is the runtime configuration metadata available via `agent.__runtime`.
 
 ## Guardrails
 

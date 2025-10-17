@@ -18,6 +18,7 @@ export { fromLangchainTools } from "./adapters/langchain.js";
 export { fileSink, customSink, cognipeerSink, httpSink } from "./utils/tracing.js";
 export { GuardrailPhase } from "./types.js";
 export type {
+	// Smart Agent types
 	SmartAgentOptions,
 	SmartAgentLimits,
 	SmartState,
@@ -25,6 +26,20 @@ export type {
 	AgentInvokeResult,
 	SmartAgentInstance,
 	SmartAgentTracingConfig,
+	SmartAgentEvent,
+	// Base Agent types
+	AgentOptions,
+	AgentLimits,
+	AgentState,
+	AgentInstance,
+	AgentRuntimeConfig,
+	TracingConfig,
+	HandoffDescriptor,
+	// Common types
+	Message,
+	BaseMessage,
+	AIMessage,
+	ToolInterface,
 	TraceEventRecord,
 	TraceDataSection,
 	TraceMessageSection,
@@ -62,5 +77,3 @@ export type {
 	ToolApprovalResolution,
 	ToolApprovalEvent,
 } from "./types.js";
-// Agent* aliases for migration
-export type { AgentOptions, AgentLimits, AgentState, AgentEvent, AgentResult, AgentInstance } from "./types.js";

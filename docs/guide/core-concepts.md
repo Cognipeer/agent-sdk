@@ -52,7 +52,7 @@ Provide `outputSchema` (Zod). The framework:
 
 ## 7. Limits
 
-`SmartAgentLimits` control throughput and summarization:
+`AgentLimits` control throughput and summarization (also exported as `SmartAgentLimits` for backward compatibility):
 - `maxToolCalls` – total tool executions allowed per invocation.
 - `maxParallelTools` – concurrent tool executions per agent turn.
 - `maxToken` – token threshold before the next model call; exceeding it triggers `contextSummarize`.
@@ -120,7 +120,7 @@ Optional metadata (`approvalPrompt`, `approvalDefaults`) can be attached to tool
 
 ## 11. Events & observability
 
-`onEvent` (global or per-invoke) surfaces:
+`onEvent` (per-invoke via `InvokeConfig`) surfaces:
 - `tool_call` lifecycle events (start/success/error/skipped).
 - `plan` write/read events from `manage_todo_list`.
 - `summarization` notifications when context is compacted.
