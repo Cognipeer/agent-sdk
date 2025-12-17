@@ -1,6 +1,6 @@
 # @cognipeer/agent-sdk
 
-[![npm](https://img.shields.io/npm/v/@cognipeer/agent-sdk?color=success)](https://npmjs.com/package/@cognipeer/agent-sdk) [Docs Website](https://cognipeer.github.io/agent-sdk/)
+[![npm](https://img.shields.io/npm/v/@cognipeer/agent-sdk?color=success)](https://npmjs.com/package/@cognipeer/agent-sdk) [Docs Website](https://cognipeer.github.io/agent-sdk/) 
 
 Lightweight, message-first agent runtime that keeps tool calls transparent, automatically summarizes long histories, and ships with planning, multi-agent handoffs, and structured tracing.
 
