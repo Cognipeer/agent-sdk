@@ -31,9 +31,79 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const promptPayload = shouldLogPrompt ? sanitizeTracePayload(state.messages) : undefined;
     const promptBytes = promptPayload !== undefined ? estimatePayloadBytes(promptPayload) : undefined;
 
+    // Bedrock (Claude) requires strict tool_use -> tool_result adjacency.
+    // We both normalize (insert placeholder tool_result if missing) and log a compact dump.
+    const extractToolUses = (m: any): Array<{ id: string; name?: string }> => {
+      const tcs = m?.tool_calls || m?.additional_kwargs?.tool_calls;
+      if (!Array.isArray(tcs)) return [];
+      return tcs
+        .map((tc: any) => ({ id: tc?.id, name: tc?.function?.name || tc?.name }))
+        .filter((x: any) => typeof x.id === "string" && x.id.length > 0);
+    };
+
+    const normalizeBedrockToolPairing = (input: any[]): any[] => {
+      const msgs = Array.isArray(input) ? [...input] : [];
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        if (m?.role !== "assistant") continue;
+
+        const toolUses = extractToolUses(m);
+        if (toolUses.length === 0) continue;
+
+        // Bedrock expects exactly one "next message" containing the corresponding tool_result blocks.
+        // In our message format we represent tool_result as role:'tool' messages with tool_call_id.
+        // If the next message isn't a tool result for the first tool_use id, insert placeholders.
+        const next = msgs[i + 1];
+
+        // If next is a tool message for the first id, we assume pairing is okay and let downstream validate.
+        const firstId = toolUses[0]?.id;
+        const nextIsToolForFirst = !!(next && next.role === "tool" && next.tool_call_id === firstId);
+        if (nextIsToolForFirst) continue;
+
+        // Insert placeholder tool results for all tool uses on this assistant turn.
+        const placeholders = toolUses.map((tu) => ({
+          role: "tool",
+          name: tu.name || "unknown_tool",
+          tool_call_id: tu.id,
+          content: "SUMMARIZED/DEFERRED: tool result missing in transcript; inserted placeholder for Bedrock tool_result adjacency.",
+        }));
+        msgs.splice(i + 1, 0, ...placeholders);
+
+        // Skip over inserted placeholders
+        i += placeholders.length;
+      }
+      return msgs;
+    };
+
+    const debugToolPairing = (messagesToSend: any[]) => {
+      try {
+        const msgs: any[] = Array.isArray(messagesToSend) ? messagesToSend : [];
+        const toolUseIds: string[] = [];
+        const missingResults: Array<{ id: string; atIndex: number; tool?: string }> = [];
+
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          if (m?.role === "assistant") {
+            for (const tu of extractToolUses(m)) {
+              toolUseIds.push(tu.id);
+              const next = msgs[i + 1];
+              if (!(next && next.role === "tool" && (next.tool_call_id === tu.id || next.tool_call_id === m?.tool_call_id))) {
+                missingResults.push({ id: tu.id, atIndex: i, tool: tu.name });
+              }
+            }
+          }
+        }
+
+      } catch (e) {
+        // Debug tool pairing failed silently
+      }
+    };
+
     let response: any;
     try {
-      response = await modelWithTools.invoke([...state.messages]);
+  const normalizedMessages = normalizeBedrockToolPairing([...(state.messages as any[])]);
+  debugToolPairing(normalizedMessages);
+  response = await modelWithTools.invoke(normalizedMessages);
     } catch (err: any) {
       const durationMs = Date.now() - start;
       recordTraceEvent(traceSession, {

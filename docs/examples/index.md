@@ -43,7 +43,11 @@ All examples are in the `examples/` directory at the repository root:
 git clone https://github.com/Cognipeer/agent-sdk
 cd agent-sdk
 
-# Install dependencies
+# Install root dependencies
+npm install
+
+# Install example dependencies
+cd examples
 npm install
 
 # Set up API key

@@ -8,10 +8,17 @@ This script demonstrates how to pause an agent run, capture its state snapshot, 
 - Serializes the checkpoint with `agent.snapshot` + `JSON.stringify`.
 - Resumes the run later with `agent.resume(snapshot)`.
 
-## Running the sample
+## Run
+
+From the `examples/` directory:
 
 ```bash
-pnpm tsx examples/pause-resume/pause-resume.ts
+npm run example:pause-resume
+```
+
+Or directly:
+```bash
+npx tsx pause-resume/pause-resume.ts
 ```
 
 You can replace the fake model with a real provider by wiring `createAgent` with your preferred model implementation.

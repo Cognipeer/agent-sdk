@@ -66,14 +66,6 @@ const agent = createAgent({
 });
 
 const res = await agent.invoke(
-    { messages: [{ role: 'user', content: "Search latest news about LangChain MCP and summarize." }] },
-    {
-        onEvent: (e: any) => {
-            if (e.type === "tool_call") console.log(`[tool] ${e.phase} ${e.name}`, e.id || "-");
-            if (e.type === "plan") console.log(`[plan]`, e.todoList?.length ?? 0);
-            if (e.type === "summarization") console.log(`[sum]`, e.archivedCount ?? 0);
-            if (e.type === "metadata") console.log(`[meta]`, e.modelName, e.usage);
-        }
-    }
+    { messages: [{ role: 'user', content: "Search latest news about LangChain MCP and summarize." }] }
 );
-console.log("RES", res.content);
+console.log("Result:", res.content);

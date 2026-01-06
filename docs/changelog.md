@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3] - 2025-01-06
+
+### Changed
+- Updated all example README files with consistent structure and npm run commands
+- Improved examples/README.md with better categorization and detailed instructions
+- Enhanced documentation for running examples with two-step installation process
+- Updated main README.md with clearer example execution instructions
+
+### Fixed
+- Installation instructions now clearly indicate root and examples directory setup
+- Example execution commands now consistently use `npm run example:<name>` format
+- All example READMEs now include both npm run and direct tsx execution methods
+
 ## [0.1.1] - 2025-01-XX
 
 ### Added

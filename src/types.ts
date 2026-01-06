@@ -110,12 +110,6 @@ export type GuardrailOutcome = {
 // Common limits for both Agent and SmartAgent
 export type AgentLimits = {
   maxToolCalls?: number;
-  contextTokenLimit?: number;
-  summaryTokenLimit?: number;
-  // If provided, before the next agent call we will estimate the token length
-  // of the upcoming AI input with tiktoken and, if it exceeds this limit,
-  // we will trigger a summarization pass over prior tool calls/responses.
-  maxToken?: number;
   // Maximum number of tools to execute in parallel per turn
   maxParallelTools?: number;
 };
@@ -197,7 +191,10 @@ export type SmartAgentOptions = {
   handoffs?: HandoffDescriptor[];
   limits?: AgentLimits;
   // Toggle token-aware context summarization. Default: true. Set to false to disable.
-  summarization?: boolean;
+  summarization?: boolean | {
+    enable: boolean;
+    maxTokens: number;
+  };
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults
   // Enable internal planning workflow (todo list tool + prompt hints)

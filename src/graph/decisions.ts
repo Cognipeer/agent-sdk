@@ -3,15 +3,19 @@ import { countApproxTokens } from "../utils/utilTokens.js";
 
 /** Shared helper to compute whether we exceed token limit */
 function needsSummarization(state: SmartState, opts: SmartAgentOptions, summarizationEnabled: boolean): boolean {
-  const maxTok = opts.limits?.maxToken;
-  if (!maxTok || !summarizationEnabled) return false;
+  // Check both maxToken and contextTokenLimit for backward compatibility
+  const maxTok = opts.limits?.maxToken ?? opts.limits?.contextTokenLimit;
+  if (!maxTok || !summarizationEnabled) {
+    return false;
+  }
   try {
     const allText = (state.messages || [])
       .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
       .join("\n");
     const tokenCount = countApproxTokens(allText);
-    return tokenCount > maxTok;
-  } catch {
+    const needsSum = tokenCount > maxTok;
+    return needsSum;
+  } catch (e) {
     return false;
   }
 }

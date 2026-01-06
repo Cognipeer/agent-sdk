@@ -31,4 +31,4 @@ let res = await agent.invoke(state);
 state = { ...state, messages: res.messages };
 state.messages.push({ role: 'user', content: "go on" });
 res = await agent.invoke(state);
-console.log(JSON.stringify(res.messages.slice(-6).map((m: any) => ({ role: m.role, name: (m as any).name, id: (m as any).tool_call_id, len: String((m as any).content).length })), null, 2));
+console.log("Final result:", res.content);

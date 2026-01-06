@@ -17,7 +17,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   // Compose base agent
   const base = createAgent<TOutput>({ ...opts, tools: mergedTools });
 
-  const summarizationEnabled = opts.summarization !== false; // default true
+  let summarizationEnabled = false;
+  if (typeof opts.summarization === 'object') {
+     summarizationEnabled = opts.summarization.enable !== false;
+  } else {
+     summarizationEnabled = opts.summarization !== false; // default true if not object and not strictly false
+  }
+
   const summarizer = summarizationEnabled ? createContextSummarizeNode(opts) : undefined;
   const decideBefore = resolverDecisionFactory(opts, summarizationEnabled);
   const decideAfter = toolsDecisionFactory(opts, summarizationEnabled);
@@ -66,6 +72,18 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         const res = await base.invoke(state, config);
         lastResult = res as AgentInvokeResult<TOutput>;
         state = (res.state as SmartState) || { ...state, messages: res.messages };
+
+        // Check if base agent signaled that summarization is needed (context too large)
+        if ((state as any).ctx?.__needsSummarization && summarizer) {
+          // Clear the flag
+          const ctx = { ...(state.ctx || {}) };
+          delete ctx.__needsSummarization;
+          state = { ...state, ctx } as SmartState;
+          // Run summarization
+          const delta = await summarizer(state);
+          state = { ...state, ...delta } as SmartState;
+          continue; // Loop will attempt another agent pass after summarization
+        }
 
         // If structured output finalize triggered, base already stopped with parsed output
         if ((state as any).ctx?.__finalizedDueToStructuredOutput) break;

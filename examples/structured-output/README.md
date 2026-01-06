@@ -9,11 +9,19 @@ This example shows how to use `outputSchema` with `createAgent` to get typed, Zo
 
 ## Run
 
-If you have an OpenAI API key, export it; otherwise the example uses a tiny fake model.
+From the `examples/` directory:
 
 ```bash
-export OPENAI_API_KEY=sk-... # optional
-node --loader tsx ./examples/structured-output/structured-output.ts
+# Set your API key (optional - uses fake model if not set)
+export OPENAI_API_KEY=sk-...
+
+# Run the example
+npm run example:structured-output
+```
+
+Or directly:
+```bash
+OPENAI_API_KEY=... npx tsx structured-output/structured-output.ts
 ```
 
 ## Expected output

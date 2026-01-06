@@ -11,6 +11,7 @@ import { createTraceSession, finalizeTraceSession } from "./utils/tracing.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
+import { countApproxTokens } from "./utils/utilTokens.js";
 
 export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
@@ -95,8 +96,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
 
-    const maxToolCalls = (opts.limits?.maxToolCalls ?? 10) as number;
-    const iterationLimit = Math.max(maxToolCalls * 3 + 10, 40);
+    const maxToolCalls = (opts.limits?.maxToolCalls === undefined) ? 50 : opts.limits?.maxToolCalls;
+    const iterationLimit = maxToolCalls === Infinity ? 100 : Math.max(maxToolCalls * 3 + 10, 40);
     let iterations = 0;
     const onStateChange = config?.onStateChange;
     const checkpointReason = config?.checkpointReason;
@@ -123,7 +124,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return true;
     };
 
-    while (iterations < iterationLimit) {
+  while (iterations < iterationLimit) {
       iterations++;
 
       const skippingAgent = resumeStage === "tools";
@@ -165,6 +166,29 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
               };
               break;
             }
+          }
+        }
+
+        // Check if context is too large and needs summarization (signal to SmartAgent)
+        // Default maxTok to Infinity if not provided to bypass check by default, 
+        // but SmartAgent usually passes config. If purely limits.maxToken used, we respect it.
+        // The user requirement says "agent altındaki maxTokens ve maxToolCalls kısmını config altından alalım yoksa 50000 ve 50 olarak set edelim" 
+        // This implies defaults should be applied if not present.
+
+        let maxTok = 50000; // Default as per requirement
+        if ((opts as any).summarization && typeof (opts as any).summarization === 'object' && (opts as any).summarization.maxTokens) {
+             maxTok = (opts as any).summarization.maxTokens;
+        }
+
+        if (maxTok) {
+          const allText = (state.messages || [])
+            .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
+            .join("\n");
+          const tokenCount = countApproxTokens(allText);
+          if (tokenCount > maxTok) {
+            const ctx = { ...(state.ctx || {}), __needsSummarization: true };
+            state = { ...state, ctx } as AgentState;
+            break;
           }
         }
 
@@ -250,6 +274,44 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (state.ctx?.__awaitingApproval) break;
       if (checkpointIfRequested("after_tools")) break;
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
+    }
+
+    // Best-effort: if a structured output schema is active but the model never called `response`,
+    // append a force-finalize instruction and allow one more agent turn (without tools ideally).
+    // This helps avoid "completed but no response generated" situations.
+    if (opts.outputSchema && !(state as any).ctx?.__finalizedDueToStructuredOutput) {
+      const last: any = state.messages[state.messages.length - 1];
+      const lastHasToolCalls = Array.isArray(last?.tool_calls) && last.tool_calls.length > 0;
+
+      // Only nudge if we appear to be done (no pending tool calls) but still no structured finalize.
+      if (!lastHasToolCalls) {
+        const forceMsg = {
+          role: "system",
+          content: [
+            "A structured output schema is active.",
+            "You MUST now call tool `response` with the final JSON object that matches the schema.",
+            "Do not write the JSON in the assistant message.",
+            "Call `response` exactly once, then stop.",
+          ].join("\n"),
+        } as any;
+
+        // Avoid spamming the same instruction
+        const alreadyForced = Boolean((state as any).ctx?.__structuredOutputForceFinalize);
+        if (!alreadyForced) {
+          const ctx = { ...(state.ctx || {}), __structuredOutputForceFinalize: true };
+          state = { ...state, messages: [...state.messages, forceMsg], ctx } as AgentState;
+          try {
+            state = { ...state, ...(await agentCore(state)) } as AgentState;
+            const lastAfter: any = state.messages[state.messages.length - 1];
+            const toolCallsAfter: any[] = Array.isArray(lastAfter?.tool_calls) ? lastAfter.tool_calls : [];
+            if (toolCallsAfter.length > 0) {
+              state = { ...state, ...(await toolsNode(state)) } as AgentState;
+            }
+          } catch {
+            // Ignore; caller will handle absence of output
+          }
+        }
+      }
     }
 
     if (!pausedStage && typeof onStateChange === "function" && onStateChange(state)) {

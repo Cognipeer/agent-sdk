@@ -158,12 +158,27 @@ Examples live under `examples/` with per-folder READMEs. Build the package first
 | `mcp-tavily/` | MCP remote tool discovery. |
 | `vision/` | Text + image input using LangChain’s OpenAI bindings. |
 
-Run directly with `tsx`, for example:
+To run examples:
 
-```sh
-# from repo root
-npm run build
-OPENAI_API_KEY=... npx tsx examples/tools/tools.ts
+```bash
+# Install root dependencies
+npm install
+
+# Install example dependencies
+cd examples
+npm install
+
+# Run an example from the examples directory
+npm run example:basic
+npm run example:tools
+npm run example:multi-agent
+```
+
+Or run directly with tsx:
+
+```bash
+# From examples directory
+OPENAI_API_KEY=... npx tsx basic/basic.ts
 ```
 
 ## Architecture snapshot

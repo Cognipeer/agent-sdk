@@ -1,9 +1,16 @@
-# Tool limit example
+# Tool Limit Example
 
 Demonstrates `maxToolCalls` forcing early finalization.
 
-Run:
+## Run
 
-```sh
-npx tsx tool-limit.ts
+From the `examples/` directory:
+
+```bash
+npm run example:tool-limit
+```
+
+Or directly:
+```bash
+npx tsx tool-limit/tool-limit.ts
 ```

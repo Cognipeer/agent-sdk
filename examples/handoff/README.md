@@ -11,14 +11,21 @@ The user asks for a financial calculation and then a small TypeScript function. 
 - The handoff tool returns `ok`, and from the next turn onward the new agent proceeds.
 
 ## Run
-First build the package:
+
+From the `examples/` directory:
 
 ```bash
-npm run build
-node examples/handoff/handoff.ts
+# Set your API key
+export OPENAI_API_KEY=sk-...
+
+# Run the example
+npm run example:handoff
 ```
 
-Ensure the `OPENAI_API_KEY` environment variable is set.
+Or directly:
+```bash
+OPENAI_API_KEY=... npx tsx handoff/handoff.ts
+```
 
 ## Output
 - Final answer printed to console

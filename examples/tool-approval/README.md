@@ -9,10 +9,17 @@ Shows how to flag a tool with `needsApproval`, inspect the pending approval queu
 3. A human (our script) approves the request via `agent.resolveToolApproval`.
 4. We immediately pass the updated state back into `agent.invoke`, the tool executes, and the assistant replies with the final answer.
 
-## Run locally
+## Run
+
+From the `examples/` directory:
 
 ```bash
-pnpm tsx examples/tool-approval/tool-approval.ts
+npm run example:tool-approval
+```
+
+Or directly:
+```bash
+npx tsx tool-approval/tool-approval.ts
 ```
 
 To simulate a rejection, change the approval payload to `{ approved: false, comment: "Rejected" }` and observe the agent receive the rejection message on its next turn.
