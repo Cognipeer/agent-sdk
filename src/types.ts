@@ -194,6 +194,8 @@ export type SmartAgentOptions = {
   summarization?: boolean | {
     enable: boolean;
     maxTokens: number;
+    /** Max tokens to include in the summarization prompt itself (to avoid sending huge context to summarizer). Default: 8000 */
+    summaryPromptMaxTokens?: number;
   };
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults

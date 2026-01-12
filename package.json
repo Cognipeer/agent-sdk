@@ -1,6 +1,6 @@
 {
   "name": "@cognipeer/agent-sdk",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Composable lightweight smart agent core (no LangGraph) with pluggable model adapters.",
   "license": "MIT",
   "type": "module",

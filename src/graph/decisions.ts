@@ -3,11 +3,27 @@ import { countApproxTokens } from "../utils/utilTokens.js";
 
 /** Shared helper to compute whether we exceed token limit */
 function needsSummarization(state: SmartState, opts: SmartAgentOptions, summarizationEnabled: boolean): boolean {
-  // Check both maxToken and contextTokenLimit for backward compatibility
-  const maxTok = opts.limits?.maxToken ?? opts.limits?.contextTokenLimit;
-  if (!maxTok || !summarizationEnabled) {
+  if (!summarizationEnabled) {
     return false;
   }
+
+  // Determine the effective max tokens for summarization
+  // Order of precedence:
+  // 1. opts.summarization.maxTokens (if strictly defined)
+  // 2. opts.limits.maxToken
+  // 3. opts.limits.contextTokenLimit
+  // 4. Default: 50000
+  let maxTok: number | undefined;
+
+  if (typeof opts.summarization === 'object' && typeof opts.summarization.maxTokens === 'number') {
+    maxTok = opts.summarization.maxTokens;
+  }
+  
+  // Default to 50000 if no limit specified but summarization is enabled
+  if (maxTok === undefined) {
+    maxTok = 50000;
+  }
+
   try {
     const allText = (state.messages || [])
       .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')

@@ -64,8 +64,14 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         const next = summarizationEnabled ? decideBefore(state) : 'agent';
         if (next === 'contextSummarize' && summarizer) {
           const delta = await summarizer(state);
-          state = { ...state, ...delta } as SmartState;
-          continue; // run decision again before calling base
+          // Prevent infinite loop if summarizer returns no changes (e.g. error or nothing to summarize)
+          if (!delta || Object.keys(delta).length === 0) {
+             // Summarization failed to produce a change. Proceed to agent to avoid stall, 
+             // though it might hit token limits.
+          } else {
+             state = { ...state, ...delta } as SmartState;
+             continue; // run decision again before calling base
+          }
         }
 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
@@ -81,7 +87,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           state = { ...state, ctx } as SmartState;
           // Run summarization
           const delta = await summarizer(state);
-          state = { ...state, ...delta } as SmartState;
+          // If delta is valid, apply and loop. If empty, we continue to next iteration (or break depending on flow)
+          // Since we are inside the main loop, 'continue' will go to top of loop.
+          // If delta empty, we just updated the ctx flag, so 'continue' at least retries with clean flag.
+          if (delta && Object.keys(delta).length > 0) {
+             state = { ...state, ...delta } as SmartState;
+          }
           continue; // Loop will attempt another agent pass after summarization
         }
 
@@ -93,9 +104,11 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const after = decideAfter(state);
           if (after === 'contextSummarize' && summarizer) {
             const delta = await summarizer(state);
-            state = { ...state, ...delta } as SmartState;
-            // Loop will attempt another agent pass
-            continue;
+             if (delta && Object.keys(delta).length > 0) {
+                state = { ...state, ...delta } as SmartState;
+                // Loop will attempt another agent pass
+                continue;
+             }
           }
         }
 

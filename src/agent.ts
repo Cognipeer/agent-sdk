@@ -175,9 +175,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         // The user requirement says "agent altındaki maxTokens ve maxToolCalls kısmını config altından alalım yoksa 50000 ve 50 olarak set edelim" 
         // This implies defaults should be applied if not present.
 
-        let maxTok = 50000; // Default as per requirement
+        let maxTok: number | undefined;
         if ((opts as any).summarization && typeof (opts as any).summarization === 'object' && (opts as any).summarization.maxTokens) {
              maxTok = (opts as any).summarization.maxTokens;
+        }
+
+        if (maxTok === undefined) {
+             maxTok = 50000; // Default if not found
         }
 
         if (maxTok) {
