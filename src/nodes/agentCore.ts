@@ -126,7 +126,10 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     ];
 
     // Usage tracking (per-request, aggregated by model)
-    const rawUsage = (response as any)?.usage || (response as any)?.response_metadata?.token_usage || (response as any)?.response_metadata?.usage;
+    const rawUsage = (response as any)?.usage 
+      || (response as any)?.response_metadata?.token_usage 
+      || (response as any)?.response_metadata?.tokenUsage  // LangChain camelCase
+      || (response as any)?.response_metadata?.usage;
     const normalized = normalizeUsage(rawUsage);
     const modelName = getModelName((runtime as any).model || (opts as any).model) || "unknown_model";
     const durationMs = Date.now() - start;

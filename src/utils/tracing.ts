@@ -20,7 +20,7 @@ import type {
   TraceToolCallSection,
 } from "../types.js";
 
-const DEFAULT_COGNIPEER_URL = "https://api.cognipeer.com/v1/client/tracing/sessions";
+const DEFAULT_COGNIPEER_URL = "https://console.cognipeer.com/api/client/v1/tracing/sessions";
 
 export function fileSink(path?: string): TraceSinkConfig {
   return { type: "file", path };
@@ -93,146 +93,118 @@ function coerceToString(value: unknown): string | undefined {
   return undefined;
 }
 
-function firstNonEmptyString(...candidates: Array<unknown>): string | undefined {
-  for (const candidate of candidates) {
-    const normalized = coerceToString(candidate);
-    if (normalized) return normalized;
+// Metadata extraction paths - defined once for DRY principle
+const METADATA_PATHS = {
+  model: [
+    "model", "options.model", "params.model", "config.model", 
+    "configuration.model", "metadata.model", "lc_kwargs.model",
+    "metadata.modelName", "modelName", "lc_alias", "model_id", "id",
+    "_model", "_modelName", "__model", "_modelId", "_llmType"
+  ],
+  provider: [
+    "provider", "options.provider", "params.provider", "config.provider",
+    "configuration.provider", "metadata.provider", "lc_kwargs.provider"
+  ],
+};
+
+/** Safely extract nested object value using dot notation path */
+function getNestedValue(obj: any, path: string): any {
+  if (!obj || typeof path !== "string") return undefined;
+  return path.split(".").reduce((current, key) => current?.[key], obj);
+}
+
+/** Unified metadata extraction - eliminates code duplication between model/provider extraction */
+function extractMetadata(model: any, paths: string[]): string | undefined {
+  if (!model) return undefined;
+  
+  // Direct extraction from model
+  for (const path of paths) {
+    const value = getNestedValue(model, path);
+    const str = coerceToString(value);
+    if (str) return str;
   }
+  
+  // Try LangChain wrapper (_lc property)
+  const maybeLc = model?._lc;
+  if (maybeLc) {
+    for (const path of paths) {
+      const value = getNestedValue(maybeLc, path);
+      const str = coerceToString(value);
+      if (str) return str;
+    }
+  }
+  
+  // Try client/api/service properties
+  const maybeClient = model?.client || model?.api || model?.service;
+  if (maybeClient) {
+    for (const path of paths) {
+      const value = getNestedValue(maybeClient, path);
+      const str = coerceToString(value);
+      if (str) return str;
+    }
+  }
+  
+  // Constructor name as last resort (filter out generic types)
+  const constructorName = model?.constructor?.name;
+  if (constructorName && !["Object", "Function"].includes(constructorName)) {
+    return constructorName;
+  }
+  
   return undefined;
 }
 
 export function getModelName(model: any): string | undefined {
-  if (!model) return undefined;
-
-  const maybeLc = model?._lc;
-  const direct = firstNonEmptyString(
-    model?.model,
-    model?.options?.model,
-    model?.params?.model,
-    model?.config?.model,
-    model?.configuration?.model,
-    model?.metadata?.model,
-    model?.lc_kwargs?.model,
-    maybeLc?.model,
-    maybeLc?.options?.model,
-    maybeLc?.params?.model,
-    maybeLc?.config?.model,
-    maybeLc?.configuration?.model,
-    maybeLc?.metadata?.model,
-    maybeLc?.lc_kwargs?.model,
-    model?.metadata?.modelName,
-    maybeLc?.metadata?.modelName,
-    model?.modelName,
-    maybeLc?.modelName,
-    model?.lc_alias,
-    model?.model_id,
-    model?.id,
-    maybeLc?.model_id,
-    maybeLc?.id,
-    model?._model,
-    model?._modelName,
-    model?.__model
-  );
-  if (direct) return direct;
-
-  const maybeClient = model?.client || model?.api || model?.service;
-  const clientValue = firstNonEmptyString(
-    maybeClient?.model,
-    maybeClient?.config?.model,
-    maybeClient?.options?.model,
-    maybeClient?.default?.model
-  );
-  if (clientValue) return clientValue;
-
-  const fnNames = firstNonEmptyString(model?._modelId, model?._llmType, maybeLc?._modelId, maybeLc?._llmType, model?.constructor?.name);
-  return fnNames;
+  return extractMetadata(model, METADATA_PATHS.model);
 }
 
 export function getProviderName(model: any): string | undefined {
-  if (!model) return undefined;
-
-  const direct = firstNonEmptyString(
-    model?.provider,
-    model?.options?.provider,
-    model?.params?.provider,
-    model?.config?.provider,
-    model?.configuration?.provider,
-    model?.metadata?.provider,
-    model?.lc_kwargs?.provider,
-    model?.lc_alias,
-    model?.__provider
-  );
-  if (direct) return direct;
-
-  const maybeLc = model?._lc;
-  const lcValue = maybeLc
-    ? firstNonEmptyString(
-      maybeLc?.provider,
-      maybeLc?.options?.provider,
-      maybeLc?.config?.provider,
-      maybeLc?.configuration?.provider,
-      maybeLc?.metadata?.provider,
-      maybeLc?.lc_kwargs?.provider,
-      maybeLc?.client?.config?.provider
-    )
-    : undefined;
-  if (lcValue) return lcValue;
-
-  const maybeClient = model?.client || model?.api || model?.service;
-  return firstNonEmptyString(
-    maybeClient?.provider,
-    maybeClient?.config?.provider,
-    maybeClient?.options?.provider,
-    maybeClient?.metadata?.provider
-  );
+  return extractMetadata(model, METADATA_PATHS.provider);
 }
 
 function inferModelFromMessages(messageList?: any[]): string | undefined {
   if (!Array.isArray(messageList)) return undefined;
-  for (let i = messageList.length - 1; i >= 0; i -= 1) {
+  
+  // Message-specific metadata paths for inference from history
+  const messagePaths = [
+    "metadata.model", "metadata.modelName", "response_metadata.model",
+    "response_metadata.modelName", "usage_metadata.model", "model", "modelName"
+  ];
+  
+  // Search backwards (most recent message has best info)
+  for (let i = messageList.length - 1; i >= 0; i--) {
     const message = messageList[i];
     if (!message) continue;
-    const candidate = firstNonEmptyString(
-      message?.metadata?.model,
-      message?.metadata?.modelName,
-      message?.metadata?.modelNames,
-      message?.metadata?.model_id,
-      message?.response_metadata?.model,
-      message?.response_metadata?.modelName,
-      message?.response_metadata?.modelNames,
-      message?.response_metadata?.model_id,
-      message?.usage_metadata?.model,
-      message?.model,
-      message?.modelName,
-      message?.model_id,
-      message?.additional_kwargs?.model,
-      message?.additional_kwargs?.modelName,
-      message?.info?.model,
-      message?.annotations?.model
-    );
-    if (candidate) return candidate;
+    
+    for (const path of messagePaths) {
+      const value = getNestedValue(message, path);
+      const str = coerceToString(value);
+      if (str) return str;
+    }
   }
+  
   return undefined;
 }
 
 function inferProviderFromMessages(messageList?: any[]): string | undefined {
   if (!Array.isArray(messageList)) return undefined;
-  for (let i = messageList.length - 1; i >= 0; i -= 1) {
+  
+  // Message-specific paths for provider inference
+  const messagePaths = [
+    "metadata.provider", "response_metadata.provider", "usage_metadata.provider", "provider"
+  ];
+  
+  // Search backwards (most recent message has best info)
+  for (let i = messageList.length - 1; i >= 0; i--) {
     const message = messageList[i];
     if (!message) continue;
-    const candidate = firstNonEmptyString(
-      message?.metadata?.provider,
-      message?.metadata?.providers,
-      message?.response_metadata?.provider,
-      message?.response_metadata?.providers,
-      message?.usage_metadata?.provider,
-      message?.provider,
-      message?.additional_kwargs?.provider,
-      message?.info?.provider,
-      message?.annotations?.provider
-    );
-    if (candidate) return candidate;
+    
+    for (const path of messagePaths) {
+      const value = getNestedValue(message, path);
+      const str = coerceToString(value);
+      if (str) return str;
+    }
   }
+  
   return undefined;
 }
 
@@ -347,22 +319,38 @@ async function postTraceSession(
     finalHeaders["content-type"] = "application/json";
   }
 
-  const response = await fetchFn(url, {
-    method: "POST",
-    headers: finalHeaders,
-    body: JSON.stringify(payload),
-  });
+  try {
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: finalHeaders,
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    let responseText = "";
-    try {
-      responseText = await response.text();
-    } catch {
-      // ignore
+    if (!response.ok) {
+      let responseText = "";
+      try {
+        responseText = await response.text();
+      } catch {
+        // ignore
+      }
+      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+      const errorMsg = `${statusLine}${bodyPreview}`;
+      
+      // DEBUG error logging
+      if (typeof console !== "undefined" && typeof console.error === "function") {
+        console.error("[Tracing] Error posting to", url, ":", errorMsg);
+      }
+      
+      throw new Error(errorMsg);
     }
-    const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-    const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
-    throw new Error(`${statusLine}${bodyPreview}`);
+  } catch (err) {
+    // Rethrow with error info
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Tracing] Failed to post:", errMsg);
+    }
+    throw err;
   }
 }
 
@@ -741,14 +729,18 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
   const durationMs = endedAtMs - session.startedAt;
   const startedAtIso = new Date(session.startedAt).toISOString();
 
-  const agentInfo = params.agentRuntime
-    ? {
-      name: params.agentRuntime.name,
-      version: params.agentRuntime.version,
-      model: getModelName(params.agentRuntime.model),
-      provider: getProviderName(params.agentRuntime.model),
-    }
-    : undefined;
+  // Build agent info with safe defaults - single source of truth
+  const buildAgentInfo = (runtime: AgentRuntimeConfig | undefined) => {
+    if (!runtime) return undefined;
+    return {
+      name: runtime.name || "unknown-agent",
+      version: runtime.version,
+      model: getModelName(runtime.model) || "unknown-model",
+      provider: getProviderName(runtime.model),
+    };
+  };
+
+  const agentInfo = buildAgentInfo(params.agentRuntime);
 
   if (params.error) {
     session.errors.push({
@@ -789,10 +781,12 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
       const headers = sink.type === "cognipeer"
         ? { Authorization: `Bearer ${sink.apiKey}` }
         : sink.headers;
+      
       await postTraceSession(sink.url, headers, payloadForSink);
     } catch (err) {
       sinkFailed = true;
       const message = err instanceof Error ? err.message : String(err);
+      
       session.errors.push({
         eventId: "sink",
         message,
