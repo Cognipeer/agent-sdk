@@ -99,11 +99,56 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       }
     };
 
+    const onEvent = (state.ctx as any)?.__onEvent as ((e: any) => void) | undefined;
+    const onStream = (state.ctx as any)?.__onStream as ((chunk: { text: string; isFinal?: boolean }) => void) | undefined;
+    const streamingEnabled = Boolean((state.ctx as any)?.__streaming);
+    const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
+    const abortSignal = (state.ctx as any)?.__abortSignal as AbortSignal | undefined;
+
+    const extractText = (chunk: any) => {
+      if (chunk == null) return "";
+      if (typeof chunk === "string") return chunk;
+      if (typeof chunk?.content === "string") return chunk.content;
+      if (Array.isArray(chunk?.content)) {
+        return chunk.content.map((c: any) => (typeof c === "string" ? c : c?.text ?? c?.content ?? "")).join("");
+      }
+      if (typeof chunk?.text === "string") return chunk.text;
+      if (typeof chunk?.delta?.content === "string") return chunk.delta.content;
+      return "";
+    };
+
     let response: any;
     try {
   const normalizedMessages = normalizeBedrockToolPairing([...(state.messages as any[])]);
   debugToolPairing(normalizedMessages);
-  response = await modelWithTools.invoke(normalizedMessages);
+  if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
+    let streamedText = "";
+    let streamedMessage: any | undefined;
+    for await (const chunk of (modelWithTools as any).stream(normalizedMessages, { signal: abortSignal, cancellationToken })) {
+      if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
+        break;
+      }
+      if (chunk && typeof chunk === "object" && (chunk as any).role) {
+        streamedMessage = chunk;
+      }
+      const text = extractText(chunk);
+      if (text) {
+        streamedText += text;
+        onStream?.({ text });
+        onEvent?.({ type: "stream", text });
+      }
+    }
+    if (streamedMessage) {
+      response = { ...streamedMessage };
+      if (response.content == null || response.content === "") {
+        response.content = streamedText;
+      }
+    } else {
+      response = { role: "assistant", content: streamedText } as any;
+    }
+  } else {
+    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken });
+  }
     } catch (err: any) {
       const durationMs = Date.now() - start;
       recordTraceEvent(traceSession, {

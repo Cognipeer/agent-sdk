@@ -23,7 +23,8 @@ const model = apiKey
 const agent = createSmartAgent({
   model,
   tools: [echo],
-  limits: { maxToolCalls: 5, maxToken: 500 },
+  limits: { maxToolCalls: 5 },
+  summarization: { enable: true, maxTokens: 500 },
   // summarization: false, // Uncomment to disable summarization entirely
 });
 

@@ -10,9 +10,7 @@ function needsSummarization(state: SmartState, opts: SmartAgentOptions, summariz
   // Determine the effective max tokens for summarization
   // Order of precedence:
   // 1. opts.summarization.maxTokens (if strictly defined)
-  // 2. opts.limits.maxToken
-  // 3. opts.limits.contextTokenLimit
-  // 4. Default: 50000
+  // 2. Default: 50000
   let maxTok: number | undefined;
 
   if (typeof opts.summarization === 'object' && typeof opts.summarization.maxTokens === 'number') {

@@ -196,6 +196,8 @@ export type SmartAgentOptions = {
     maxTokens: number;
     /** Max tokens to include in the summarization prompt itself (to avoid sending huge context to summarizer). Default: 8000 */
     summaryPromptMaxTokens?: number;
+    /** Optional prompt template. Use {{conversation}} and {{previousSummary}} placeholders. */
+    promptTemplate?: string;
   };
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults
@@ -493,6 +495,26 @@ export type MetadataEvent = {
   [key: string]: any;
 };
 
+export type ProgressEvent = {
+  type: "progress";
+  stage?: string;
+  message?: string;
+  percent?: number;
+  detail?: any;
+};
+
+export type StreamEvent = {
+  type: "stream";
+  text: string;
+  isFinal?: boolean;
+};
+
+export type CancelledEvent = {
+  type: "cancelled";
+  stage?: string;
+  reason?: string;
+};
+
 export type HandoffEvent = {
   type: "handoff";
   from?: string;
@@ -557,11 +579,43 @@ export type SmartAgentEvent =
   | FinalAnswerEvent
   | MetadataEvent
   | HandoffEvent
-  | GuardrailEvent;
+  | GuardrailEvent
+  | ProgressEvent
+  | StreamEvent
+  | CancelledEvent;
+
+export type CancellationTokenLike = {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested?: (listener: () => void) => { dispose(): void } | void;
+};
+
+export type ProgressUpdate = {
+  stage?: string;
+  message?: string;
+  percent?: number;
+  detail?: any;
+};
+
+export type StreamChunk = {
+  text: string;
+  isFinal?: boolean;
+};
 
 export type InvokeConfig = RunnableConfig & {
   // Optional per-call event hook (overrides SmartAgentOptions.onEvent if provided)
   onEvent?: (event: SmartAgentEvent) => void;
+  // Optional per-call progress hook
+  onProgress?: (progress: ProgressUpdate) => void;
+  // Optional per-call streaming hook
+  onStream?: (chunk: StreamChunk) => void;
+  // Enable streaming if supported by model
+  stream?: boolean;
+  // Cancellation control
+  cancellationToken?: CancellationTokenLike | AbortSignal;
+  // Optional timeout for the full invoke (ms)
+  timeoutMs?: number;
+  // Optional per-call limits override
+  limits?: Partial<AgentLimits>;
   // Invoked after each major stage; return true to checkpoint execution (state.ctx.__paused will be set).
   onStateChange?: (state: SmartState) => boolean;
   // Optional reason stored alongside checkpoint metadata.

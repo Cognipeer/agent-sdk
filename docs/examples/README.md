@@ -15,7 +15,7 @@ Build the package once (`npm run build` from repo root) and then run any example
 | `tool-limit/` | Global tool cap | Shows finalize system notice injection when limit is hit. |
 | `structured-output/` | Zod finalize | Demonstrates `outputSchema` with parsed JSON results. |
 | `todo-planning/` | Planning discipline | Enforces TODO workflow via `useTodoList: true`. |
-| `summarization/` | Token threshold | Triggers summarization based on `limits.maxToken`. |
+| `summarization/` | Token threshold | Triggers summarization based on `summarization.maxTokens`. |
 | `summarize-context/` | Summary + raw retrieval | Uses `get_tool_response` to fetch archived outputs. |
 | `rewrite-summary/` | Post-summary continuation | Continues conversation after context has been summarized. |
 | `multi-agent/` | Delegation | Wraps an agent as a tool to answer sub-questions. |

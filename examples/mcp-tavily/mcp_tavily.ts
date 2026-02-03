@@ -33,7 +33,8 @@ const agent = createSmartAgent({
   model,
   tools,
   useTodoList: true,
-  limits: { maxToolCalls: 10, maxToken: 6000 },
+  limits: { maxToolCalls: 10 },
+  summarization: { enable: true, maxTokens: 6000 },
   tracing: { enabled: true },
 });
 

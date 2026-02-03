@@ -23,7 +23,8 @@ const heavyEcho = createTool({
 const agent = createSmartAgent({
   model: fakeModel as any,
   tools: [heavyEcho],
-  limits: { maxToolCalls: 5, maxToken: 200 },
+  limits: { maxToolCalls: 5 },
+  summarization: { enable: true, maxTokens: 200 },
 });
 
 let state: any = { messages: [{ role: 'user', content: "please run heavy_echo" }] };

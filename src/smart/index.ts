@@ -57,7 +57,8 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(), ...(input.messages || [])];
       let state: SmartState = { ...input, messages: seedMessages } as SmartState;
       let lastResult: AgentInvokeResult<TOutput> | null = null;
-      const iterationLimit = Math.max((opts.limits?.maxToolCalls ?? 10) * 3 + 5, 30);
+      const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? opts.limits?.maxToolCalls ?? 10) as number;
+      const iterationLimit = Math.max(effectiveMaxToolCalls * 3 + 5, 30);
 
       for (let i = 0; i < iterationLimit; i++) {
         // Pre-agent summarization decision

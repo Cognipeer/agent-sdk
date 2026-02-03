@@ -96,12 +96,41 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
 
-    const maxToolCalls = (opts.limits?.maxToolCalls === undefined) ? 50 : opts.limits?.maxToolCalls;
+    const mergedLimits = {
+      ...(opts.limits || {}),
+      ...((config?.limits || {}) as any),
+    } as AgentOptions["limits"];
+
+    const maxToolCalls = (mergedLimits?.maxToolCalls === undefined) ? 50 : mergedLimits?.maxToolCalls;
     const iterationLimit = maxToolCalls === Infinity ? 100 : Math.max(maxToolCalls * 3 + 10, 40);
     let iterations = 0;
     const onStateChange = config?.onStateChange;
     const checkpointReason = config?.checkpointReason;
     let pausedStage: string | null = null;
+
+    const onProgress = (state.ctx as any)?.__onProgress as ((progress: { stage?: string; message?: string; percent?: number; detail?: any }) => void) | undefined;
+
+    const isCancelled = () => {
+      const ctx: any = state.ctx || {};
+      const token = ctx.__cancellationToken as any;
+      const signal = ctx.__abortSignal as AbortSignal | undefined;
+      const deadline = ctx.__deadline as number | undefined;
+      if (signal?.aborted) return { cancelled: true, reason: "aborted" };
+      if (token && token.isCancellationRequested) return { cancelled: true, reason: "cancelled" };
+      if (deadline && Date.now() > deadline) return { cancelled: true, reason: "timeout" };
+      return { cancelled: false, reason: undefined } as const;
+    };
+
+    const cancelIfRequested = (stage: string) => {
+      const result = isCancelled();
+      if (!result.cancelled) return false;
+      const ctx = { ...(state.ctx || {}) } as any;
+      ctx.__cancelled = { stage, reason: result.reason, timestamp: new Date().toISOString() };
+      state = { ...state, ctx } as AgentState;
+      emit?.({ type: "cancelled", stage, reason: result.reason });
+      onProgress?.({ stage, message: "Cancelled", detail: { reason: result.reason } });
+      return true;
+    };
 
     const checkpointIfRequested = (stage: string) => {
       if (typeof onStateChange !== "function") return false;
@@ -124,11 +153,14 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return true;
     };
 
-  while (iterations < iterationLimit) {
+    while (iterations < iterationLimit) {
       iterations++;
+
+      if (cancelIfRequested("loop")) break;
 
       const skippingAgent = resumeStage === "tools";
       if (!skippingAgent) {
+        if (cancelIfRequested("before_guardrails")) break;
         if (checkpointIfRequested("before_guardrails")) break;
 
         const preGuardrails = getGuardrailConfig(state);
@@ -170,18 +202,12 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
 
         // Check if context is too large and needs summarization (signal to SmartAgent)
-        // Default maxTok to Infinity if not provided to bypass check by default, 
-        // but SmartAgent usually passes config. If purely limits.maxToken used, we respect it.
-        // The user requirement says "agent altındaki maxTokens ve maxToolCalls kısmını config altından alalım yoksa 50000 ve 50 olarak set edelim" 
-        // This implies defaults should be applied if not present.
-
         let maxTok: number | undefined;
         if ((opts as any).summarization && typeof (opts as any).summarization === 'object' && (opts as any).summarization.maxTokens) {
-             maxTok = (opts as any).summarization.maxTokens;
+          maxTok = (opts as any).summarization.maxTokens;
         }
-
         if (maxTok === undefined) {
-             maxTok = 50000; // Default if not found
+          maxTok = 50000; // Default if not found
         }
 
         if (maxTok) {
@@ -196,10 +222,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           }
         }
 
-        // Agent step
-  state = { ...state, ...(await agentCore(state)) } as AgentState;
+          // Agent step
+          onProgress?.({ stage: "agent", message: "Invoking model" });
+          if (cancelIfRequested("before_agent")) break;
+          state = { ...state, ...(await agentCore(state)) } as AgentState;
+          onProgress?.({ stage: "agent", message: "Model response received" });
 
-  if (checkpointIfRequested("after_agent")) break;
+      if (checkpointIfRequested("after_agent")) break;
 
         const postGuardrails = getGuardrailConfig(state);
         if (postGuardrails.length > 0) {
@@ -274,7 +303,10 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (toolCalls.length === 0) break;
 
       // Run tools
+      onProgress?.({ stage: "tools", message: "Running tools" });
+      if (cancelIfRequested("before_tools")) break;
       state = { ...state, ...(await toolsNode(state)) } as AgentState;
+      onProgress?.({ stage: "tools", message: "Tools finished" });
       if (state.ctx?.__awaitingApproval) break;
       if (checkpointIfRequested("after_tools")) break;
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
@@ -327,11 +359,35 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
   const invokeAgent = async (input: AgentState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
     const onEvent = config?.onEvent;
+    const onProgress = config?.onProgress;
+    const onStream = config?.onStream;
+    const streamEnabled = config?.stream === true;
     const emit = (e: SmartAgentEvent) => { try { onEvent?.(e); } catch {} };
+    const emitProgress = (progress: { stage?: string; message?: string; percent?: number; detail?: any }) => {
+      try { onProgress?.(progress); } catch {}
+      emit({ type: "progress", ...progress });
+    };
     const traceSession = createTraceSession(opts);
 
-    const ctx: Record<string, any> = { ...(input.ctx || {}), __onEvent: onEvent };
+    const ctx: Record<string, any> = {
+      ...(input.ctx || {}),
+      __onEvent: onEvent,
+      __onProgress: emitProgress,
+      __onStream: onStream,
+      __streaming: streamEnabled,
+    };
     if (traceSession) ctx.__traceSession = traceSession;
+    if (config?.cancellationToken) ctx.__cancellationToken = config.cancellationToken;
+    if ((config?.cancellationToken as AbortSignal | undefined)?.aborted !== undefined) {
+      ctx.__abortSignal = config?.cancellationToken as AbortSignal;
+    }
+    if (config?.timeoutMs && config.timeoutMs > 0) {
+      ctx.__deadline = Date.now() + config.timeoutMs;
+    }
+
+    const runtimeWithInvokeLimits: AgentRuntimeConfig = config?.limits
+      ? { ...runtime, limits: { ...(runtime.limits || {}), ...config.limits } }
+      : runtime;
 
     const initial: AgentState = {
       messages: input.messages || [],
@@ -341,7 +397,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       metadata: input.metadata,
       ctx,
       pendingApprovals: input.pendingApprovals || [],
-      agent: input.agent || runtime,
+      agent: input.agent || runtimeWithInvokeLimits,
       usage: input.usage || { perRequest: [], totals: {} },
     };
 
@@ -389,6 +445,10 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     }
 
     emit({ type: "finalAnswer", content: typeof finalMsg?.content === 'string' ? finalMsg.content : content });
+    if (streamEnabled && content) {
+      onStream?.({ text: content, isFinal: true });
+      emit({ type: "stream", text: content, isFinal: true });
+    }
 
     return {
       content,

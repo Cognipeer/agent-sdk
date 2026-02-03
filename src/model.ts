@@ -26,7 +26,9 @@ export interface BaseChatMessage {
 
 export interface BaseChatModel {
   // Invoke should accept an array of BaseChatMessage (system/user/assistant/tool)
-  invoke(messages: BaseChatMessage[]): Promise<BaseChatMessage>;
+  invoke(messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): Promise<BaseChatMessage>;
+  // Optional streaming method that yields incremental chunks or messages
+  stream?(messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): AsyncIterable<BaseChatMessage | BaseChatMessagePart | string>;
   // Optional tool binding hook. If not present the agent will emulate simple pass-through.
   bindTools? (tools: any[]): BaseChatModel;
   // Optional metadata helpers
@@ -54,7 +56,7 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
   if (!lcModel) throw new Error('fromLangchainModel: model is undefined/null');
 
   const adapted: BaseChatModel = {
-    invoke: async (messages: BaseChatMessage[]): Promise<BaseChatMessage> => {
+    invoke: async (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): Promise<BaseChatMessage> => {
       // LangChain expects an array of LC message objects. If user passed LC messages already
       // they can skip adaptation; but here we accept our generic format and map to minimal LC shape.
       const normalizeContent = (content: any): any => {
@@ -95,7 +97,7 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
         return { role, content: normalizeContent(m.content), name: m.name, tool_calls: (m as any).tool_calls, tool_call_id: (m as any).tool_call_id };
       };
       const lcMessages = messages.map(toLC);
-      const response = await lcModel.invoke(lcMessages);
+      const response = await lcModel.invoke(lcMessages, options);
       // Convert back to BaseChatMessage (attempt best-effort extraction)
       if (response && typeof response === 'object') {
         const content = (response as any).content ?? (response as any).text ?? '';
@@ -109,6 +111,45 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
         } as BaseChatMessage;
       }
       return { role: 'assistant', content: String(response ?? '') };
+    },
+    stream: async function* (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }) {
+      if (typeof lcModel.stream !== 'function') return;
+
+      const normalizeContent = (content: any): any => {
+        if (content == null) return content;
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+          return content.map((part: any) => {
+            if (!part || typeof part !== 'object') return part;
+            if (part.type === 'text') return { type: 'text', text: String(part.text ?? '') };
+            if (part.type === 'image_url') {
+              const img = (part as any).image_url;
+              if (typeof img === 'string') return { type: 'image_url', image_url: { url: img } };
+              if (img && typeof img === 'object') {
+                if ('url' in img) return { type: 'image_url', image_url: img };
+                if ('base64' in img) {
+                  const media = (img as any).media_type || 'image/jpeg';
+                  const dataUrl = `data:${media};base64,${(img as any).base64}`;
+                  const detail = (img as any).detail;
+                  return { type: 'image_url', image_url: { url: dataUrl, detail } };
+                }
+              }
+              return part;
+            }
+            return part;
+          });
+        }
+        return content;
+      };
+      const toLC = (m: BaseChatMessage): any => {
+        if ((m as any)._getType || (m as any).lc_serializable) return m as any;
+        return { role: m.role, content: normalizeContent(m.content), name: m.name, tool_calls: (m as any).tool_calls, tool_call_id: (m as any).tool_call_id };
+      };
+
+      const lcMessages = messages.map(toLC);
+      for await (const chunk of lcModel.stream(lcMessages, options)) {
+        yield chunk as any;
+      }
     },
     bindTools: (tools: any[]) => {
       const lcReady = toLangchainTools(tools);

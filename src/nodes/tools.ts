@@ -33,6 +33,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     };
     const appended: Message[] = [];
     const onEvent = (state.ctx as any)?.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
+    const onProgress = (state.ctx as any)?.__onProgress as ((progress: { stage?: string; message?: string; percent?: number; detail?: any }) => void) | undefined;
+    const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
+    const abortSignal = (state.ctx as any)?.__abortSignal as AbortSignal | undefined;
     const traceSession = (state.ctx as any)?.__traceSession;
     const pendingApprovals: PendingToolApproval[] = Array.isArray(state.pendingApprovals)
       ? state.pendingApprovals.map((entry) => ({ ...entry }))
@@ -104,8 +107,22 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       | { status: "success" | "error"; approval?: PendingToolApproval }
       | { status: "awaiting_approval" | "rejected"; approval: PendingToolApproval };
 
+    const isCancelled = () => {
+      if (abortSignal?.aborted) return { cancelled: true, reason: "aborted" };
+      if (cancellationToken && cancellationToken.isCancellationRequested) return { cancelled: true, reason: "cancelled" };
+      return { cancelled: false, reason: undefined } as const;
+    };
+
     // Helper to run a single tool call
     const runOne = async (tc: { id?: string; name: string; args: any }): Promise<ToolExecutionResult> => {
+      const cancelState = isCancelled();
+      if (cancelState.cancelled) {
+        const ctx = (state.ctx = state.ctx || {});
+        (ctx as any).__cancelled = { stage: "tools", reason: cancelState.reason, timestamp: new Date().toISOString() };
+        onEvent?.({ type: "cancelled", stage: "tools", reason: cancelState.reason });
+        onProgress?.({ stage: "tools", message: "Cancelled", detail: { reason: cancelState.reason } });
+        return { status: "error" };
+      }
       const t = toolByName.get(tc.name);
       if (!t) {
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args: tc.args, error: { message: "Tool not found" } });
@@ -186,15 +203,17 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const start = Date.now();
       try {
         onEvent?.({ type: "tool_call", phase: "start", name: (t as any).name, id: tc.id, args });
+        onProgress?.({ stage: "tools", message: `Running tool ${tc.name}` });
         const sanitizedArgs = sanitizeTracePayload(args);
         const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
         let output: any;
         const anyTool = t as any;
-        if (typeof anyTool.func === "function") output = await anyTool.func(args);
-        else if (typeof anyTool.invoke === "function") output = await anyTool.invoke(args);
-        else if (typeof anyTool.call === "function") output = await anyTool.call(args);
-        else if (typeof anyTool._call === "function") output = await anyTool._call(args);
-        else if (typeof anyTool.run === "function") output = await anyTool.run(args);
+        const callOptions = { cancellationToken, signal: abortSignal };
+        if (typeof anyTool.func === "function") output = await anyTool.func(args, callOptions);
+        else if (typeof anyTool.invoke === "function") output = await anyTool.invoke(args, callOptions);
+        else if (typeof anyTool.call === "function") output = await anyTool.call(args, callOptions);
+        else if (typeof anyTool._call === "function") output = await anyTool._call(args, callOptions);
+        else if (typeof anyTool.run === "function") output = await anyTool.run(args, callOptions);
         else throw new Error("Tool is not invokable");
         // Detect handoff signature output: we decide that a handoff tool returns { __handoff: AgentRuntimeConfig }
         if (output && typeof output === 'object' && output.__handoff && output.__handoff.runtime) {
@@ -226,6 +245,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         toolHistory.push({ executionId, toolName: (t as any).name, args, output, rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id });
         appended.push({ role: "tool", content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "success", name: (t as any).name, id: tc.id, args, result: output, durationMs });
+        onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
         if (needsApproval && approvalEntry) {
           approvalEntry.status = "executed";
@@ -277,6 +297,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         toolHistory.push({ executionId, toolName: (t as any).name, args, output: `Error executing tool: ${e?.message || String(e)}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id });
         appended.push({ role: "tool", content: `Error executing tool: ${e?.message || String(e)}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "error", name: (t as any).name, id: tc.id, args, error: { message: e?.message || String(e) } });
+        onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: e?.message || String(e) } });
         const sanitizedArgs = sanitizeTracePayload(args);
         const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
         const toolName = (t as any).name || tc.name;
@@ -321,6 +342,14 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
     for (const tc of planned) {
       if (awaitingApproval) break;
+      const cancelState = isCancelled();
+      if (cancelState.cancelled) {
+        const ctx = (state.ctx = state.ctx || {});
+        (ctx as any).__cancelled = { stage: "tools", reason: cancelState.reason, timestamp: new Date().toISOString() };
+        onEvent?.({ type: "cancelled", stage: "tools", reason: cancelState.reason });
+        onProgress?.({ stage: "tools", message: "Cancelled", detail: { reason: cancelState.reason } });
+        break;
+      }
       const result = await runOne(tc);
       if (result?.status === "awaiting_approval") {
         awaitingApproval = true;

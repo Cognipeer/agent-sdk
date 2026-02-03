@@ -32,8 +32,13 @@ interface SmartAgentOptions {
   handoffs?: HandoffDescriptor[];   // Pre-configured agent handoffs
   
   // Limits & Optimization
-  limits?: AgentLimits;             // Token and execution limits
-  summarization?: boolean;          // Enable summarization (default: true)
+  limits?: AgentLimits;             // Execution limits
+  summarization?: boolean | {       // Enable summarization (default: true)
+    enable: boolean;
+    maxTokens: number;
+    summaryPromptMaxTokens?: number;
+    promptTemplate?: string;
+  };
   
   // Output & Validation
   outputSchema?: ZodSchema;         // Structured output schema
@@ -56,9 +61,6 @@ interface SmartAgentOptions {
 interface AgentLimits {
   maxToolCalls?: number;           // Total tool executions per invocation
   maxParallelTools?: number;       // Concurrent tools per agent turn
-  maxToken?: number;               // Token threshold for summarization
-  contextTokenLimit?: number;      // Target token budget for transcript
-  summaryTokenLimit?: number;      // Target size per summary chunk
 }
 ```
 
@@ -100,7 +102,12 @@ const agent = createSmartAgent({
   limits: {
     maxToolCalls: 10,
     maxParallelTools: 3,
-    maxToken: 8000,
+  },
+  summarization: {
+    enable: true,
+    maxTokens: 8000,
+    summaryPromptMaxTokens: 6000,
+    promptTemplate: "Summary so far:\n{{previousSummary}}\n\nConversation:\n{{conversation}}\n\nSummary:",
   },
   outputSchema: z.object({
     summary: z.string(),

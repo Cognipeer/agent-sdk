@@ -52,20 +52,22 @@ Provide `outputSchema` (Zod). The framework:
 
 ## 7. Limits
 
-`AgentLimits` control throughput and summarization (also exported as `SmartAgentLimits` for backward compatibility):
+`AgentLimits` control throughput (also exported as `SmartAgentLimits` for backward compatibility):
 - `maxToolCalls` – total tool executions allowed per invocation.
 - `maxParallelTools` – concurrent tool executions per agent turn.
-- `maxToken` – token threshold before the next model call; exceeding it triggers `contextSummarize`.
-- `contextTokenLimit` – target token budget for the live transcript.
-- `summaryTokenLimit` – target size of each generated summary (per chunk).
+
+Summarization limits live under `summarization` on `SmartAgentOptions`:
+- `summarization.maxTokens` – token threshold before the next model call; exceeding it triggers `contextSummarize`.
+- `summarization.summaryPromptMaxTokens` – upper bound for the summarization prompt size.
+- `summarization.promptTemplate` – optional template with `{{conversation}}` and `{{previousSummary}}` placeholders.
 
 ## 8. Summarization lifecycle
 1. Estimate token usage using `countApproxTokens` (~4 chars per token).
-2. When over budget, chunk the transcript (keeping tool-call groups together).
-3. Ask the model to summarize each chunk; iteratively merge partials.
-4. Replace tool responses in `messages` with `SUMMARIZED executionId:'...'` markers.
-5. Move originals to `toolHistoryArchived` so `get_tool_response` can fetch them later.
-6. Emit a `summarization` event with the merged summary and archive count.
+2. When over budget, build a bounded summarization prompt (`summaryPromptMaxTokens`).
+3. Include the previous summary (hierarchical chaining) when present.
+4. Replace tool responses in `messages` with `SUMMARIZED` placeholders.
+5. Append a synthetic assistant/tool pair labelled `summarize_context` containing the summary.
+6. Store summaries in `state.summaries` (latest summary is used next time).
 
 ## 9. Pause & resume runs
 

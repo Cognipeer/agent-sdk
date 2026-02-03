@@ -180,17 +180,17 @@ When the limit is hit, a system finalize message is injected and the next model 
 
 ## Context summarization (SmartAgent)
 
-Activate via `limits.maxToken` and adjust summarization targets:
+Configure summarization under `summarization`:
 
 ```ts
 createSmartAgent({
   model,
   tools: [echo],
-  limits: {
-    maxToolCalls: 8,
-    maxToken: 6000,
-    contextTokenLimit: 4000,
-    summaryTokenLimit: 600,
+  summarization: {
+    enable: true,
+    maxTokens: 6000,
+    summaryPromptMaxTokens: 4000,
+    promptTemplate: "Summary so far:\n{{previousSummary}}\n\nConversation:\n{{conversation}}\n\nSummary:",
   },
 });
 ```
@@ -220,7 +220,7 @@ By default, traces land in `logs/[session]/trace.session.json`. Keep `logData: t
 | Multiple Tools | tools array | `examples/tools` |
 | Planning / TODO | `useTodoList: true` | `examples/todo-planning` |
 | Tool Limits | `limits.maxToolCalls` | `examples/tool-limit` |
-| Summarization | `limits.maxToken` | `examples/summarization` |
+| Summarization | `summarization.maxTokens` | `examples/summarization` |
 | Structured Output | `outputSchema` | `examples/structured-output` |
 | Multi-Agent | `agent.asTool()` | `examples/multi-agent` |
 | Handoff | `agent.asHandoff()` | `examples/handoff` |

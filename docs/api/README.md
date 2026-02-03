@@ -28,9 +28,6 @@
 - `limits?: AgentLimits` – limit configuration:
 	- `maxToolCalls?`
 	- `maxParallelTools?`
-	- `maxToken?`
-	- `contextTokenLimit?`
-	- `summaryTokenLimit?`
 - `outputSchema?: ZodSchema` – enables structured output finalize tool + parsed `result.output`.
 - `handoffs?: HandoffDescriptor[]` – pre-configured agent handoffs exposed as tools.
 - `usageConverter?: (finalMessage, fullState, model) => any` – override usage normalization.
@@ -42,7 +39,7 @@
 
 - All `AgentOptions` fields above, plus:
 - `useTodoList?: boolean` – enable planning mode & `manage_todo_list` tool.
-- `summarization?: boolean` – default `true`; set `false` to disable summarization entirely.
+- `summarization?: boolean | { enable: boolean; maxTokens: number; summaryPromptMaxTokens?: number; promptTemplate?: string }` – default `true`; set `false` to disable summarization entirely.
 - `systemPrompt?: string` – additional message appended inside the smart prompt.
 
 > **Note:** Use `config.onEvent` in the `invoke()` call to receive structured events during execution (see InvokeConfig below).
@@ -59,7 +56,7 @@
 **createSmartAgent** (batteries-included):
 - A system message is automatically injected using `buildSystemPrompt`.
 - Context tools (`manage_todo_list`, `get_tool_response`, and `response` when `outputSchema` is set) are appended to the provided tool list.
-- Summarization decisions run before and after tool execution when `limits.maxToken` is exceeded (unless disabled with `summarization: false`).
+- Summarization decisions run before and after tool execution when `summarization.maxTokens` is exceeded (unless disabled with `summarization: false`).
 
 ## Return shape
 

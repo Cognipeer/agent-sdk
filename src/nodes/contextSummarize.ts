@@ -16,14 +16,16 @@ function getSummarizationConfig(opts: SmartAgentOptions) {
       maxTokens: opts.summarization.maxTokens ?? 50000,
       // Max tokens we can send to the model for summarization prompt itself
       // This should be well under the model's context limit
-      summaryPromptMaxTokens: opts.summarization.summaryPromptMaxTokens ?? 8000
+            summaryPromptMaxTokens: opts.summarization.summaryPromptMaxTokens ?? 8000,
+            promptTemplate: opts.summarization.promptTemplate
     };
   }
   // Fallback to default 50000 if not specified
   return {
     enabled: opts.summarization !== false,
     maxTokens: 50000,
-    summaryPromptMaxTokens: 8000
+        summaryPromptMaxTokens: 8000,
+        promptTemplate: undefined
   }; 
 }
 
@@ -103,22 +105,34 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     
     const conversationText = messageTexts.join("\n\n");
 
-    const summaryPrompt = [
-        systemMessage("You are a helpful assistant that summarizes conversation history efficiently."),
-        humanMessage(
-            `Please summarize the following conversation history. 
+        const previousSummary = Array.isArray(state.summaries) && state.summaries.length > 0
+            ? state.summaries[state.summaries.length - 1]
+            : "";
+
+        const defaultPrompt = `Please summarize the following conversation history and update any previous summary.
 Focus on:
 - User goals and intent.
 - Key decisions made and actions taken.
 - Important tool outputs and data retrieved.
 - Current state of the task.
 
+Previous summary (if any):
+${previousSummary || "(none)"}
+
 Conversation:
 ${conversationText}
 
-Summary:`
-        )
-    ];
+Summary:`;
+
+        const template = config.promptTemplate || defaultPrompt;
+        const promptBody = template
+            .replace(/\{\{\s*conversation\s*\}\}/g, conversationText)
+            .replace(/\{\{\s*previousSummary\s*\}\}/g, previousSummary || "");
+
+        const summaryPrompt = [
+                systemMessage("You are a helpful assistant that summarizes conversation history efficiently."),
+                humanMessage(promptBody)
+        ];
 
     let summaryText = "Summary unavailable.";
     try {
@@ -178,8 +192,11 @@ Summary:`
         content: summaryText
     };
 
+    const summaries = Array.isArray(state.summaries) ? [...state.summaries, summaryText] : [summaryText];
+
     return {
-        messages: [...newMessages, assistantSummaryCall, toolSummaryResponse] as any
+        messages: [...newMessages, assistantSummaryCall, toolSummaryResponse] as any,
+        summaries
     };
   };
 }
