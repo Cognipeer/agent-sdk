@@ -124,7 +124,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
   if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
     let streamedText = "";
     let streamedMessage: any | undefined;
-    for await (const chunk of (modelWithTools as any).stream(normalizedMessages, { signal: abortSignal, cancellationToken })) {
+    const streamResult = (modelWithTools as any).stream(normalizedMessages, { signal: abortSignal, cancellationToken });
+    const stream = typeof (streamResult as Promise<unknown>)?.then === "function" ? await streamResult : streamResult;
+    for await (const chunk of stream) {
       if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
         break;
       }

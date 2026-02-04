@@ -147,7 +147,9 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
       };
 
       const lcMessages = messages.map(toLC);
-      for await (const chunk of lcModel.stream(lcMessages, options)) {
+      const streamResult = lcModel.stream(lcMessages, options);
+      const stream = typeof (streamResult as Promise<unknown>)?.then === "function" ? await streamResult : streamResult;
+      for await (const chunk of stream) {
         yield chunk as any;
       }
     },
