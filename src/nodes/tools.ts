@@ -66,42 +66,10 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     const planned = toolCalls.slice(0, remaining);
     const skipped = toolCalls.slice(remaining);
 
-    // Emit immediate messages for any skipped due to limit
-    for (const tc of skipped) {
-      onEvent?.({ type: "tool_call", phase: "skipped", name: tc.name, id: tc.id, args: tc.args });
-      const sanitizedArgs = sanitizeTracePayload(tc.args);
-      const messageList = [
-        {
-          role: "assistant",
-          name: tc.name,
-          content: `Skipped tool due to tool-call limit: ${tc.name}`,
-          tool_calls: [
-            {
-              id: tc.id,
-              type: "function",
-              function: {
-                name: tc.name,
-                arguments: sanitizedArgs,
-              },
-            },
-          ],
-        },
-      ];
-      recordTraceEvent(traceSession, {
-        type: "tool_call",
-        label: `Tool Skipped - ${tc.name}`,
-        actor: { scope: "tool", name: tc.name, role: "tool" },
-        status: "skipped",
-        toolExecutionId: tc.id,
-        messageList,
-      });
-      appended.push({
-        role: "tool",
-        content: `Skipped tool due to tool-call limit: ${tc.name}`,
-        tool_call_id: tc.id || `${tc.name}_${appended.length}`,
-        name: tc.name,
-      });
-    }
+    // NOTE: Skipped tools are processed AFTER planned tools to maintain tool_call order.
+    // This is important because some LLM providers (like Bedrock) expect tool results
+    // to appear in the same order as tool_calls, or at least the first result must
+    // match the first tool_call.
 
     type ToolExecutionResult =
       | { status: "success" | "error"; approval?: PendingToolApproval }
@@ -355,6 +323,46 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         awaitingApproval = true;
         break;
       }
+    }
+
+    // Process skipped tools AFTER planned tools to maintain tool_call order.
+    // This ensures the first tool result matches the first tool_call ID,
+    // which is required by some providers' normalizeBedrockToolPairing logic.
+    for (const tc of skipped) {
+      onEvent?.({ type: "tool_call", phase: "skipped", name: tc.name, id: tc.id, args: tc.args });
+      const sanitizedArgs = sanitizeTracePayload(tc.args);
+      const messageList = [
+        {
+          role: "assistant",
+          name: tc.name,
+          content: `Skipped tool due to tool-call limit: ${tc.name}`,
+          tool_calls: [
+            {
+              id: tc.id,
+              type: "function",
+              function: {
+                name: tc.name,
+                arguments: sanitizedArgs,
+              },
+            },
+          ],
+        },
+      ];
+      recordTraceEvent(traceSession, {
+        type: "tool_call",
+        label: `Tool Skipped - ${tc.name}`,
+        actor: { scope: "tool", name: tc.name, role: "tool" },
+        status: "skipped",
+        toolExecutionId: tc.id,
+        messageList,
+      });
+      appended.push({
+        role: "tool",
+        content: `Skipped tool due to tool-call limit: ${tc.name}`,
+        tool_call_id: tc.id || `${tc.name}_${appended.length}`,
+        name: tc.name,
+      });
+      toolCount += 1;
     }
 
     if (!awaitingApproval && state.ctx?.__awaitingApproval) {
