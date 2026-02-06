@@ -36,8 +36,12 @@ export function normalizeUsage(raw: any | undefined | null): NormalizedUsage | u
   );
 
   // Details: attempt to pull from common nested spots else zeros
-  const promptDetailsSrc = raw.prompt_tokens_details || raw.promptTokensDetails || {};
-  const completionDetailsSrc = raw.completion_tokens_details || raw.completionTokensDetails || {};
+  // OpenAI format: prompt_tokens_details / completion_tokens_details
+  // LangChain format: input_token_details / output_token_details
+  const promptDetailsSrc = raw.prompt_tokens_details || raw.promptTokensDetails 
+    || raw.input_token_details || raw.inputTokenDetails || {};
+  const completionDetailsSrc = raw.completion_tokens_details || raw.completionTokensDetails
+    || raw.output_token_details || raw.outputTokenDetails || {};
 
   const normalized: NormalizedUsage = {
     prompt_tokens: safe(prompt),
@@ -45,9 +49,11 @@ export function normalizeUsage(raw: any | undefined | null): NormalizedUsage | u
     total_tokens: safe(total || (prompt || 0) + (completion || 0)),
     prompt_tokens_details: {
       cached_tokens: safe(
-        promptDetailsSrc.cached_tokens || promptDetailsSrc.cached || raw.cached_input_tokens || raw.cached_prompt_tokens
+        promptDetailsSrc.cached_tokens || promptDetailsSrc.cached || promptDetailsSrc.cache_read
+        || raw.cached_input_tokens || raw.cached_prompt_tokens
+        || raw.cache_read_input_tokens
       ),
-      audio_tokens: safe(promptDetailsSrc.audio_tokens),
+      audio_tokens: safe(promptDetailsSrc.audio_tokens || promptDetailsSrc.audio),
     },
     completion_tokens_details: {
       reasoning_tokens: safe(completionDetailsSrc.reasoning_tokens),

@@ -18,7 +18,20 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       tracing: opts.tracing,
     };
 
-    const tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
+    const rawTools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
+    // Deduplicate tools by name – last-wins so user overrides take precedence
+    const seenNames = new Map<string, number>();
+    const tools: Array<ToolInterface<any, any, any>> = [];
+    for (const t of rawTools) {
+      const tName = (t as any).name ?? (t as any).schema?.title;
+      if (tName && seenNames.has(tName)) {
+        // Replace the earlier occurrence with this one (last-wins)
+        tools[seenNames.get(tName)!] = t;
+      } else {
+        if (tName) seenNames.set(tName, tools.length);
+        tools.push(t);
+      }
+    }
     const modelWithTools = (runtime.model)?.bindTools
       ? (runtime.model).bindTools(tools)
       : runtime.model;
@@ -43,8 +56,33 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
 
     const normalizeBedrockToolPairing = (input: any[]): any[] => {
       const msgs = Array.isArray(input) ? [...input] : [];
-      for (let i = 0; i < msgs.length; i++) {
-        const m = msgs[i];
+      
+      // Phase 1: Build a set of all valid tool_call IDs from assistant messages
+      const validToolCallIds = new Set<string>();
+      for (const m of msgs) {
+        if (m?.role === 'assistant') {
+          for (const tu of extractToolUses(m)) {
+            if (tu.id) validToolCallIds.add(tu.id);
+          }
+        }
+      }
+      
+      // Phase 2: Filter out orphan tool messages (those without a matching assistant tool_call)
+      const filteredMsgs = msgs.filter((m) => {
+        if (m?.role === 'tool') {
+          const toolCallId = m.tool_call_id;
+          if (!toolCallId || !validToolCallIds.has(toolCallId)) {
+            // Orphan tool message - remove it
+            return false;
+          }
+        }
+        return true;
+      });
+      
+      // Phase 3: Ensure tool messages immediately follow their corresponding assistant message
+      // OpenAI requires: assistant(tool_calls) -> tool(tool_call_id) -> tool(tool_call_id) -> ...
+      for (let i = 0; i < filteredMsgs.length; i++) {
+        const m = filteredMsgs[i];
         if (m?.role !== "assistant") continue;
 
         const toolUses = extractToolUses(m);
@@ -53,7 +91,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         // Bedrock expects exactly one "next message" containing the corresponding tool_result blocks.
         // In our message format we represent tool_result as role:'tool' messages with tool_call_id.
         // If the next message isn't a tool result for the first tool_use id, insert placeholders.
-        const next = msgs[i + 1];
+        const next = filteredMsgs[i + 1];
 
         // If next is a tool message for the first id, we assume pairing is okay and let downstream validate.
         const firstId = toolUses[0]?.id;
@@ -65,39 +103,17 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           role: "tool",
           name: tu.name || "unknown_tool",
           tool_call_id: tu.id,
-          content: "SUMMARIZED/DEFERRED: tool result missing in transcript; inserted placeholder for Bedrock tool_result adjacency.",
+          content: "SUMMARIZED/DEFERRED: tool result missing in transcript; inserted placeholder for tool_result adjacency.",
         }));
-        msgs.splice(i + 1, 0, ...placeholders);
+        filteredMsgs.splice(i + 1, 0, ...placeholders);
 
         // Skip over inserted placeholders
         i += placeholders.length;
       }
-      return msgs;
+      return filteredMsgs;
     };
 
-    const debugToolPairing = (messagesToSend: any[]) => {
-      try {
-        const msgs: any[] = Array.isArray(messagesToSend) ? messagesToSend : [];
-        const toolUseIds: string[] = [];
-        const missingResults: Array<{ id: string; atIndex: number; tool?: string }> = [];
 
-        for (let i = 0; i < msgs.length; i++) {
-          const m = msgs[i];
-          if (m?.role === "assistant") {
-            for (const tu of extractToolUses(m)) {
-              toolUseIds.push(tu.id);
-              const next = msgs[i + 1];
-              if (!(next && next.role === "tool" && (next.tool_call_id === tu.id || next.tool_call_id === m?.tool_call_id))) {
-                missingResults.push({ id: tu.id, atIndex: i, tool: tu.name });
-              }
-            }
-          }
-        }
-
-      } catch (e) {
-        // Debug tool pairing failed silently
-      }
-    };
 
     const onEvent = (state.ctx as any)?.__onEvent as ((e: any) => void) | undefined;
     const onStream = (state.ctx as any)?.__onStream as ((chunk: { text: string; isFinal?: boolean }) => void) | undefined;
@@ -119,8 +135,166 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
 
     let response: any;
     try {
-  const normalizedMessages = normalizeBedrockToolPairing([...(state.messages as any[])]);
-  debugToolPairing(normalizedMessages);
+  /**
+   * Ensures tool_call/tool_use IDs are unique across the entire message history.
+   *
+   * LangChain Bedrock adapter returns assistant messages where the same tool call
+   * appears in BOTH `tool_calls[]` (LangChain normalized) AND `content[]` as
+   * `{type:"tool_use", id:"..."}` (Anthropic native). When these messages are
+   * sent back through LangChain, BOTH representations get serialised into
+   * separate `tool_use` content blocks, causing Bedrock to reject with:
+   *   "messages.N.content.M: tool_use ids must be unique"
+   *
+   * Phase 1 – Deduplicate within each message: if an assistant message has
+   *   tool_calls AND content[].tool_use with overlapping IDs, strip the
+   *   tool_use blocks from content (tool_calls is the canonical source).
+   *
+   * Phase 2 – Deduplicate across messages: if the same tool_call ID appears
+   *   in two different assistant messages (e.g. after summarisation), rename
+   *   the later occurrence and patch corresponding tool-result messages.
+   */
+  const ensureUniqueToolCallIds = (input: any[]): any[] => {
+    const msgs = Array.isArray(input) ? input.map((m) => ({ ...m })) : [];
+    const usedIds = new Set<string>();
+    let counter = 0;
+
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m?.role !== "assistant") continue;
+
+      const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+      const contentArr = Array.isArray(m.content) ? m.content : [];
+      const hasContentToolUse = contentArr.some((c: any) => c?.type === "tool_use" && c?.id);
+      const hasAdditionalToolCalls = Array.isArray(m.additional_kwargs?.tool_calls) && m.additional_kwargs.tool_calls.length > 0;
+
+      if (!hasToolCalls && !hasContentToolUse && !hasAdditionalToolCalls) continue;
+
+      // ------------------------------------------------------------------
+      // Phase 1: Remove redundant tool_use content blocks when the same ID
+      //          already exists in tool_calls (prevents intra-message dupes).
+      // ------------------------------------------------------------------
+      if (hasToolCalls && hasContentToolUse) {
+        const toolCallIds = new Set<string>(
+          m.tool_calls.filter((tc: any) => tc?.id).map((tc: any) => tc.id)
+        );
+        // Strip content blocks whose ID is already covered by tool_calls
+        const filtered = contentArr.filter((c: any) => {
+          if (c?.type === "tool_use" && c?.id && toolCallIds.has(c.id)) return false;
+          return true;
+        });
+        // If we removed all content blocks, keep the text content or set empty string
+        if (filtered.length === 0) {
+          m.content = "";
+        } else if (filtered.length !== contentArr.length) {
+          m.content = filtered.length === 1 && filtered[0]?.type === "text"
+            ? (filtered[0].text ?? "")
+            : filtered;
+        }
+      }
+      // Same for additional_kwargs: strip tool_use from content if additional_kwargs covers them
+      if (hasAdditionalToolCalls && Array.isArray(m.content)) {
+        const akIds = new Set<string>(
+          m.additional_kwargs.tool_calls.filter((tc: any) => tc?.id).map((tc: any) => tc.id)
+        );
+        const arr = m.content as any[];
+        const filtered = arr.filter((c: any) => {
+          if (c?.type === "tool_use" && c?.id && akIds.has(c.id)) return false;
+          return true;
+        });
+        if (filtered.length !== arr.length) {
+          m.content = filtered.length === 0
+            ? ""
+            : filtered.length === 1 && filtered[0]?.type === "text"
+              ? (filtered[0].text ?? "")
+              : filtered;
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Phase 2: Ensure IDs are unique across different assistant messages.
+      // ------------------------------------------------------------------
+
+      // Deep-clone tool_calls so we don't mutate the originals
+      if (hasToolCalls) {
+        m.tool_calls = m.tool_calls.map((tc: any) => ({ ...tc }));
+      }
+      if (hasAdditionalToolCalls) {
+        m.additional_kwargs = { ...m.additional_kwargs };
+        m.additional_kwargs.tool_calls = m.additional_kwargs.tool_calls.map((tc: any) => ({ ...tc }));
+      }
+      // Clone remaining content tool_use blocks if any survived Phase 1
+      const remainingContentArr = Array.isArray(m.content) ? m.content : [];
+      const hasRemainingContentToolUse = remainingContentArr.some((c: any) => c?.type === "tool_use" && c?.id);
+      if (hasRemainingContentToolUse) {
+        m.content = remainingContentArr.map((c: any) =>
+          (c && typeof c === "object") ? { ...c } : c
+        );
+      }
+
+      // Collect all IDs from this message
+      const idsInMessage = new Set<string>();
+      if (hasToolCalls) {
+        for (const tc of m.tool_calls) { if (tc?.id) idsInMessage.add(tc.id); }
+      }
+      if (hasRemainingContentToolUse) {
+        for (const c of m.content as any[]) { if (c?.type === "tool_use" && c?.id) idsInMessage.add(c.id); }
+      }
+      if (hasAdditionalToolCalls) {
+        for (const tc of m.additional_kwargs.tool_calls) { if (tc?.id) idsInMessage.add(tc.id); }
+      }
+
+      for (const id of idsInMessage) {
+        if (!usedIds.has(id)) {
+          usedIds.add(id);
+          continue;
+        }
+
+        // Duplicate across messages – generate a unique replacement
+        const newId = `${id}_${Date.now()}_${counter++}`;
+
+        if (hasToolCalls) {
+          for (const tc of m.tool_calls) { if (tc.id === id) tc.id = newId; }
+        }
+        if (hasRemainingContentToolUse && Array.isArray(m.content)) {
+          for (const c of m.content as any[]) { if (c?.type === "tool_use" && c.id === id) c.id = newId; }
+        }
+        if (hasAdditionalToolCalls) {
+          for (const tc of m.additional_kwargs.tool_calls) { if (tc.id === id) tc.id = newId; }
+        }
+
+        // Patch corresponding downstream tool-result messages
+        for (let j = i + 1; j < msgs.length; j++) {
+          const next = msgs[j];
+          if (next?.role === "assistant") break;
+          if (next?.role === "tool" && next.tool_call_id === id) {
+            next.tool_call_id = newId;
+          }
+          // Anthropic-style tool_result inside content arrays
+          if (Array.isArray(next?.content)) {
+            let contentCloned = false;
+            for (let k = 0; k < (next.content as any[]).length; k++) {
+              const block = (next.content as any[])[k];
+              if (block?.type === "tool_result" && block.tool_use_id === id) {
+                if (!contentCloned) {
+                  next.content = (next.content as any[]).map((x: any) => (x && typeof x === "object") ? { ...x } : x);
+                  contentCloned = true;
+                }
+                (next.content as any[])[k].tool_use_id = newId;
+              }
+            }
+          }
+        }
+
+        usedIds.add(newId);
+      }
+    }
+
+    return msgs;
+  };
+
+  const normalizedMessages = ensureUniqueToolCallIds(
+    normalizeBedrockToolPairing([...(state.messages as any[])])
+  );
   if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
     let streamedText = "";
     let streamedMessage: any | undefined;
@@ -173,7 +347,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     ];
 
     // Usage tracking (per-request, aggregated by model)
-    const rawUsage = (response as any)?.usage 
+    const rawUsage = (response as any)?.usage_metadata  // LangChain v0.3+ normalized
+      || (response as any)?.usage 
       || (response as any)?.response_metadata?.token_usage 
       || (response as any)?.response_metadata?.tokenUsage  // LangChain camelCase
       || (response as any)?.response_metadata?.usage;

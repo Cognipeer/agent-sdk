@@ -55,50 +55,44 @@ export function withTools(model: SmartModel, tools: any[]) {
 export function fromLangchainModel(lcModel: any): BaseChatModel {
   if (!lcModel) throw new Error('fromLangchainModel: model is undefined/null');
 
+  /** Normalize multimodal content parts for LangChain message format. */
+  const normalizeContent = (content: any): any => {
+    if (content == null) return content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map((part: any) => {
+        if (!part || typeof part !== 'object') return part;
+        if (part.type === 'text') return { type: 'text', text: String(part.text ?? '') };
+        if (part.type === 'image_url') {
+          const img = (part as any).image_url;
+          if (typeof img === 'string') return { type: 'image_url', image_url: { url: img } };
+          if (img && typeof img === 'object') {
+            if ('url' in img) return { type: 'image_url', image_url: img };
+            if ('base64' in img) {
+              const media = (img as any).media_type || 'image/jpeg';
+              const dataUrl = `data:${media};base64,${(img as any).base64}`;
+              const detail = (img as any).detail;
+              return { type: 'image_url', image_url: { url: dataUrl, detail } };
+            }
+          }
+          return part;
+        }
+        return part;
+      });
+    }
+    return content;
+  };
+
+  /** Convert a BaseChatMessage to a LangChain-compatible message object. */
+  const toLC = (m: BaseChatMessage): any => {
+    if ((m as any)._getType || (m as any).lc_serializable) return m as any;
+    return { role: m.role, content: normalizeContent(m.content), name: m.name, tool_calls: (m as any).tool_calls, tool_call_id: (m as any).tool_call_id };
+  };
+
   const adapted: BaseChatModel = {
     invoke: async (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): Promise<BaseChatMessage> => {
-      // LangChain expects an array of LC message objects. If user passed LC messages already
-      // they can skip adaptation; but here we accept our generic format and map to minimal LC shape.
-      const normalizeContent = (content: any): any => {
-        // Allow string passthrough
-        if (content == null) return content;
-        if (typeof content === 'string') return content;
-        if (Array.isArray(content)) {
-          return content.map((part: any) => {
-            if (!part || typeof part !== 'object') return part;
-            if (part.type === 'text') return { type: 'text', text: String(part.text ?? '') };
-            if (part.type === 'image_url') {
-              const img = (part as any).image_url;
-              // Support { url }, { base64, media_type }, or string
-              if (typeof img === 'string') return { type: 'image_url', image_url: { url: img } };
-              if (img && typeof img === 'object') {
-                if ('url' in img) return { type: 'image_url', image_url: img };
-                if ('base64' in img) {
-                  const media = (img as any).media_type || 'image/jpeg';
-                  const dataUrl = `data:${media};base64,${(img as any).base64}`;
-                  const detail = (img as any).detail;
-                  return { type: 'image_url', image_url: { url: dataUrl, detail } };
-                }
-              }
-              // Fallback
-              return part;
-            }
-            return part;
-          });
-        }
-        return content;
-      };
-      const toLC = (m: BaseChatMessage): any => {
-        // If it already looks like an LC BaseMessage (has _getType or id or lc_serializable), pass through.
-        if ((m as any)._getType || (m as any).lc_serializable) return m as any;
-        const role = m.role;
-        // Map role to LC classes via dynamic constructors if available on lcModel or global scope.
-        // We avoid importing, so fallback to generic object with role/content; many LC models accept that.
-        return { role, content: normalizeContent(m.content), name: m.name, tool_calls: (m as any).tool_calls, tool_call_id: (m as any).tool_call_id };
-      };
       const lcMessages = messages.map(toLC);
       const response = await lcModel.invoke(lcMessages, options);
-      // Convert back to BaseChatMessage (attempt best-effort extraction)
       if (response && typeof response === 'object') {
         const content = (response as any).content ?? (response as any).text ?? '';
         return {
@@ -114,38 +108,6 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
     },
     stream: async function* (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }) {
       if (typeof lcModel.stream !== 'function') return;
-
-      const normalizeContent = (content: any): any => {
-        if (content == null) return content;
-        if (typeof content === 'string') return content;
-        if (Array.isArray(content)) {
-          return content.map((part: any) => {
-            if (!part || typeof part !== 'object') return part;
-            if (part.type === 'text') return { type: 'text', text: String(part.text ?? '') };
-            if (part.type === 'image_url') {
-              const img = (part as any).image_url;
-              if (typeof img === 'string') return { type: 'image_url', image_url: { url: img } };
-              if (img && typeof img === 'object') {
-                if ('url' in img) return { type: 'image_url', image_url: img };
-                if ('base64' in img) {
-                  const media = (img as any).media_type || 'image/jpeg';
-                  const dataUrl = `data:${media};base64,${(img as any).base64}`;
-                  const detail = (img as any).detail;
-                  return { type: 'image_url', image_url: { url: dataUrl, detail } };
-                }
-              }
-              return part;
-            }
-            return part;
-          });
-        }
-        return content;
-      };
-      const toLC = (m: BaseChatMessage): any => {
-        if ((m as any)._getType || (m as any).lc_serializable) return m as any;
-        return { role: m.role, content: normalizeContent(m.content), name: m.name, tool_calls: (m as any).tool_calls, tool_call_id: (m as any).tool_call_id };
-      };
-
       const lcMessages = messages.map(toLC);
       const streamResult = lcModel.stream(lcMessages, options);
       const stream = typeof (streamResult as Promise<unknown>)?.then === "function" ? await streamResult : streamResult;

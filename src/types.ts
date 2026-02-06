@@ -1,6 +1,7 @@
 // LangChain specific types are removed from core; we define lightweight internal shapes.
 // If the user uses LangChain, they can still pass LC message objects; we treat them opaquely.
 import type { ZodSchema } from "zod";
+import type { BaseChatModel } from "./model.js";
 
 // Image and content part types for multimodal messages
 export type ImageURL =
@@ -27,7 +28,7 @@ export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> 
   [key: string]: any;
 }
 
-export type RunnableConfig = { [key: string]: any };
+export type RunnableConfig = Record<string, unknown>;
 
 // Base message (internal) – we accept either string content or array parts.
 export type BaseMessage = {
@@ -36,7 +37,8 @@ export type BaseMessage = {
   content: string | ContentPart[];
   tool_calls?: any;
   tool_call_id?: string;
-  [key: string]: any;
+  metadata?: Record<string, any>;
+  additional_kwargs?: Record<string, any>;
 };
 
 // AI message is any message with role=assistant; keep alias for usageConverter generics
@@ -114,7 +116,7 @@ export type AgentLimits = {
   maxParallelTools?: number;
 };
 
-// Alias for backward compatibility
+/** @deprecated Use AgentLimits instead */
 export type SmartAgentLimits = AgentLimits;
 
 export type TraceSinkFileConfig = {
@@ -146,13 +148,20 @@ export type TraceSinkConfig =
   | TraceSinkCognipeerConfig
   | TraceSinkHttpConfig;
 
+export type TracingMode = "batched" | "streaming";
+
 export type TracingConfig = {
   enabled: boolean;
   logData?: boolean;
+  /** Tracing mode:
+   * - "batched" (default): Events are collected and sent together when session ends
+   * - "streaming": Session starts immediately, events are sent in real-time as they occur
+   */
+  mode?: TracingMode;
   sink?: TraceSinkConfig;
 };
 
-// Alias for backward compatibility
+/** @deprecated Use TracingConfig instead */
 export type SmartAgentTracingConfig = TracingConfig;
 
 // --- Base Agent (simple, minimal) ---
@@ -160,7 +169,7 @@ export type AgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
   version?: string;
-  model: any; // A BaseChatModel-like object with invoke(messages[]) => assistant message
+  model: BaseChatModel; // A BaseChatModel-like object with invoke(messages[]) => assistant message
   // Accept any tool implementation matching minimal ToolInterface (LangChain Tool compatible)
   tools?: Array<ToolInterface<any, any, any>>;
   // Optional guard layer descriptors to evaluate before sending requests and after receiving responses
@@ -182,7 +191,7 @@ export type SmartAgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
   version?: string;
-  model: any; // A BaseChatModel-like object with invoke(messages[]) => assistant message
+  model: BaseChatModel; // A BaseChatModel-like object with invoke(messages[]) => assistant message
   // Accept any tool implementation matching minimal ToolInterface (LangChain Tool compatible)
   tools?: Array<ToolInterface<any, any, any>>;
   // Optional guard layer descriptors to evaluate before sending requests and after receiving responses
@@ -216,7 +225,7 @@ export type SmartAgentOptions = {
 export type AgentRuntimeConfig = {
   name?: string;
   version?: string;
-  model: any;
+  model: BaseChatModel;
   tools: Array<ToolInterface<any, any, any>>;
   guardrails?: ConversationGuardrail[];
   systemPrompt?: string;
@@ -370,7 +379,7 @@ export type ResolvedTraceSink =
 
 export type ResolvedTraceConfig = {
   enabled: boolean;
-  mode: "batched";
+  mode: TracingMode;
   logData: boolean;
   sink: ResolvedTraceSink;
 };
@@ -385,6 +394,10 @@ export type TraceSessionRuntime = {
   errors: TraceErrorRecord[];
   fileBaseDir?: string;
   fileSessionDir?: string;
+  /** For streaming mode: whether session start has been sent to sink */
+  sessionStarted?: boolean;
+  /** Agent info for streaming mode session start */
+  agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
 };
 
 // Handoff descriptor returned from childAgent.asHandoff(...)
@@ -479,6 +492,25 @@ export type PlanEvent = {
 export type SummarizationEvent = {
   type: "summarization";
   summary: string;
+  /** Number of messages that were compressed/summarized */
+  messagesCompressed?: number;
+  /** Input tokens used for summarization prompt (from model response if available, otherwise estimated) */
+  inputTokens?: number;
+  /** Output tokens from summarization response (from model response if available, otherwise estimated) */
+  outputTokens?: number;
+  /** Cached input tokens from model response (prompt cache hit) */
+  cachedInputTokens?: number;
+  /** Total tokens (input + output) */
+  totalTokens?: number;
+  /** Duration of the summarization call in milliseconds */
+  durationMs?: number;
+  /** Previous summary content (if incremental summarization) */
+  previousSummary?: string;
+  /** Total token count before summarization */
+  tokenCountBefore?: number;
+  /** Total token count after summarization */
+  tokenCountAfter?: number;
+  /** @deprecated Use messagesCompressed instead */
   archivedCount?: number;
 };
 

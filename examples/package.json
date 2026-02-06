@@ -8,21 +8,25 @@
     "example:basic": "tsx basic/basic.ts",
     "example:guardrails": "tsx guardrails/guardrails.ts",
     "example:handoff": "tsx handoff/handoff.ts",
-    "example:mcp-tavily": "tsx mcp-tavily/mcp-tavily.ts",
+    "example:mcp-tavily": "tsx mcp-tavily/mcp_tavily.ts",
     "example:multi-agent": "tsx multi-agent/multi-agent.ts",
     "example:pause-resume": "tsx pause-resume/pause-resume.ts",
     "example:rewrite-summary": "tsx rewrite-summary/rewrite-summary.ts",
     "example:structured-output": "tsx structured-output/structured-output.ts",
     "example:summarization": "tsx summarization/summarization.ts",
     "example:summarize-context": "tsx summarize-context/summarize-context.ts",
-    "example:todo-planning": "tsx todo-planning/todo-planning.ts",
+    "example:todo-planning": "tsx todo-planning/todo.ts",
     "example:tool-approval": "tsx tool-approval/tool-approval.ts",
     "example:tool-limit": "tsx tool-limit/tool-limit.ts",
     "example:tools": "tsx tools/tools.ts",
     "example:vision": "tsx vision/vision.ts"
   },
   "dependencies": {
-    "@cognipeer/agent-sdk": "file:.."
+    "@aws-sdk/client-bedrock-runtime": "^3.983.0",
+    "@aws-sdk/credential-provider-node": "^3.972.5",
+    "@cognipeer/agent-sdk": "file:..",
+    "@langchain/community": "^1.1.11",
+    "@langchain/core": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.5.4",

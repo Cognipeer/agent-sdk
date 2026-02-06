@@ -51,7 +51,9 @@ const tavilySearch = createTool({
 });
 
 const apiKey = OPENAI_API_KEY;
-const model = fromLangchainModel(new ChatOpenAI({ model: "gpt-5-mini", apiKey }));
+const model = fromLangchainModel(new ChatOpenAI({ model: "gpt-4o-mini", apiKey }));
+
+const COGNIPEER_API_KEY = process.env.COGNIPEER_API_KEY || "";
 
 const agent = createAgent({
     name: 'Cognipeer Agent Example',
@@ -61,7 +63,7 @@ const agent = createAgent({
     limits: { maxToolCalls: 10 },
     tracing: {
         enabled: true,
-        sink: cognipeerSink("wl4hzjlhnlxfgbzlg91wpknl3tvbtj7mgnmgjhioo8ojimrx5pjsou1eu70s")
+        ...(COGNIPEER_API_KEY ? { sink: cognipeerSink(COGNIPEER_API_KEY) } : {}),
     },
 });
 

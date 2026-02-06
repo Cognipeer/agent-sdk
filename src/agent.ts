@@ -11,7 +11,7 @@ import { createTraceSession, finalizeTraceSession } from "./utils/tracing.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
-import { countApproxTokens } from "./utils/utilTokens.js";
+import { countMessagesTokens } from "./utils/utilTokens.js";
 
 export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
@@ -137,7 +137,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       let result = false;
       try {
         result = onStateChange(state);
-      } catch {
+      } catch (err) {
+        console.warn('[agent-sdk] onStateChange callback error:', err);
         result = false;
       }
       if (!result) return false;
@@ -211,10 +212,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
 
         if (maxTok) {
-          const allText = (state.messages || [])
-            .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
-            .join("\n");
-          const tokenCount = countApproxTokens(allText);
+          const tokenCount = countMessagesTokens(state.messages || []);
           if (tokenCount > maxTok) {
             const ctx = { ...(state.ctx || {}), __needsSummarization: true };
             state = { ...state, ctx } as AgentState;
@@ -343,8 +341,10 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             if (toolCallsAfter.length > 0) {
               state = { ...state, ...(await toolsNode(state)) } as AgentState;
             }
-          } catch {
-            // Ignore; caller will handle absence of output
+          } catch (err: unknown) {
+            // Log structured output force-finalize error so callers can diagnose failures
+            const errMsg = err instanceof Error ? err.message : String(err);
+            emit?.({ type: "metadata", error: `Structured output force-finalize failed: ${errMsg}` });
           }
         }
       }
@@ -362,9 +362,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const onProgress = config?.onProgress;
     const onStream = config?.onStream;
     const streamEnabled = config?.stream === true;
-    const emit = (e: SmartAgentEvent) => { try { onEvent?.(e); } catch {} };
+    const emit = (e: SmartAgentEvent) => { try { onEvent?.(e); } catch (err) { console.warn('[agent-sdk] onEvent callback error:', err); } };
     const emitProgress = (progress: { stage?: string; message?: string; percent?: number; detail?: any }) => {
-      try { onProgress?.(progress); } catch {}
+      try { onProgress?.(progress); } catch (err) { console.warn('[agent-sdk] onProgress callback error:', err); }
       emit({ type: "progress", ...progress });
     };
     const traceSession = createTraceSession(opts);

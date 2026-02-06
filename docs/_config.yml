@@ -1,5 +1,5 @@
-title: Smart Agent
-description: LangGraph-based agent with planning, tool limits, and context summarization.
+title: Agent SDK
+description: Lightweight, message-first agent runtime with planning, tool limits, and context summarization.
 # Use GitHub Pages supported theme via remote_theme
 remote_theme: just-the-docs/just-the-docs
 plugins:
@@ -24,7 +24,7 @@ search:
   tokenizer_separator: /[\s/\-]+/
 
 # Footer
-footer_content: "Copyright © 2025 Cognipeer"
+footer_content: "Copyright © 2026 Cognipeer"
 
 # Collections/pages
 heading_anchors: true

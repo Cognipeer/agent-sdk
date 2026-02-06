@@ -1,6 +1,6 @@
 {
   "name": "@cognipeer/agent-sdk",
-  "version": "0.2.2",
+  "version": "0.2.6",
   "description": "Composable lightweight smart agent core (no LangGraph) with pluggable model adapters.",
   "license": "MIT",
   "type": "module",
@@ -25,6 +25,12 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:real": "vitest run tests/integration/realOpenAI.integration.test.ts",
+    "test:critical": "vitest run tests/integration/criticalFeatures.integration.test.ts",
     "lint": "eslint 'src/**/*.{ts,tsx}'",
     "prepublishOnly": "npm run build",
     "docs:dev": "vitepress dev docs",
@@ -63,15 +69,20 @@
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
+    "@langchain/openai": "^1.2.4",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^22.5.4",
     "@typescript-eslint/eslint-plugin": "^8.5.0",
     "@typescript-eslint/parser": "^8.5.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/ui": "^4.0.18",
     "eslint": "^9.9.0",
+    "openai": "^6.17.0",
     "tsup": "^8.1.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
-    "vitepress": "^1.5.0"
+    "vitepress": "^1.5.0",
+    "vitest": "^4.0.18"
   },
   "directories": {
     "doc": "docs",

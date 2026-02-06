@@ -18,6 +18,7 @@ import type {
   TraceSinkConfig,
   TraceSinkSnapshot,
   TraceToolCallSection,
+  TracingMode,
 } from "../types.js";
 
 const DEFAULT_COGNIPEER_URL = "https://console.cognipeer.com/api/client/v1/tracing/sessions";
@@ -222,6 +223,7 @@ function ensureDir(p: string) {
 function withDefaults(config?: SmartAgentTracingConfig): ResolvedTraceConfig {
   const enabled = Boolean(config?.enabled);
   const logData = config?.logData ?? DEFAULT_TRACE_CONFIG.logData;
+  const mode: TracingMode = config?.mode === "streaming" ? "streaming" : "batched";
 
   let sink: ResolvedTraceSink;
   try {
@@ -236,7 +238,7 @@ function withDefaults(config?: SmartAgentTracingConfig): ResolvedTraceConfig {
   return {
     enabled,
     logData,
-    mode: "batched",
+    mode,
     sink,
   };
 }
@@ -349,6 +351,157 @@ async function postTraceSession(
     const errMsg = err instanceof Error ? err.message : String(err);
     if (typeof console !== "undefined" && typeof console.error === "function") {
       console.error("[Tracing] Failed to post:", errMsg);
+    }
+    throw err;
+  }
+}
+
+/**
+ * POST a streaming session start to the remote endpoint
+ */
+async function postStreamingSessionStart(
+  baseUrl: string,
+  headers: Record<string, string> | undefined,
+  payload: {
+    sessionId: string;
+    startedAt: string;
+    agent?: { name?: string; version?: string; model?: string; provider?: string };
+    config?: TraceSessionConfigSnapshot;
+  }
+): Promise<void> {
+  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+  if (!fetchFn) {
+    throw new Error("HTTP sink requires fetch to be available in this runtime.");
+  }
+
+  const url = `${baseUrl.replace(/\/$/, "")}/${payload.sessionId}/start`;
+  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
+  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
+    finalHeaders["content-type"] = "application/json";
+  }
+
+  try {
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: finalHeaders,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      let responseText = "";
+      try {
+        responseText = await response.text();
+      } catch {
+        // ignore
+      }
+      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+      throw new Error(`${statusLine}${bodyPreview}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Tracing] Failed to post session start:", errMsg);
+    }
+    throw err;
+  }
+}
+
+/**
+ * POST a single event to the streaming endpoint
+ */
+async function postStreamingEvent(
+  baseUrl: string,
+  headers: Record<string, string> | undefined,
+  sessionId: string,
+  event: TraceEventRecord
+): Promise<void> {
+  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+  if (!fetchFn) {
+    throw new Error("HTTP sink requires fetch to be available in this runtime.");
+  }
+
+  const url = `${baseUrl.replace(/\/$/, "")}/${sessionId}/events`;
+  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
+  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
+    finalHeaders["content-type"] = "application/json";
+  }
+
+  try {
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: finalHeaders,
+      body: JSON.stringify({ event }),
+    });
+
+    if (!response.ok) {
+      let responseText = "";
+      try {
+        responseText = await response.text();
+      } catch {
+        // ignore
+      }
+      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+      throw new Error(`${statusLine}${bodyPreview}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Tracing] Failed to post streaming event:", errMsg);
+    }
+    throw err;
+  }
+}
+
+/**
+ * POST session end to the streaming endpoint
+ */
+async function postStreamingSessionEnd(
+  baseUrl: string,
+  headers: Record<string, string> | undefined,
+  payload: {
+    sessionId: string;
+    endedAt: string;
+    durationMs: number;
+    status: TraceSessionStatus;
+    summary: TraceSessionSummary;
+    errors: Array<{ eventId: string; message: string; stack?: string; type?: string; timestamp?: string }>;
+  }
+): Promise<void> {
+  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+  if (!fetchFn) {
+    throw new Error("HTTP sink requires fetch to be available in this runtime.");
+  }
+
+  const url = `${baseUrl.replace(/\/$/, "")}/${payload.sessionId}/end`;
+  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
+  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
+    finalHeaders["content-type"] = "application/json";
+  }
+
+  try {
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: finalHeaders,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      let responseText = "";
+      try {
+        responseText = await response.text();
+      } catch {
+        // ignore
+      }
+      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+      throw new Error(`${statusLine}${bodyPreview}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Tracing] Failed to post session end:", errMsg);
     }
     throw err;
   }
@@ -559,6 +712,7 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
     summary: createEmptySummary(),
     status: "in_progress",
     errors: [],
+    sessionStarted: false,
   };
 
   if (cfg.sink.type === "file") {
@@ -571,6 +725,70 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
   }
 
   return runtime;
+}
+
+/**
+ * Start a streaming trace session. Should be called before recording events in streaming mode.
+ * This sends the session start to the remote endpoint immediately.
+ */
+export async function startStreamingSession(
+  session: TraceSessionRuntime | undefined,
+  agentRuntime?: AgentRuntimeConfig
+): Promise<void> {
+  if (!session) return;
+  if (session.resolvedConfig.mode !== "streaming") return;
+  if (session.sessionStarted) return;
+
+  const sink = session.resolvedConfig.sink;
+  
+  // Build agent info
+  const agentInfo = agentRuntime ? {
+    name: agentRuntime.name || "unknown-agent",
+    version: agentRuntime.version,
+    model: getModelName(agentRuntime.model) || "unknown-model",
+    provider: getProviderName(agentRuntime.model),
+  } : undefined;
+  
+  session.agentInfo = agentInfo;
+  
+  const configSnapshot = buildConfigSnapshot(session);
+  const startedAtIso = new Date(session.startedAt).toISOString();
+  
+  const payload = {
+    sessionId: session.sessionId,
+    startedAt: startedAtIso,
+    agent: agentInfo,
+    config: configSnapshot,
+  };
+
+  if (sink.type === "cognipeer" || sink.type === "http") {
+    try {
+      const headers = sink.type === "cognipeer"
+        ? { Authorization: `Bearer ${sink.apiKey}` }
+        : sink.headers;
+      
+      await postStreamingSessionStart(sink.url, headers, payload);
+      session.sessionStarted = true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      session.errors.push({
+        eventId: "session_start",
+        message,
+        type: "sink",
+        timestamp: startedAtIso,
+      });
+      // Don't throw - allow session to continue in degraded mode
+      if (typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn("[Tracing] Failed to start streaming session, falling back to batched:", message);
+      }
+    }
+  } else if (sink.type === "custom" && typeof sink.onEvent === "function") {
+    // For custom sinks in streaming mode, we mark as started and let events flow through
+    session.sessionStarted = true;
+  } else if (sink.type === "file") {
+    // File sink in streaming mode - just mark as started, events will be written on finalize
+    session.sessionStarted = true;
+  }
 }
 
 export function recordTraceEvent(
@@ -594,6 +812,8 @@ export function recordTraceEvent(
     retryOf?: string;
     error?: { message: string; stack?: string } | null;
     messageList?: any[];
+    /** Pre-built sections to use instead of auto-converting messageList */
+    sections?: TraceDataSection[];
     debug?: Record<string, any>;
   }
 ): TraceEventRecord | undefined {
@@ -642,8 +862,13 @@ export function recordTraceEvent(
 
   let sections: TraceDataSection[] | undefined;
   if (session.resolvedConfig.logData) {
-    const converted = convertMessageListToSections(event.messageList);
-    sections = ensureUniqueSections(id, converted);
+    // Use pre-built sections if provided, otherwise auto-convert from messageList
+    if (event.sections && event.sections.length > 0) {
+      sections = ensureUniqueSections(id, event.sections);
+    } else {
+      const converted = convertMessageListToSections(event.messageList);
+      sections = ensureUniqueSections(id, converted);
+    }
   }
 
   const resolvedModel = event.model ?? inferModelFromMessages(event.messageList);
@@ -714,6 +939,30 @@ export function recordTraceEvent(
       }
     }
   }
+
+  // In streaming mode, send event immediately to HTTP sinks
+  if (session.resolvedConfig.mode === "streaming" && session.sessionStarted) {
+    if (sink.type === "cognipeer" || sink.type === "http") {
+      const headers = sink.type === "cognipeer"
+        ? { Authorization: `Bearer ${sink.apiKey}` }
+        : sink.headers;
+      
+      // Fire and forget - don't block on event sending
+      postStreamingEvent(sink.url, headers, session.sessionId, record).catch((err) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (typeof console !== "undefined" && typeof console.warn === "function") {
+          console.warn("[Tracing] Failed to send streaming event:", errMsg);
+        }
+        session.errors.push({
+          eventId: record.id,
+          message: errMsg,
+          type: "sink",
+          timestamp: timestampIso,
+        });
+      });
+    }
+  }
+
   return record;
 }
 
@@ -764,7 +1013,7 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
     startedAt: startedAtIso,
     endedAt: endedAtIso,
     durationMs,
-    agent: agentInfo,
+    agent: agentInfo || session.agentInfo,
     config: configSnapshot,
     summary: session.summary,
     events: session.events,
@@ -775,6 +1024,7 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
   const payloadForSink = buildPayload(initialStatus);
   let sinkFailed = false;
   const sink = session.resolvedConfig.sink;
+  const isStreamingMode = session.resolvedConfig.mode === "streaming";
 
   if (sink.type === "cognipeer" || sink.type === "http") {
     try {
@@ -782,7 +1032,20 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
         ? { Authorization: `Bearer ${sink.apiKey}` }
         : sink.headers;
       
-      await postTraceSession(sink.url, headers, payloadForSink);
+      if (isStreamingMode && session.sessionStarted) {
+        // In streaming mode, send session end instead of full session
+        await postStreamingSessionEnd(sink.url, headers, {
+          sessionId: session.sessionId,
+          endedAt: endedAtIso,
+          durationMs,
+          status: initialStatus,
+          summary: session.summary,
+          errors: session.errors,
+        });
+      } else {
+        // In batched mode (or if streaming never started), send full session
+        await postTraceSession(sink.url, headers, payloadForSink);
+      }
     } catch (err) {
       sinkFailed = true;
       const message = err instanceof Error ? err.message : String(err);

@@ -231,10 +231,28 @@ interface ToolExecutionEvent {
 
 interface SummarizationEvent {
   type: "summarization";
+  /** The generated summary text */
   summary: string;
-  archivedCount: number;
-  tokensSaved: number;
-  timestamp: number;
+  /** Number of messages that were compressed/summarized */
+  messagesCompressed?: number;
+  /** Input tokens used for summarization prompt (from model response if available, otherwise estimated) */
+  inputTokens?: number;
+  /** Output tokens from summarization response (from model response if available, otherwise estimated) */
+  outputTokens?: number;
+  /** Cached input tokens from model response (prompt cache hit) */
+  cachedInputTokens?: number;
+  /** Total tokens (input + output) */
+  totalTokens?: number;
+  /** Duration of the summarization call in milliseconds */
+  durationMs?: number;
+  /** Previous summary content (if incremental summarization) */
+  previousSummary?: string;
+  /** Total token count before summarization */
+  tokenCountBefore?: number;
+  /** Total token count after summarization */
+  tokenCountAfter?: number;
+  /** @deprecated Use messagesCompressed instead */
+  archivedCount?: number;
 }
 
 interface PauseEvent {

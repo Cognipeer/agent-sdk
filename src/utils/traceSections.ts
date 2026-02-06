@@ -2,6 +2,8 @@ import { sanitizeTracePayload } from "./tracing.js";
 import type {
   TraceDataSection,
   TraceMessageSection,
+  TraceSummarySection,
+  TraceMetadataSection,
   TraceToolCallSection,
   TraceToolResultItem,
   TraceToolResponseSection,
@@ -311,6 +313,81 @@ export function buildAssistantResponseSections(response: any): TraceDataSection[
     sections.push(assistantMessage);
   }
   sections.push(...extractToolCalls(response));
+
+  return sections;
+}
+
+/**
+ * Builds dedicated trace sections for a summarization event.
+ *
+ * This produces a structured representation with:
+ * 1. A "summary" section containing the generated summary text.
+ * 2. A "metadata" section with detailed summarization statistics
+ *    (tokens before/after, messages compressed, previous summary, etc.).
+ * 3. Optionally, the summarization prompt messages for debugging.
+ */
+export function buildSummarizationSections(opts: {
+  summaryText: string;
+  previousSummary?: string;
+  messagesCompressed: number;
+  tokenCountBefore: number;
+  tokenCountAfter: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  durationMs?: number;
+  promptMessages?: any[];
+}): TraceDataSection[] {
+  const sections: TraceDataSection[] = [];
+
+  // 1. The generated summary as a dedicated "summary" section
+  sections.push({
+    kind: "summary",
+    label: "Context Summary",
+    content: opts.summaryText,
+  } as TraceSummarySection);
+
+  // 2. Summarization statistics as a "metadata" section
+  const tokensSaved = opts.tokenCountBefore - opts.tokenCountAfter;
+  const reductionPct = opts.tokenCountBefore > 0
+    ? Math.round((tokensSaved / opts.tokenCountBefore) * 100)
+    : 0;
+
+  const metaData: Record<string, any> = {
+    messagesCompressed: opts.messagesCompressed,
+    tokenCountBefore: opts.tokenCountBefore,
+    tokenCountAfter: opts.tokenCountAfter,
+    tokensSaved,
+    reductionPercent: reductionPct,
+  };
+
+  if (opts.inputTokens !== undefined) metaData.inputTokens = opts.inputTokens;
+  if (opts.outputTokens !== undefined) metaData.outputTokens = opts.outputTokens;
+  if (opts.cachedInputTokens !== undefined) metaData.cachedInputTokens = opts.cachedInputTokens;
+  if (opts.durationMs !== undefined) metaData.durationMs = opts.durationMs;
+  if (opts.previousSummary) metaData.previousSummaryLength = opts.previousSummary.length;
+
+  sections.push({
+    kind: "metadata",
+    label: "Summarization Stats",
+    data: metaData,
+  } as TraceMetadataSection);
+
+  // 3. Optionally include the prompt that was sent to the model
+  if (Array.isArray(opts.promptMessages) && opts.promptMessages.length > 0) {
+    for (const msg of opts.promptMessages) {
+      const role = typeof msg?.role === "string" ? msg.role : "system";
+      const content = formatMessageContent(msg?.content ?? "");
+      if (content) {
+        sections.push({
+          kind: "message",
+          label: `Summarization Prompt (${role})`,
+          role,
+          content,
+        } as TraceMessageSection);
+      }
+    }
+  }
 
   return sections;
 }

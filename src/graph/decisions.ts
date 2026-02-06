@@ -1,5 +1,5 @@
 import { SmartState, SmartAgentOptions } from "../types.js";
-import { countApproxTokens } from "../utils/utilTokens.js";
+import { countMessagesTokens } from "../utils/utilTokens.js";
 
 /** Shared helper to compute whether we exceed token limit */
 function needsSummarization(state: SmartState, opts: SmartAgentOptions, summarizationEnabled: boolean): boolean {
@@ -23,12 +23,8 @@ function needsSummarization(state: SmartState, opts: SmartAgentOptions, summariz
   }
 
   try {
-    const allText = (state.messages || [])
-      .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
-      .join("\n");
-    const tokenCount = countApproxTokens(allText);
-    const needsSum = tokenCount > maxTok;
-    return needsSum;
+    const tokenCount = countMessagesTokens(state.messages || []);
+    return tokenCount > maxTok;
   } catch (e) {
     return false;
   }

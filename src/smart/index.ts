@@ -78,7 +78,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
         const res = await base.invoke(state, config);
         lastResult = res as AgentInvokeResult<TOutput>;
+        // Preserve summaries from current state when merging with result state
+        const currentSummaries = state.summaries;
         state = (res.state as SmartState) || { ...state, messages: res.messages };
+        // Restore summaries if they were lost during state merge
+        if (currentSummaries && currentSummaries.length > 0 && (!state.summaries || state.summaries.length === 0)) {
+          state = { ...state, summaries: currentSummaries };
+        }
 
         // Check if base agent signaled that summarization is needed (context too large)
         if ((state as any).ctx?.__needsSummarization && summarizer) {
@@ -121,6 +127,15 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       if (!lastResult) {
         const res = await base.invoke(state, config);
         lastResult = res as AgentInvokeResult<TOutput>;
+      }
+
+      // Ensure summaries are preserved in the final result
+      if (state.summaries && state.summaries.length > 0) {
+        if (lastResult.state) {
+          lastResult = { ...lastResult, state: { ...lastResult.state, summaries: state.summaries } };
+        } else {
+          lastResult = { ...lastResult, state: { ...state, summaries: state.summaries } };
+        }
       }
 
       return lastResult as AgentInvokeResult<TOutput>;
