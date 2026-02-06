@@ -1,15 +1,15 @@
 /**
  * Critical Features Integration Tests
  * 
- * These tests validate critical features with the real OpenAI API:
- * 1. Multi-turn execution (long-running tool execution)
- * 2. Summarization (at least 2 summarization passes)
+ * Bu testler kritik özellikleri gerçek OpenAI API ile test eder:
+ * 1. Multi-turn çalışma (uzun süreli tool execution)
+ * 2. Summarization (en az 2 kez summarization)
  * 3. Guardrails
  * 4. Tool Approvals
  * 5. Multi-Agent
  * 6. Handoff
  * 
- * Run:
+ * Çalıştırma:
  *   OPENAI_API_KEY=sk-xxx npm run test:critical
  */
 

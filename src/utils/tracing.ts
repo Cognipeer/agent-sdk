@@ -374,7 +374,7 @@ async function postStreamingSessionStart(
     throw new Error("HTTP sink requires fetch to be available in this runtime.");
   }
 
-  const url = `${baseUrl.replace(/\/$/, "")}/${payload.sessionId}/start`;
+  const url = `${baseUrl.replace(/\/$/, "")}/stream/${payload.sessionId}/start`;
   const finalHeaders = { ...(headers || {}) } as Record<string, string>;
   if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
     finalHeaders["content-type"] = "application/json";
@@ -421,7 +421,7 @@ async function postStreamingEvent(
     throw new Error("HTTP sink requires fetch to be available in this runtime.");
   }
 
-  const url = `${baseUrl.replace(/\/$/, "")}/${sessionId}/events`;
+  const url = `${baseUrl.replace(/\/$/, "")}/stream/${sessionId}/events`;
   const finalHeaders = { ...(headers || {}) } as Record<string, string>;
   if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
     finalHeaders["content-type"] = "application/json";
@@ -474,7 +474,7 @@ async function postStreamingSessionEnd(
     throw new Error("HTTP sink requires fetch to be available in this runtime.");
   }
 
-  const url = `${baseUrl.replace(/\/$/, "")}/${payload.sessionId}/end`;
+  const url = `${baseUrl.replace(/\/$/, "")}/stream/${payload.sessionId}/end`;
   const finalHeaders = { ...(headers || {}) } as Record<string, string>;
   if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
     finalHeaders["content-type"] = "application/json";

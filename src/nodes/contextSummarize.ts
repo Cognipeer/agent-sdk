@@ -1,8 +1,7 @@
 // Lightweight message helpers to avoid hard dependency on LangChain
 import type { SmartAgentOptions, SmartState, BaseMessage, SmartAgentEvent, SummarizationEvent } from "../types.js";
-import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
+import { countApproxTokens } from "../utils/utilTokens.js";
 import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
-import { buildSummarizationSections } from "../utils/traceSections.js";
 import { normalizeUsage } from "../utils/usage.js";
 
 // Helper for lightweight message construction
@@ -102,8 +101,11 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         return {};
     }
 
-    // Calculate token count before summarization (includes tool_calls arguments)
-    const tokenCountBefore = countMessagesTokens(messages);
+    // Calculate token count before summarization
+    const allTextBefore = messages
+      .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
+      .join("\n");
+    const tokenCountBefore = countApproxTokens(allTextBefore);
 
     // 1. Generate Summary
     // We convert current messages to a simple text format for the model to summarize.
@@ -205,8 +207,7 @@ Summary:`;
         outputTokensEstimate = countApproxTokens(summaryText);
         
         // Extract actual token usage from model response if available
-        const rawUsage = (response as any)?.usage_metadata  // LangChain v0.3+ normalized
-          || (response as any)?.usage 
+        const rawUsage = (response as any)?.usage 
           || (response as any)?.response_metadata?.token_usage 
           || (response as any)?.response_metadata?.tokenUsage
           || (response as any)?.response_metadata?.usage;
@@ -245,16 +246,7 @@ Summary:`;
           inputTokens: inputTokensEstimate,
           outputTokens: 0,
           error: { message: err?.message || String(err), stack: err?.stack },
-          sections: buildSummarizationSections({
-            summaryText: "",
-            messagesCompressed: 0,
-            tokenCountBefore,
-            tokenCountAfter: tokenCountBefore,
-            inputTokens: inputTokensEstimate,
-            outputTokens: 0,
-            durationMs,
-            promptMessages: summaryPrompt,
-          }),
+          messageList: sanitizeTracePayload(summaryPrompt),
         });
         return {}; // Abort changes if summarization fails
     }
@@ -329,9 +321,12 @@ Summary:`;
 
     const summaries = Array.isArray(state.summaries) ? [...state.summaries, summaryText] : [summaryText];
 
-    // Calculate token count after summarization (includes tool_calls arguments)
+    // Calculate token count after summarization
     const finalMessages = [...validatedMessages, assistantSummaryCall, toolSummaryResponse];
-    const tokenCountAfter = countMessagesTokens(finalMessages);
+    const allTextAfter = finalMessages
+      .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
+      .join("\n");
+    const tokenCountAfter = countApproxTokens(allTextAfter);
 
     // Emit successful summarization event (use actual values from model response if available, fallback to estimates)
     const summarizationEvent: SummarizationEvent = {
@@ -361,21 +356,10 @@ Summary:`;
       outputTokens: outputTokensActual ?? outputTokensEstimate,
       cachedInputTokens: cachedInputTokens,
       totalTokens: totalTokensActual,
-      sections: buildSummarizationSections({
-        summaryText,
-        previousSummary: previousSummary || undefined,
-        messagesCompressed: compressableMessages.length,
-        tokenCountBefore,
-        tokenCountAfter,
-        inputTokens: inputTokensActual ?? inputTokensEstimate,
-        outputTokens: outputTokensActual ?? outputTokensEstimate,
-        cachedInputTokens,
-        durationMs,
-        promptMessages: sanitizeTracePayload([
-          ...summaryPrompt,
-          { role: "assistant", content: summaryText, name: "summarization_result" }
-        ]),
-      }),
+      messageList: sanitizeTracePayload([
+        ...summaryPrompt,
+        { role: "assistant", content: summaryText, name: "summarization_result" }
+      ]),
       debug: {
         messagesCompressed: compressableMessages.length,
         tokenCountBefore,

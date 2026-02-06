@@ -1,7 +1,6 @@
 // LangChain specific types are removed from core; we define lightweight internal shapes.
 // If the user uses LangChain, they can still pass LC message objects; we treat them opaquely.
 import type { ZodSchema } from "zod";
-import type { BaseChatModel } from "./model.js";
 
 // Image and content part types for multimodal messages
 export type ImageURL =
@@ -28,7 +27,7 @@ export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> 
   [key: string]: any;
 }
 
-export type RunnableConfig = Record<string, unknown>;
+export type RunnableConfig = { [key: string]: any };
 
 // Base message (internal) – we accept either string content or array parts.
 export type BaseMessage = {
@@ -37,8 +36,7 @@ export type BaseMessage = {
   content: string | ContentPart[];
   tool_calls?: any;
   tool_call_id?: string;
-  metadata?: Record<string, any>;
-  additional_kwargs?: Record<string, any>;
+  [key: string]: any;
 };
 
 // AI message is any message with role=assistant; keep alias for usageConverter generics
@@ -116,7 +114,7 @@ export type AgentLimits = {
   maxParallelTools?: number;
 };
 
-/** @deprecated Use AgentLimits instead */
+// Alias for backward compatibility
 export type SmartAgentLimits = AgentLimits;
 
 export type TraceSinkFileConfig = {
@@ -152,16 +150,12 @@ export type TracingMode = "batched" | "streaming";
 
 export type TracingConfig = {
   enabled: boolean;
-  logData?: boolean;
-  /** Tracing mode:
-   * - "batched" (default): Events are collected and sent together when session ends
-   * - "streaming": Session starts immediately, events are sent in real-time as they occur
-   */
   mode?: TracingMode;
+  logData?: boolean;
   sink?: TraceSinkConfig;
 };
 
-/** @deprecated Use TracingConfig instead */
+// Alias for backward compatibility
 export type SmartAgentTracingConfig = TracingConfig;
 
 // --- Base Agent (simple, minimal) ---
@@ -169,7 +163,7 @@ export type AgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
   version?: string;
-  model: BaseChatModel; // A BaseChatModel-like object with invoke(messages[]) => assistant message
+  model: any; // A BaseChatModel-like object with invoke(messages[]) => assistant message
   // Accept any tool implementation matching minimal ToolInterface (LangChain Tool compatible)
   tools?: Array<ToolInterface<any, any, any>>;
   // Optional guard layer descriptors to evaluate before sending requests and after receiving responses
@@ -191,7 +185,7 @@ export type SmartAgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
   version?: string;
-  model: BaseChatModel; // A BaseChatModel-like object with invoke(messages[]) => assistant message
+  model: any; // A BaseChatModel-like object with invoke(messages[]) => assistant message
   // Accept any tool implementation matching minimal ToolInterface (LangChain Tool compatible)
   tools?: Array<ToolInterface<any, any, any>>;
   // Optional guard layer descriptors to evaluate before sending requests and after receiving responses
@@ -225,7 +219,7 @@ export type SmartAgentOptions = {
 export type AgentRuntimeConfig = {
   name?: string;
   version?: string;
-  model: BaseChatModel;
+  model: any;
   tools: Array<ToolInterface<any, any, any>>;
   guardrails?: ConversationGuardrail[];
   systemPrompt?: string;
@@ -394,9 +388,7 @@ export type TraceSessionRuntime = {
   errors: TraceErrorRecord[];
   fileBaseDir?: string;
   fileSessionDir?: string;
-  /** For streaming mode: whether session start has been sent to sink */
   sessionStarted?: boolean;
-  /** Agent info for streaming mode session start */
   agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
 };
 

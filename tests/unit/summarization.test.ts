@@ -102,8 +102,8 @@ describe('Summarization with Mock Model', () => {
     // but summarization events should fire
     expect(allEvents.length).toBeGreaterThan(0);
     
-    // Check if tool calls were made (SDK uses 'tool_call' event type with phase: 'start'/'success')
-    const toolEvents = allEvents.filter(e => e.type === 'tool_call');
+    // Check if tool calls were made
+    const toolEvents = allEvents.filter(e => e.type === 'tool_start' || e.type === 'tool_end');
     expect(toolEvents.length).toBeGreaterThan(0);
   }, 30000);
 
