@@ -7,7 +7,7 @@ import { createAgentCoreNode } from "./nodes/agentCore.js";
 import { createToolsNode } from "./nodes/tools.js";
 import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
 import { createTool } from "./tool.js";
-import { createTraceSession, finalizeTraceSession } from "./utils/tracing.js";
+import { createTraceSession, finalizeTraceSession, startStreamingSession } from "./utils/tracing.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
@@ -403,6 +403,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     let res: AgentState;
     try {
+      await startStreamingSession(traceSession, runtimeWithInvokeLimits);
       res = await runLoop(initial, config, emit);
     } catch (err: any) {
       await finalizeTraceSession(traceSession, {
