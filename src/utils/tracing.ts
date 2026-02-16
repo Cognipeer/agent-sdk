@@ -706,6 +706,7 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
   const sessionId = generateSessionId();
   const runtime: TraceSessionRuntime = {
     sessionId,
+    threadId: opts.tracing?.threadId,
     startedAt: Date.now(),
     resolvedConfig: cfg,
     events: [],
@@ -756,6 +757,7 @@ export async function startStreamingSession(
   
   const payload = {
     sessionId: session.sessionId,
+    threadId: session.threadId,
     startedAt: startedAtIso,
     agent: agentInfo,
     config: configSnapshot,
@@ -1010,6 +1012,7 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
 
   const buildPayload = (status: TraceSessionStatus): TraceSessionFile => ({
     sessionId: session.sessionId,
+    threadId: session.threadId,
     startedAt: startedAtIso,
     endedAt: endedAtIso,
     durationMs,

@@ -151,6 +151,8 @@ export type TracingMode = "batched" | "streaming";
 export type TracingConfig = {
   enabled: boolean;
   mode?: TracingMode;
+  /** Thread identifier; groups multiple sessions across agents into a single thread. */
+  threadId?: string;
   logData?: boolean;
   sink?: TraceSinkConfig;
 };
@@ -354,6 +356,7 @@ export type TraceSessionConfigSnapshot = {
 
 export type TraceSessionFile = {
   sessionId: string;
+  threadId?: string;
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
@@ -380,6 +383,7 @@ export type ResolvedTraceConfig = {
 
 export type TraceSessionRuntime = {
   sessionId: string;
+  threadId?: string;
   startedAt: number;
   resolvedConfig: ResolvedTraceConfig;
   events: TraceEventRecord[];
