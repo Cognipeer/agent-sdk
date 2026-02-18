@@ -1,6 +1,14 @@
 import { AgentRuntimeConfig, AgentSnapshot, RestoreSnapshotOptions, SmartState, SnapshotOptions } from "../types.js";
 
-const DISALLOWED_CTX_KEYS = new Set(["__onEvent", "__traceSession", "__paused"]);
+const DISALLOWED_CTX_KEYS = new Set([
+  "__onEvent",
+  "__onProgress",
+  "__onStream",
+  "__traceSession",
+  "__paused",
+  "__cancellationToken",
+  "__abortSignal",
+]);
 
 const clone = <T>(value: T): T => {
   if (typeof (globalThis as any).structuredClone === "function") {

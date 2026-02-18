@@ -17,7 +17,7 @@ export function createContextTools(
       schema: z.object({
         operation: z.enum(["write", "read"]),
         todoList: z.array(z.object({
-          id: z.number().int().positive().describe("Sequential id starting from 1"),
+          id: z.number().int().min(1).describe("Sequential id starting from 1"),
           title: z.string().min(1),
           description: z.string().min(1),
           status: z.enum(["not-started", "in-progress", "completed"]),

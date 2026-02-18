@@ -86,6 +86,11 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           state = { ...state, summaries: currentSummaries };
         }
 
+        // If the base agent paused for approval or user input, stop immediately.
+        // Do NOT continue the loop (e.g. for summarization) because a second
+        // base.invoke call would clear __awaitingApproval / __waitingForInput.
+        if ((state as any).ctx?.__awaitingApproval || (state as any).ctx?.__waitingForInput) break;
+
         // Check if base agent signaled that summarization is needed (context too large)
         if ((state as any).ctx?.__needsSummarization && summarizer) {
           // Clear the flag
