@@ -12,6 +12,7 @@ export * from "./utils/utilTokens.js";
 export * from "./contextTools.js";
 export * from "./smart/index.js";
 export * from "./guardrails/index.js";
+export * from "./memory/tools.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { fromLangchainTools } from "./adapters/langchain.js";

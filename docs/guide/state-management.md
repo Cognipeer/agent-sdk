@@ -95,4 +95,30 @@ Checkpoints integrate seamlessly with other features:
 - If you need to log intermediate states, throttle the output to avoid noisy logs during tool loops.
 - Combine `onEvent` (streaming telemetry) with `onStateChange` (checkpoint control) for complete observability.
 
+## Optional alternative memory structure (single-invocation)
+
+You can enable a working-memory toolset to make single invocation runs more robust without introducing full long-term memory coupling:
+
+- `wm_set_fact` / `wm_get_fact`
+- `wm_add_decision`
+- `wm_add_open_loop`
+- `wm_snapshot`
+
+These tools persist into `state.ctx.__workingMemory` during the invocation, helping the model keep track of validated facts, decisions, and pending loops in a structured form.
+
+```ts
+const agent = createSmartAgent({
+  model,
+  memory: {
+    enableWorkingMemoryTools: true,
+    ltm: {
+      enabled: true,
+      adapter: myLtmAdapter, // optional
+    },
+  },
+});
+```
+
+If you provide an LTM adapter, an optional LTM toolset is exposed (`ltm_write`, `ltm_search`, plus optional `ltm_get` / `ltm_forget`). This keeps LTM separate from the core in-call memory flow.
+
 Continue to [Core Concepts](/core-concepts/#1-state-container) for a field-by-field reference, or jump to [Tool Approvals](/tool-approvals/) to wire checkpoints into human review flows.

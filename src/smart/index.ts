@@ -5,6 +5,7 @@ import { createContextTools } from "../contextTools.js";
 import { createContextSummarizeNode } from "../nodes/contextSummarize.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
+import { createLtmTools, createWorkingMemoryTools } from "../memory/tools.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -12,7 +13,9 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   const stateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined };
   const planningEnabled = opts.useTodoList === true;
   const contextTools = createContextTools(stateRef, { planningEnabled, outputSchema: undefined });
-  const mergedTools = [...((opts.tools as any) ?? []), ...contextTools];
+  const workingMemoryTools = opts.memory?.enableWorkingMemoryTools ? createWorkingMemoryTools(stateRef as any) : [];
+  const ltmTools = opts.memory?.ltm?.enabled && opts.memory?.ltm?.adapter ? createLtmTools(opts.memory.ltm.adapter) : [];
+  const mergedTools = [...((opts.tools as any) ?? []), ...contextTools, ...workingMemoryTools, ...ltmTools];
 
   // Compose base agent
   const base = createAgent<TOutput>({ ...opts, tools: mergedTools });
@@ -56,6 +59,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
       const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(), ...(input.messages || [])];
       let state: SmartState = { ...input, messages: seedMessages } as SmartState;
+      stateRef.state = state;
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? opts.limits?.maxToolCalls ?? 10) as number;
       const iterationLimit = Math.max(effectiveMaxToolCalls * 3 + 5, 30);
@@ -76,6 +80,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         }
 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
+        stateRef.state = state;
         const res = await base.invoke(state, config);
         lastResult = res as AgentInvokeResult<TOutput>;
         // Preserve summaries from current state when merging with result state
@@ -130,6 +135,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
       // Fall back if base was never invoked (edge case)
       if (!lastResult) {
+        stateRef.state = state;
         const res = await base.invoke(state, config);
         lastResult = res as AgentInvokeResult<TOutput>;
       }

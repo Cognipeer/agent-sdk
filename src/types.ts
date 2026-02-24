@@ -161,6 +161,42 @@ export type TracingConfig = {
 export type SmartAgentTracingConfig = TracingConfig;
 
 // --- Base Agent (simple, minimal) ---
+export type LtmRecord = {
+  id?: string;
+  key?: string;
+  value: string;
+  scope?: string;
+  confidence?: number;
+  ttlSeconds?: number;
+  metadata?: Record<string, any>;
+};
+
+export type LtmSearchResult = {
+  id?: string;
+  key?: string;
+  value: string;
+  score?: number;
+  scope?: string;
+  metadata?: Record<string, any>;
+};
+
+export type LtmAdapter = {
+  write: (record: LtmRecord) => Promise<{ ok: boolean; id?: string }> | { ok: boolean; id?: string };
+  search: (query: { query: string; scope?: string; limit?: number }) => Promise<LtmSearchResult[]> | LtmSearchResult[];
+  get?: (id: string) => Promise<LtmRecord | null> | LtmRecord | null;
+  forget?: (params: { id?: string; scope?: string }) => Promise<{ ok: boolean }> | { ok: boolean };
+};
+
+export type MemoryRuntimeOptions = {
+  /** Enables built-in working-memory tools for single-invocation memory management. */
+  enableWorkingMemoryTools?: boolean;
+  /** Optional: injects LTM toolset if adapter is provided. */
+  ltm?: {
+    enabled?: boolean;
+    adapter?: LtmAdapter;
+  };
+};
+
 export type AgentOptions = {
   // Human-friendly agent name used in prompts and logging
   name?: string;
@@ -180,6 +216,7 @@ export type AgentOptions = {
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  memory?: MemoryRuntimeOptions;
 };
 
 // --- Smart Agent (batteries-included with planning & summarization) ---
@@ -215,6 +252,7 @@ export type SmartAgentOptions = {
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  memory?: MemoryRuntimeOptions;
 };
 
 // Runtime representation of an agent (used inside state.agent)
@@ -229,6 +267,7 @@ export type AgentRuntimeConfig = {
   useTodoList?: boolean;
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  memory?: MemoryRuntimeOptions;
 };
 
 export type TraceMessageSection = {
