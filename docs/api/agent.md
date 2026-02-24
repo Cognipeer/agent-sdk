@@ -267,13 +267,15 @@ const customModel: ModelAdapter = {
 Monitor agent execution via events:
 
 ```typescript
-type SmartAgentEvent = 
-  | { type: "plan"; version: number; todoList: TodoItem[] }
-  | { type: "tool_execution"; tool: string; args: any; result: any }
-  | { type: "summarization"; summary: string; archivedCount: number }
-  | { type: "pause"; reason: string; metadata: any }
-  | { type: "resume"; stage: string }
-  | { type: "error"; error: Error };
+type SmartAgentEvent =
+  | { type: "plan"; source: string; operation?: string; version?: number }
+  | { type: "tool_call"; phase: "start" | "success" | "error" | "skipped"; name: string }
+  | { type: "summarization"; summary: string; messagesCompressed?: number }
+  | { type: "finalAnswer"; content: string }
+  | { type: "metadata"; modelName?: string; usage?: any }
+  | { type: "progress"; stage?: string; message?: string }
+  | { type: "stream"; text: string; isFinal?: boolean }
+  | { type: "cancelled"; stage?: string; reason?: string };
 ```
 
 ## See Also
@@ -281,4 +283,4 @@ type SmartAgentEvent =
 - [Tools API](/api/tools) - Creating and using tools
 - [Nodes API](/api/nodes) - Understanding the execution graph
 - [Types API](/api/types) - Complete TypeScript definitions
-- [State Management](/guide/state-management) - Working with agent state
+- [State Management](/state-management) - Working with agent state

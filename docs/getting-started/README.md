@@ -66,7 +66,8 @@ const agent = createSmartAgent({
   model,
   tools: [echo],
   useTodoList: true,
-  limits: { maxToolCalls: 5, maxToken: 6000 },
+  limits: { maxToolCalls: 5 },
+  summarization: { maxTokens: 6000 },
   tracing: { enabled: true },
 });
 
@@ -240,7 +241,7 @@ Proceed to:
 | Issue | Likely Cause | Fix |
 |-------|--------------|-----|
 | No tool calls emitted | Model lacks tool calling | Use OpenAI-compatible model or fake scenario |
-| Summarization not triggering | `maxToken` not reached or disabled | Lower `maxToken` or remove `summarization:false` |
+| Summarization not triggering | `summarization.maxTokens` not reached or summarization disabled | Lower `summarization.maxTokens` or remove `summarization:false` |
 | Parsed output missing | Schema mismatch / invalid JSON | Inspect `res.content`, adjust prompt, broaden schema |
 | Handoff ignored | Tool not included | Ensure `handoffs` array includes the target agent |
 | Trace file missing | `tracing.enabled` false | Enable tracing or ensure the process can write to `logs/` |
