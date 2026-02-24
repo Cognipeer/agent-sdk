@@ -14,10 +14,10 @@ Your model may not support structured tool calls. Try:
 - Switching to a model that supports OpenAI-style tool calling (e.g. GPT-4o variants).
 
 ## When does summarization run?
-When `limits.maxToken` would be exceeded before the next model call, the `contextSummarize` node compacts history.
+When `summarization.maxTokens` would be exceeded before the next model call, the `contextSummarize` node compacts history.
 
 ## How do I disable summarization?
-It is enabled by default. Pass `summarization: false` to `createSmartAgent({ ... })` to turn it off. When disabled, `limits.maxToken` will not trigger compaction.
+It is enabled by default. Pass `summarization: false` to `createSmartAgent({ ... })` to turn it off. When disabled, token-threshold compaction is skipped.
 
 ## Can I use MCP tools?
 Yes. Most MCP clients expose LangChain-style tools. Pass them through `fromLangchainTools(...)` first, then include the returned objects in the `tools` array. They behave like any other SDK-native tool.

@@ -5,9 +5,8 @@
 
 - **`maxToolCalls`** – total tool executions allowed across the entire invocation. Once reached, additional tool calls are skipped and a finalize message is injected.
 - **`maxParallelTools`** – maximum concurrent tool executions per agent turn (default 1). Adjust to balance throughput vs. rate limits.
-- **`maxToken`** – estimated token threshold for the *next* agent turn. Exceeding this triggers the summarization node before the model call.
-- **`contextTokenLimit`** – desired size of the live transcript after summarization (used as a target, not a hard cap).
-- **`summaryTokenLimit`** – target length for each generated summary chunk (defaults to a generous value if omitted).
+- **`summarization.maxTokens`** – estimated token threshold for the *next* agent turn. Exceeding this triggers the summarization node before the model call.
+- **`summarization.summaryPromptMaxTokens`** – upper bound for the summarization prompt size (keeps summarization calls within model context limits).
 
 ## Tool limit finalize
 
@@ -23,19 +22,17 @@ On the next agent turn, the model sees the finalize notice and must produce a di
 Summarization is enabled by default for smart agents. It activates when:
 
 ```
-estimatedTokens(messages) > limits.maxToken
+estimatedTokens(messages) > summarization.maxTokens
 ```
 
 Steps:
-1. Chunk the transcript while keeping tool call/response pairs together.
-2. Summarize each chunk using the configured model.
-3. Merge partial summaries iteratively to respect `summaryTokenLimit`.
-4. Replace tool responses with `SUMMARIZED executionId:'...'` markers.
-5. Move original tool outputs to `toolHistoryArchived`.
-6. Add a synthetic assistant/tool pair labelled `context_summarize` containing the merged summary.
-7. Emit a `summarization` event and reset `toolHistory` for future runs.
+1. Build a bounded summarization prompt (uses `summaryPromptMaxTokens`).
+2. Optionally include the previous summary (hierarchical summary chaining).
+3. Replace tool response content with `SUMMARIZED` to reduce token load.
+4. Append a synthetic assistant/tool pair labelled `summarize_context` containing the summary.
+5. Store the latest summary in `state.summaries` for the next round.
 
-Disable summarization entirely via `summarization: false`. When disabled, `maxToken` is ignored.
+Disable summarization entirely via `summarization: false`. When disabled, threshold-based compaction is skipped.
 
 ## Token heuristics
 
@@ -44,6 +41,6 @@ Disable summarization entirely via `summarization: false`. When disabled, `maxTo
 ## Tips
 
 - Return concise tool payloads to minimize summarization churn. Keep raw content accessible via IDs or `get_tool_response`.
-- Increase `summaryTokenLimit` if summaries feel too lossy, but note that larger summaries consume more budget.
+- Increase `summarization.maxTokens` if compaction is too frequent, or raise `summarization.summaryPromptMaxTokens` when summaries miss needed context.
 - For conversations with user-provided long context, consider pre-summarizing or chunking prior to passing into the agent.
 - Monitor `summarization` events to visualize how often compaction occurs and whether limits need tuning.

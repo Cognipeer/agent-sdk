@@ -62,7 +62,7 @@ Decisions about summarization or finalize insertion are factored into small "dec
 
 - Large tool outputs are stored in `toolHistory`. When compaction triggers, older heavy entries are summarized (rewritten) and moved to an archived list with a reversible reference (executionId).
 - A companion tool `get_tool_response` allows the model to request raw unsummarized data for a specific execution id when needed, mitigating lossiness.
-- Targets: `contextTokenLimit` for working context size, `summaryTokenLimit` for each compressed block. Defaults are intentionally conservative.
+- Targets: `summarization.maxTokens` for when compaction should run, and `summarization.summaryPromptMaxTokens` for bounding summarization prompt size.
 
 ## Planning Mode
 

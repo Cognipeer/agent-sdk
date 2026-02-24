@@ -86,7 +86,8 @@ const agent = createSmartAgent({
   model,
   tools: [echo],
   useTodoList: true,
-  limits: { maxToolCalls: 5, maxToken: 8000 },
+  limits: { maxToolCalls: 5 },
+  summarization: { maxTokens: 8000 },
   tracing: { enabled: true },
 });
 
@@ -98,7 +99,7 @@ const result = await agent.invoke({
 console.log(result.content);
 ```
 
-The smart wrapper injects a system prompt, manages TODO tooling, and runs summarization passes whenever `limits.maxToken` would be exceeded.
+The smart wrapper injects a system prompt, manages TODO tooling, and runs summarization passes whenever `summarization.maxTokens` would be exceeded.
 
 ### Base agent (minimal loop)
 
@@ -130,7 +131,7 @@ console.log(res.content);
 
 ## Key capabilities
 
-- **Summarization pipeline** – automatic chunking keeps tool call history within `contextTokenLimit` / `summaryTokenLimit`, archiving originals so `get_tool_response` can fetch them later.
+- **Summarization pipeline** – automatic compaction keeps history bounded via `summarization.maxTokens` and a bounded summarization prompt (`summaryPromptMaxTokens`), archiving originals so `get_tool_response` can fetch them later.
 - **Planning discipline** – when `useTodoList` is true the system prompt enforces a plan-first workflow and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
 - **Usage normalization** – provider `usage` blobs are normalized into `{ prompt_tokens, completion_tokens, total_tokens }` with cached token tracking and totals grouped by model.
@@ -186,7 +187,7 @@ OPENAI_API_KEY=... npx tsx basic/basic.ts
 The agent is a deterministic while-loop – no external graph runtime. Each turn flows through:
 
 1. **resolver** – normalize state (messages, counters, limits).
-2. **contextSummarize** (optional) – when token estimates exceed `limits.maxToken`, archive heavy tool outputs.
+2. **contextSummarize** (optional) – when token estimates exceed `summarization.maxTokens`, archive heavy tool outputs.
 3. **agent** – invoke the model (binding tools when supported).
 4. **tools** – execute proposed tool calls with configurable parallelism.
 5. **toolLimitFinalize** – if tool-call cap is hit, inject a system notice so the next assistant turn must answer directly.
@@ -245,7 +246,7 @@ npm publish --access public
 ## Troubleshooting
 
 - **Missing tool calls** – ensure your model supports `bindTools`. If not, wrap with `withTools(model, tools)` to provide best-effort behavior.
-- **Summaries too aggressive** – adjust `limits.maxToken`, `contextTokenLimit`, and `summaryTokenLimit`, or disable with `summarization: false`.
+- **Summaries too aggressive** – adjust `summarization.maxTokens` / `summarization.summaryPromptMaxTokens`, or disable with `summarization: false`.
 - **Large tool responses** – return structured payloads and rely on `get_tool_response` for raw data instead of dumping megabytes inline.
 - **Usage missing** – some providers do not report usage; customize `usageConverter` to normalize proprietary shapes.
 

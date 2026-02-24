@@ -173,10 +173,7 @@ type TodoStatus = "not-started" | "in-progress" | "completed";
 ```typescript
 interface AgentLimits {
   maxToolCalls?: number;                  // Default: 50
-  maxParallelTools?: number;              // Default: 5
-  maxToken?: number;                      // Default: 10000
-  contextTokenLimit?: number;             // Default: 8000
-  summaryTokenLimit?: number;             // Default: 1000
+  maxParallelTools?: number;              // Maximum tools per turn
 }
 ```
 
@@ -207,26 +204,28 @@ Note: `SmartAgentTracingConfig` is an alias for `TracingConfig`.
 ```typescript
 type SmartAgentEvent = 
   | PlanEvent
-  | ToolExecutionEvent
+  | ToolCallEvent
   | SummarizationEvent
-  | PauseEvent
-  | ResumeEvent
-  | ErrorEvent;
+  | FinalAnswerEvent
+  | MetadataEvent
+  | ProgressEvent
+  | StreamEvent
+  | CancelledEvent;
 
 interface PlanEvent {
   type: "plan";
-  version: number;
-  todoList: TodoItem[];
-  timestamp: number;
+  source: "manage_todo_list" | "system";
+  operation?: "write" | "read";
+  version?: number;
 }
 
-interface ToolExecutionEvent {
-  type: "tool_execution";
-  tool: string;
-  args: any;
-  result: any;
-  duration: number;
-  timestamp: number;
+interface ToolCallEvent {
+  type: "tool_call";
+  phase: "start" | "success" | "error" | "skipped";
+  name: string;
+  args?: any;
+  result?: any;
+  durationMs?: number;
 }
 
 interface SummarizationEvent {
@@ -255,24 +254,10 @@ interface SummarizationEvent {
   archivedCount?: number;
 }
 
-interface PauseEvent {
-  type: "pause";
-  reason: string;
-  metadata?: any;
-  timestamp: number;
-}
-
-interface ResumeEvent {
-  type: "resume";
-  stage: string;
-  timestamp: number;
-}
-
-interface ErrorEvent {
-  type: "error";
-  error: Error;
-  phase?: string;
-  timestamp: number;
+interface CancelledEvent {
+  type: "cancelled";
+  stage?: string;
+  reason?: string;
 }
 ```
 
@@ -285,25 +270,18 @@ interface AgentInvokeResult {
   content: string;                        // Final assistant message
   output?: any;                           // Parsed structured output
   state: SmartState;                      // Final state
-  usage?: UsageInfo;                      // Token usage
-  error?: Error;                          // Error if failed
-  paused?: boolean;                       // True if paused
+  metadata: { usage?: any };             // Metadata (including normalized usage)
 }
 ```
 
-### UsageInfo
+### Usage
 
 ```typescript
-interface UsageInfo {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  
-  // Provider-specific (optional)
-  cache_read_tokens?: number;
-  cache_creation_tokens?: number;
-  reasoning_tokens?: number;
-}
+// Usage is exposed under result.metadata.usage and mirrors normalized provider output.
+type Usage = {
+  perRequest?: Array<any>;
+  totals?: Record<string, { input: number; output: number; total: number; cachedInput: number }>;
+};
 ```
 
 ## State Management
@@ -416,4 +394,4 @@ function isSystemMessage(msg: Message): msg is SystemMessage;
 
 - [Agent API](/api/agent) - Agent creation and configuration
 - [Tools API](/api/tools) - Tool development
-- [State Management](/guide/state-management) - Working with state
+- [State Management](/state-management) - Working with state
