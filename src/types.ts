@@ -140,11 +140,20 @@ export type TraceSinkHttpConfig = {
   headers?: Record<string, string>;
 };
 
+export type TraceSinkOtlpConfig = {
+  type: "otlp";
+  /** OTLP endpoint (e.g. https://console.cognipeer.com/api/client/v1/traces). */
+  endpoint: string;
+  /** Custom headers (e.g. Authorization). */
+  headers?: Record<string, string>;
+};
+
 export type TraceSinkConfig =
   | TraceSinkFileConfig
   | TraceSinkCustomConfig
   | TraceSinkCognipeerConfig
-  | TraceSinkHttpConfig;
+  | TraceSinkHttpConfig
+  | TraceSinkOtlpConfig;
 
 export type TracingMode = "batched" | "streaming";
 
@@ -300,6 +309,12 @@ export type TraceDataSection =
 export type TraceEventRecord = {
   sessionId: string;
   id: string;
+  /** W3C-compatible trace identifier (32 hex chars). Shared across all events in a session. */
+  traceId?: string;
+  /** Unique span identifier for this event (16 hex chars). */
+  spanId?: string;
+  /** Parent span identifier; establishes hierarchy (16 hex chars). */
+  parentSpanId?: string;
   type: string;
   label: string;
   sequence: number;
@@ -346,7 +361,8 @@ export type TraceSinkSnapshot =
   | { type: "file"; path: string }
   | { type: "custom" }
   | { type: "cognipeer"; url: string }
-  | { type: "http"; url: string };
+  | { type: "http"; url: string }
+  | { type: "otlp"; endpoint: string };
 
 export type TraceSessionConfigSnapshot = {
   enabled: boolean;
@@ -356,6 +372,10 @@ export type TraceSessionConfigSnapshot = {
 
 export type TraceSessionFile = {
   sessionId: string;
+  /** W3C-compatible trace identifier (32 hex chars). */
+  traceId?: string;
+  /** Root span identifier for the session (16 hex chars). */
+  rootSpanId?: string;
   threadId?: string;
   startedAt: string;
   endedAt?: string;
@@ -372,7 +392,8 @@ export type ResolvedTraceSink =
   | { type: "file"; baseDir: string }
   | { type: "custom"; onEvent?: (event: TraceEventRecord) => void | Promise<void>; onSession?: (session: TraceSessionFile) => void | Promise<void> }
   | { type: "cognipeer"; url: string; apiKey: string }
-  | { type: "http"; url: string; headers?: Record<string, string> };
+  | { type: "http"; url: string; headers?: Record<string, string> }
+  | { type: "otlp"; endpoint: string; headers?: Record<string, string> };
 
 export type ResolvedTraceConfig = {
   enabled: boolean;
@@ -383,6 +404,12 @@ export type ResolvedTraceConfig = {
 
 export type TraceSessionRuntime = {
   sessionId: string;
+  /** W3C-compatible trace identifier (32 hex chars). */
+  traceId: string;
+  /** Root span identifier for the session (16 hex chars). */
+  rootSpanId: string;
+  /** Currently active iteration span ID. Updated during agent loop. */
+  currentIterationSpanId?: string;
   threadId?: string;
   startedAt: number;
   resolvedConfig: ResolvedTraceConfig;

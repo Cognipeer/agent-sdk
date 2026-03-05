@@ -25,7 +25,7 @@ Each `invoke` creates a new session directory under `logs/<SESSION_ID>/` and wri
 |--------|-------------|
 | `enabled` | Required. Turn tracing on/off per agent. |
 | `logData` | When `true`, include prompt/response/tool payloads alongside metrics. Set to `false` to store only metadata. |
-| `sink` | Controls where finalized traces go. Defaults to `fileSink()` which writes `trace.session.json` under `[cwd]/logs/[session]/`. Swap in `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, or `customSink({ onEvent, onSession })` for remote delivery or custom processing. |
+| `sink` | Controls where finalized traces go. Defaults to `fileSink()` which writes `trace.session.json` under `[cwd]/logs/[session]/`. Swap in `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` for remote delivery or custom processing. |
 
 Example with an HTTP sink:
 
@@ -115,7 +115,7 @@ When `logData` is `true`, payload sections expose sanitized snapshots under a `d
 - **Retention** – traces are plain JSON. Rotate or purge `logs/` on a schedule if you generate many sessions.
 - **Privacy** – disable `logData` when prompts contain sensitive information, or redact inside your own tooling before forwarding via your sink.
 - **Streaming** – `mode` is currently `"batched"` for all sessions. Streaming hooks are reserved for future versions.
-- **Correlation** – events include both `sessionId` and `eventId`, making it simple to join with other telemetry sources.
+- **Correlation** – events include `sessionId`, `eventId`, `traceId`, and span hierarchy (`spanId`, `parentSpanId`) for cross-system telemetry joins.
 
 ## File layout
 
@@ -125,4 +125,4 @@ logs/
 		trace.session.json
 ```
 
-Traces are safe to delete after ingestion. If you prefer remote storage, configure an `httpSink`/`cognipeerSink` and periodically clear the local directory.
+Traces are safe to delete after ingestion. If you prefer remote storage, configure an `httpSink`/`cognipeerSink`/`otlpSink` and periodically clear the local directory.

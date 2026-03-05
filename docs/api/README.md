@@ -31,7 +31,7 @@
 - `outputSchema?: ZodSchema` – enables structured output finalize tool + parsed `result.output`.
 - `handoffs?: HandoffDescriptor[]` – pre-configured agent handoffs exposed as tools.
 - `usageConverter?: (finalMessage, fullState, model) => any` – override usage normalization.
-- `tracing?: { enabled: boolean; logData?: boolean; sink?: TraceSinkConfig }` – structured JSON traces.
+- `tracing?: { enabled: boolean; mode?: 'batched' | 'streaming'; threadId?: string; logData?: boolean; sink?: TraceSinkConfig }` – structured JSON traces.
 
 ### Smart Agent (createSmartAgent)
 

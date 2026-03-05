@@ -136,7 +136,7 @@ Optional metadata (`approvalPrompt`, `approvalDefaults`) can be attached to tool
 - `handoff` announcements when control switches to another runtime.
 - `finalAnswer` with the final assistant content.
 
-Enable `tracing.enabled` to persist JSON trace sessions under `logs/[session]/`. Set `logData: false` for metrics-only mode or swap in a sink (`httpSink`, `cognipeerSink`, `customSink`) to ship traces to your observability API.
+Enable `tracing.enabled` to persist JSON trace sessions under `logs/[session]/`. Set `logData: false` for metrics-only mode or swap in a sink (`httpSink`, `cognipeerSink`, `otlpSink`, `customSink`) to ship traces to your observability API.
 
 ## 12. Usage tracking
 

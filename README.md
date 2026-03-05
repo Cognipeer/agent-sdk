@@ -216,7 +216,9 @@ Enable tracing by passing `tracing: { enabled: true }`. Each invocation writes `
 - Optional payload captures (request/response/tool bodies) when `logData` is `true`
 - Aggregated token usage, byte counts, and error summaries for dashboards
 
-You can disable payload capture with `logData: false` to keep only metrics, or configure sinks such as `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, or `customSink({ onEvent, onSession })` to forward traces after each run. Sensitive headers/callbacks remain in-memory and are never written alongside the trace.
+You can disable payload capture with `logData: false` to keep only metrics, or configure sinks such as `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` to forward traces after each run. Sensitive headers/callbacks remain in-memory and are never written alongside the trace.
+
+Each session/event also carries OTel-compatible correlation identifiers (`traceId`, `rootSpanId`, `spanId`, `parentSpanId`) so you can stitch agent traces into distributed telemetry pipelines.
 
 ## Development
 

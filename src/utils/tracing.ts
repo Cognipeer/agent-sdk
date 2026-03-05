@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import { nanoid } from "nanoid";
+import crypto from "node:crypto";
 import type {
   AgentRuntimeConfig,
   ResolvedTraceConfig,
@@ -58,6 +59,15 @@ export function cognipeerSink(first: string | undefined, second?: string): Trace
 
 export function httpSink(url: string, headers?: Record<string, string>): TraceSinkConfig {
   return { type: "http", url, headers };
+}
+
+/**
+ * Create an OTLP/HTTP JSON sink that exports traces in OpenTelemetry format.
+ * @param endpoint OTLP endpoint URL (e.g. "https://console.cognipeer.com/api/client/v1/traces")
+ * @param headers Optional headers (e.g. { Authorization: "Bearer ..." })
+ */
+export function otlpSink(endpoint: string, headers?: Record<string, string>): TraceSinkConfig {
+  return { type: "otlp", endpoint, headers };
 }
 function resolveLogsBaseDir(customPath?: string, ensureDirectory = true) {
   const root = process.cwd();
@@ -273,6 +283,14 @@ function resolveSink(sink?: TraceSinkConfig): ResolvedTraceSink {
       const headers = candidate.headers ? { ...candidate.headers } : undefined;
       return headers ? { type: "http", url, headers } : { type: "http", url };
     }
+    case "otlp": {
+      const endpoint = typeof candidate.endpoint === "string" ? candidate.endpoint.trim() : "";
+      if (!endpoint) {
+        throw new Error("otlp sink requires a non-empty endpoint");
+      }
+      const headers = candidate.headers ? { ...candidate.headers } : undefined;
+      return headers ? { type: "otlp", endpoint, headers } : { type: "otlp", endpoint };
+    }
     default: {
       if (typeof console !== "undefined" && typeof console.warn === "function") {
         console.warn("Unknown tracing sink type. Falling back to file sink.", candidate);
@@ -293,6 +311,8 @@ function snapshotSink(runtime: TraceSessionRuntime): TraceSinkSnapshot {
       return { type: "cognipeer", url: sink.url };
     case "http":
       return { type: "http", url: sink.url };
+    case "otlp":
+      return { type: "otlp", endpoint: sink.endpoint };
     default:
       return { type: "custom" };
   }
@@ -507,6 +527,251 @@ async function postStreamingSessionEnd(
   }
 }
 
+// ─── OTLP/HTTP JSON Export ──────────────────────────────────────────────────
+
+/** Nanosecond timestamp from ISO date string */
+function isoToUnixNano(iso: string): string {
+  const ms = new Date(iso).getTime();
+  // OTel uses fixed-point string nanoseconds (BigInt not needed for JSON)
+  return `${ms}000000`;
+}
+
+/** Map agent/event status to OTel StatusCode: 0=UNSET, 1=OK, 2=ERROR */
+function toOtlpStatusCode(status: string): number {
+  if (status === "error") return 2;
+  if (status === "success" || status === "completed") return 1;
+  return 0; // UNSET for in_progress, skipped, retry, etc.
+}
+
+/** Map event type to OTel SpanKind: 0 UNSPECIFIED, 1 INTERNAL, 2 SERVER, 3 CLIENT */
+function toOtlpSpanKind(type: string): number {
+  switch (type) {
+    case "ai_call":
+      return 3; // CLIENT — outgoing LLM request
+    case "tool_call":
+      return 1; // INTERNAL
+    case "agent_iteration":
+      return 1; // INTERNAL
+    default:
+      return 1; // INTERNAL
+  }
+}
+
+type OtlpKeyValue = { key: string; value: { stringValue?: string; intValue?: string; doubleValue?: number; boolValue?: boolean } };
+
+function stringAttr(key: string, val: string | undefined): OtlpKeyValue | null {
+  return val != null ? { key, value: { stringValue: val } } : null;
+}
+
+function intAttr(key: string, val: number | undefined): OtlpKeyValue | null {
+  return val != null && !Number.isNaN(val) ? { key, value: { intValue: String(val) } } : null;
+}
+
+function doubleAttr(key: string, val: number | undefined): OtlpKeyValue | null {
+  return val != null && !Number.isNaN(val) ? { key, value: { doubleValue: val } } : null;
+}
+
+/** Convert a single TraceEventRecord into an OTLP Span object. */
+function eventToOtlpSpan(event: TraceEventRecord): Record<string, unknown> {
+  const startNano = isoToUnixNano(event.timestamp);
+  const endNano = event.durationMs != null
+    ? `${new Date(new Date(event.timestamp).getTime() + event.durationMs).getTime()}000000`
+    : startNano;
+
+  const attrs: OtlpKeyValue[] = [
+    stringAttr("cognipeer.event.type", event.type),
+    stringAttr("cognipeer.event.label", event.label),
+    intAttr("cognipeer.event.sequence", event.sequence),
+    stringAttr("cognipeer.actor.scope", event.actor?.scope),
+    stringAttr("cognipeer.actor.name", event.actor?.name),
+    stringAttr("cognipeer.actor.role", event.actor?.role),
+    stringAttr("cognipeer.model", event.model),
+    stringAttr("cognipeer.provider", event.provider),
+    intAttr("cognipeer.tokens.input", event.inputTokens),
+    intAttr("cognipeer.tokens.output", event.outputTokens),
+    intAttr("cognipeer.tokens.total", event.totalTokens),
+    intAttr("cognipeer.tokens.cached_input", event.cachedInputTokens),
+    intAttr("cognipeer.bytes.request", event.requestBytes),
+    intAttr("cognipeer.bytes.response", event.responseBytes),
+    stringAttr("cognipeer.tool.execution_id", event.toolExecutionId),
+    stringAttr("cognipeer.retry_of", event.retryOf),
+    stringAttr("cognipeer.event.id", event.id),
+  ].filter(Boolean) as OtlpKeyValue[];
+
+  // Add sections as a JSON string attribute if present
+  if (event.data?.sections && event.data.sections.length > 0) {
+    try {
+      attrs.push({ key: "cognipeer.sections", value: { stringValue: JSON.stringify(event.data.sections) } });
+    } catch { /* skip on serialization failures */ }
+  }
+
+  const span: Record<string, unknown> = {
+    traceId: event.traceId,
+    spanId: event.spanId,
+    parentSpanId: event.parentSpanId || "",
+    name: event.label || event.type,
+    kind: toOtlpSpanKind(event.type),
+    startTimeUnixNano: startNano,
+    endTimeUnixNano: endNano,
+    attributes: attrs,
+    status: {
+      code: toOtlpStatusCode(event.status),
+      ...(event.status === "error" && event.error?.message ? { message: event.error.message } : {}),
+    },
+  };
+
+  // Error events
+  if (event.error) {
+    span.events = [{
+      timeUnixNano: startNano,
+      name: "exception",
+      attributes: [
+        { key: "exception.message", value: { stringValue: event.error.message } },
+        ...(event.error.stack ? [{ key: "exception.stacktrace", value: { stringValue: event.error.stack } }] : []),
+      ],
+    }];
+  }
+
+  return span;
+}
+
+/**
+ * Convert a complete TraceSessionFile into an OTLP ExportTraceServiceRequest (JSON).
+ * Produces a root span for the session and child spans for each event.
+ */
+export function traceSessionToOtlp(session: TraceSessionFile): Record<string, unknown> {
+  const traceId = session.traceId || generateTraceId();
+  const rootSpanId = session.rootSpanId || generateSpanId();
+  const startNano = isoToUnixNano(session.startedAt);
+  const endNano = session.endedAt ? isoToUnixNano(session.endedAt) : startNano;
+
+  // Resource attributes
+  const resourceAttrs: OtlpKeyValue[] = [
+    { key: "service.name", value: { stringValue: session.agent?.name || "cognipeer-agent" } },
+    stringAttr("service.version", session.agent?.version),
+    stringAttr("cognipeer.session.id", session.sessionId),
+    stringAttr("cognipeer.thread.id", session.threadId),
+    stringAttr("cognipeer.agent.model", session.agent?.model),
+    stringAttr("cognipeer.agent.provider", session.agent?.provider),
+  ].filter(Boolean) as OtlpKeyValue[];
+
+  // Root span — represents the entire agent session
+  const rootAttrs: OtlpKeyValue[] = [
+    stringAttr("cognipeer.session.status", session.status),
+    doubleAttr("cognipeer.session.duration_ms", session.durationMs),
+    intAttr("cognipeer.session.total_input_tokens", session.summary.totalInputTokens),
+    intAttr("cognipeer.session.total_output_tokens", session.summary.totalOutputTokens),
+    intAttr("cognipeer.session.total_cached_input_tokens", session.summary.totalCachedInputTokens),
+    intAttr("cognipeer.session.total_bytes_in", session.summary.totalBytesIn),
+    intAttr("cognipeer.session.total_bytes_out", session.summary.totalBytesOut),
+    intAttr("cognipeer.session.event_count", session.events.length),
+  ].filter(Boolean) as OtlpKeyValue[];
+
+  // Include event count breakdown
+  if (session.summary.eventCounts) {
+    for (const [key, count] of Object.entries(session.summary.eventCounts)) {
+      rootAttrs.push({ key: `cognipeer.session.event_count.${key}`, value: { intValue: String(count) } });
+    }
+  }
+
+  const rootSpan: Record<string, unknown> = {
+    traceId,
+    spanId: rootSpanId,
+    parentSpanId: "",
+    name: `agent_session: ${session.agent?.name || "agent"}`,
+    kind: 1, // INTERNAL
+    startTimeUnixNano: startNano,
+    endTimeUnixNano: endNano,
+    attributes: rootAttrs,
+    status: {
+      code: toOtlpStatusCode(session.status),
+      ...(session.status === "error" && session.errors.length > 0
+        ? { message: session.errors.map((e) => e.message).join("; ") }
+        : {}),
+    },
+  };
+
+  // Error events on root span
+  if (session.errors.length > 0) {
+    rootSpan.events = session.errors.map((err) => ({
+      timeUnixNano: err.timestamp ? isoToUnixNano(err.timestamp) : startNano,
+      name: "exception",
+      attributes: [
+        { key: "exception.message", value: { stringValue: err.message } },
+        ...(err.stack ? [{ key: "exception.stacktrace", value: { stringValue: err.stack } }] : []),
+        ...(err.type ? [{ key: "exception.type", value: { stringValue: err.type } }] : []),
+      ],
+    }));
+  }
+
+  // Child spans for each event — inherit traceId from session
+  const childSpans = session.events.map((event) => {
+    const span = eventToOtlpSpan({
+      ...event,
+      traceId: event.traceId || traceId,
+      spanId: event.spanId || generateSpanId(),
+      parentSpanId: event.parentSpanId || rootSpanId,
+    });
+    return span;
+  });
+
+  return {
+    resourceSpans: [{
+      resource: { attributes: resourceAttrs },
+      scopeSpans: [{
+        scope: {
+          name: "cognipeer-agent-sdk",
+          version: "1.0.0",
+        },
+        spans: [rootSpan, ...childSpans],
+      }],
+    }],
+  };
+}
+
+/**
+ * POST an OTLP ExportTraceServiceRequest (JSON) to the given endpoint.
+ */
+async function postOtlpTraces(
+  endpoint: string,
+  headers: Record<string, string> | undefined,
+  payload: Record<string, unknown>
+): Promise<void> {
+  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+  if (!fetchFn) {
+    throw new Error("OTLP sink requires fetch to be available in this runtime.");
+  }
+
+  const finalHeaders: Record<string, string> = {
+    "content-type": "application/json",
+    ...(headers || {}),
+  };
+
+  try {
+    const response = await fetchFn(endpoint, {
+      method: "POST",
+      headers: finalHeaders,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      let responseText = "";
+      try {
+        responseText = await response.text();
+      } catch { /* ignore */ }
+      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+      throw new Error(`${statusLine}${bodyPreview}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Tracing] OTLP export failed:", errMsg);
+    }
+    throw err;
+  }
+}
+
 function createEmptySummary(): TraceSessionSummary {
   return {
     totalDurationMs: 0,
@@ -525,6 +790,16 @@ function generateSessionId(): string {
 
 function generateEventId(sequence: number): string {
   return `evt_${String(sequence).padStart(4, "0")}_${nanoid(4)}`;
+}
+
+/** Generate a W3C-compatible trace ID (32 hex chars / 128-bit). */
+export function generateTraceId(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+/** Generate an OTel span ID (16 hex chars / 64-bit). */
+export function generateSpanId(): string {
+  return crypto.randomBytes(8).toString("hex");
 }
 
 function defaultEventLabel(type: string): string {
@@ -704,8 +979,12 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
   if (!cfg.enabled) return undefined;
 
   const sessionId = generateSessionId();
+  const traceId = generateTraceId();
+  const rootSpanId = generateSpanId();
   const runtime: TraceSessionRuntime = {
     sessionId,
+    traceId,
+    rootSpanId,
     threadId: opts.tracing?.threadId,
     startedAt: Date.now(),
     resolvedConfig: cfg,
@@ -801,6 +1080,8 @@ export function recordTraceEvent(
     timestamp?: string;
     actor?: TraceEventRecord["actor"];
     status?: TraceEventRecord["status"];
+    /** Explicit parent span ID. Falls back to session.currentIterationSpanId when omitted. */
+    parentSpanId?: string;
     durationMs?: number;
     inputTokens?: number;
     outputTokens?: number;
@@ -878,9 +1159,17 @@ export function recordTraceEvent(
 
   // For ai_call events, always include token fields (even if undefined/0) for consistency
   const isAiCall = event.type === "ai_call";
+
+  // Span hierarchy: traceId from session, unique spanId per event,
+  // parentSpanId from explicit param or current iteration span
+  const spanId = generateSpanId();
+  const parentSpanId = event.parentSpanId || session.currentIterationSpanId || session.rootSpanId;
   
   const record: TraceEventRecord = {
     sessionId: session.sessionId,
+    traceId: session.traceId,
+    spanId,
+    parentSpanId,
     id,
     type: event.type,
     label: eventLabel,
@@ -1012,6 +1301,8 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
 
   const buildPayload = (status: TraceSessionStatus): TraceSessionFile => ({
     sessionId: session.sessionId,
+    traceId: session.traceId,
+    rootSpanId: session.rootSpanId,
     threadId: session.threadId,
     startedAt: startedAtIso,
     endedAt: endedAtIso,
@@ -1029,7 +1320,22 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
   const sink = session.resolvedConfig.sink;
   const isStreamingMode = session.resolvedConfig.mode === "streaming";
 
-  if (sink.type === "cognipeer" || sink.type === "http") {
+  if (sink.type === "otlp") {
+    // OTLP/HTTP JSON export — convert session to ExportTraceServiceRequest and POST
+    try {
+      const otlpPayload = traceSessionToOtlp(payloadForSink);
+      await postOtlpTraces(sink.endpoint, sink.headers, otlpPayload);
+    } catch (err) {
+      sinkFailed = true;
+      const message = err instanceof Error ? err.message : String(err);
+      session.errors.push({
+        eventId: "sink",
+        message,
+        type: "sink",
+        timestamp: endedAtIso,
+      });
+    }
+  } else if (sink.type === "cognipeer" || sink.type === "http") {
     try {
       const headers = sink.type === "cognipeer"
         ? { Authorization: `Bearer ${sink.apiKey}` }

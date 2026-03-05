@@ -7,7 +7,7 @@ import { createAgentCoreNode } from "./nodes/agentCore.js";
 import { createToolsNode } from "./nodes/tools.js";
 import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
 import { createTool } from "./tool.js";
-import { createTraceSession, finalizeTraceSession, startStreamingSession } from "./utils/tracing.js";
+import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent } from "./utils/tracing.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
@@ -156,6 +156,21 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     while (iterations < iterationLimit) {
       iterations++;
+
+      // Open an iteration span as parent for all ai_call / tool_call events in this turn
+      const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
+      if (traceSession) {
+        const iterEvent = recordTraceEvent(traceSession, {
+          type: "agent_iteration",
+          label: `Iteration ${iterations}`,
+          actor: { scope: "agent", name: opts.name || "agent", role: "orchestrator" },
+          parentSpanId: traceSession.rootSpanId,
+        });
+        // Override the spanId for the iteration event so children reference it
+        if (iterEvent) {
+          traceSession.currentIterationSpanId = iterEvent.spanId;
+        }
+      }
 
       if (cancelIfRequested("loop")) break;
 

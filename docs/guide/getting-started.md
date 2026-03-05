@@ -206,7 +206,7 @@ createSmartAgent({
 });
 ```
 
-By default, traces land in `logs/[session]/trace.session.json`. Keep `logData: true` for payload snapshots, set it to `false` for metrics-only mode, and swap in `fileSink(path?)`, `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, or `customSink({ onEvent, onSession })` when you want a different destination.
+By default, traces land in `logs/[session]/trace.session.json`. Keep `logData: true` for payload snapshots, set it to `false` for metrics-only mode, and swap in `fileSink(path?)`, `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` when you want a different destination.
 
 ## Quick capability tour
 

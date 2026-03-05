@@ -187,6 +187,8 @@ Note: `SmartAgentLimits` is an alias for `AgentLimits` (both agents use the same
 ```typescript
 interface TracingConfig {
   enabled: boolean;
+  mode?: "batched" | "streaming";
+  threadId?: string;
   logData?: boolean;                      // Include payloads in trace
   sink?: TraceSinkConfig;
 }
@@ -195,6 +197,7 @@ type TraceSinkConfig =
   | { type: "file"; path?: string }
   | { type: "http"; url: string; headers?: Record<string, string> }
   | { type: "cognipeer"; apiKey: string; url?: string }
+  | { type: "otlp"; endpoint: string; headers?: Record<string, string> }
   | { type: "custom"; onEvent?: (event: TraceEventRecord) => void; onSession?: (session: TraceSessionFile) => void };
 ```
 

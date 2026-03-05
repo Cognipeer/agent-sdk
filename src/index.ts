@@ -15,7 +15,7 @@ export * from "./guardrails/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { fromLangchainTools } from "./adapters/langchain.js";
-export { fileSink, customSink, cognipeerSink, httpSink, startStreamingSession } from "./utils/tracing.js";
+export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp } from "./utils/tracing.js";
 export { GuardrailPhase } from "./types.js";
 export type {
 	// Smart Agent types
@@ -59,6 +59,7 @@ export type {
 	TraceSinkCustomConfig,
 	TraceSinkCognipeerConfig,
 	TraceSinkHttpConfig,
+	TraceSinkOtlpConfig,
 	TraceSinkSnapshot,
 	TraceSessionConfigSnapshot,
 	ConversationGuardrail,
