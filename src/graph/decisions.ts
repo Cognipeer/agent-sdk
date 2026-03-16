@@ -1,5 +1,22 @@
 import { SmartState, SmartAgentOptions } from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
+import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
+
+function isSyntheticSummaryMessage(message: any): boolean {
+  if (!message) return false;
+  if (message.role === 'tool' && message.name === 'summarize_context') {
+    return true;
+  }
+
+  if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+    return message.tool_calls.some((toolCall: any) => {
+      const toolName = toolCall?.function?.name || toolCall?.name;
+      return toolName === 'summarize_context';
+    });
+  }
+
+  return false;
+}
 
 /** Shared helper to compute whether we exceed token limit */
 function needsSummarization(state: SmartState, opts: SmartAgentOptions, summarizationEnabled: boolean): boolean {
@@ -7,23 +24,20 @@ function needsSummarization(state: SmartState, opts: SmartAgentOptions, summariz
     return false;
   }
 
-  // Determine the effective max tokens for summarization
-  // Order of precedence:
-  // 1. opts.summarization.maxTokens (if strictly defined)
-  // 2. Default: 50000
-  let maxTok: number | undefined;
+  if ((state.ctx as any)?.__needsSummarization) {
+    return true;
+  }
 
-  if (typeof opts.summarization === 'object' && typeof opts.summarization.maxTokens === 'number') {
-    maxTok = opts.summarization.maxTokens;
+  const resolved = getResolvedSmartConfig(opts, state.agent as any);
+  if (!resolved.summarization.enable) {
+    return false;
   }
-  
-  // Default to 50000 if no limit specified but summarization is enabled
-  if (maxTok === undefined) {
-    maxTok = 50000;
-  }
+
+  const maxTok = resolved.summarization.summaryTriggerTokens;
 
   try {
     const allText = (state.messages || [])
+      .filter((message: any) => !isSyntheticSummaryMessage(message))
       .map((m: any) => {
         if (typeof m.content === "string") return m.content;
         if (Array.isArray(m.content)) {
@@ -37,7 +51,12 @@ function needsSummarization(state: SmartState, opts: SmartAgentOptions, summariz
       })
       .join("\n");
     const tokenCount = countApproxTokens(allText);
-    const needsSum = tokenCount > maxTok;
+    const contextRotScore = state.watchdog?.contextRotScore || 0;
+    const needsSum = tokenCount > maxTok || (
+      resolved.watchdog.enabled
+      && resolved.watchdog.autoCompaction
+      && contextRotScore >= resolved.watchdog.contextRotThreshold
+    );
     // Debug log for development - can be removed in production
     if (process.env.DEBUG_SUMMARIZATION) {
       const msgCount = (state.messages || []).length;
@@ -48,10 +67,10 @@ function needsSummarization(state: SmartState, opts: SmartAgentOptions, summariz
       });
       console.log(`[Summarization] Messages: ${msgCount}, Tool messages: ${toolMsgs.length}`);
       toolDetails.forEach(d => console.log(`  ${d}`));
-      console.log(`[Summarization] Token count: ${tokenCount}, Max: ${maxTok}, Needs summarization: ${needsSum}`);
+      console.log(`[Summarization] Token count: ${tokenCount}, Max: ${maxTok}, Context rot: ${contextRotScore}, Needs summarization: ${needsSum}`);
     }
     return needsSum;
-  } catch (e) {
+  } catch {
     return false;
   }
 }

@@ -3,160 +3,67 @@ layout: home
 
 hero:
   name: Agent SDK
-  text: Lightweight AI Agent Framework
-  tagline: Message-first agent loop with planning, summarization, and multi-agent orchestration
+  text: Build Reliable Agent Workflows
+  tagline: A smart runtime for autonomous agents that need typed tools, explicit planning, resilient context handling, and inspectable execution.
   image:
-    src: /agent-sdk/logo.svg
+    src: /agent-sdk-logo.svg
     alt: Agent SDK
   actions:
     - theme: brand
       text: Get Started
       link: /guide/getting-started
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/Cognipeer/agent-sdk
+      text: Study Architecture
+      link: /guide/architecture
 
 features:
-  - icon: 🎯
-    title: Planning & TODOs
-    details: Built-in planning mode with structured TODO management and strict workflow rules for complex multi-step tasks.
-  - icon: 🧠
-    title: Smart Summarization
-    details: Token-aware context summarization that archives heavy tool outputs while keeping them recoverable.
-  - icon: 🔧
-    title: Tool Development
-    details: Create type-safe tools with Zod schemas. Built-in adapters for LangChain and MCP tools.
-  - icon: 🤝
-    title: Multi-Agent Composition
-    details: Compose agents via asTool and asHandoff for seamless delegation and orchestration.
-  - icon: 📊
-    title: Structured Output
-    details: Enforce structured responses using Zod schemas with automatic validation and parsing.
-  - icon: 🛡️
-    title: Guardrails
-    details: Conversation guardrails with built-in checks and customizable presets for safe AI interactions.
-  - icon: 📈
-    title: Tracing & Debugging
-    details: Structured JSON tracing with payload capture and pluggable sinks for observability.
-  - icon: ⚡
-    title: Pause & Resume
-    details: Support for long-running sessions with state snapshots and resumable execution.
+  - title: Runtime Profiles For Different Agent Behaviors
+    details: Use fast, balanced, deep, or research as operational presets. They are real tradeoff bundles for context budget, delegation depth, memory policy, and watchdog behavior.
+  - title: Planning That Fits Autonomous Work
+    details: Smart planning is aimed at agents that own multi-step work. The durable plan lives on result.state.plan instead of being trapped in transient UI events.
+  - title: Summarization With Recovery Paths
+    details: Long-running agents can compact tool-heavy history without going blind. Archived outputs remain recoverable through get_tool_response when the agent needs raw evidence again.
+  - title: MCP And External Tool Systems
+    details: Bridge MCP-hosted tools through LangChain adapters and keep them inside the same typed, traceable runtime as local tools and approvals.
+  - title: State, Resume, And Human Control
+    details: Pause execution, snapshot state, restore later, and gate risky tools through approvals without losing the agent's working context.
+  - title: Tracing, Debugging, And Evaluation
+    details: Inspect tool calls, summaries, handoffs, token drift, and partial sink failures through structured traces built for real operational debugging.
 ---
+
+## Start Here
+
+If you are integrating the SDK for the first time, read the docs in this order:
+
+1. [Getting Started](/guide/getting-started) to get a working agent into your app fast.
+2. [Core Concepts](/guide/core-concepts) to understand what actually lives in state, what is emitted as an event, and what gets summarized.
+3. [Architecture](/guide/architecture) to understand the smart wrapper, the base loop, and where runtime decisions are made.
 
 ## Quick Start
 
-::: code-group
-
-```bash [npm]
-npm install @cognipeer/agent-sdk zod
-```
-
-```bash [yarn]
-yarn add @cognipeer/agent-sdk zod
-```
-
-```bash [pnpm]
-pnpm add @cognipeer/agent-sdk zod
-```
-
-:::
-
-## Basic Usage
-
-```typescript
-import { createSmartAgent, createTool, fromLangchainModel } from "@cognipeer/agent-sdk";
-import { ChatOpenAI } from "@langchain/openai";
+```ts
+import { createSmartAgent, createTool } from "@cognipeer/agent-sdk";
 import { z } from "zod";
 
-// Define a simple tool
-const echo = createTool({
-  name: "echo",
-  description: "Echo back the input text",
-  schema: z.object({ text: z.string().min(1) }),
-  func: async ({ text }) => ({ echoed: text }),
+const lookup = createTool({
+  name: "lookup_owner",
+  description: "Return the owner for a project code",
+  schema: z.object({ code: z.enum(["ORBIT", "NOVA"]) }),
+  func: async ({ code }) => ({ owner: code === "ORBIT" ? "Ada Lovelace" : "Grace Hopper" }),
 });
 
-// Create model adapter
-const model = fromLangchainModel(new ChatOpenAI({
-  model: "gpt-4o-mini",
-  apiKey: process.env.OPENAI_API_KEY,
-}));
-
-// Create smart agent with planning
-const agent = createSmartAgent({
-  name: "Assistant",
-  model,
-  tools: [echo],
-  useTodoList: true,
-  limits: { maxToolCalls: 5, maxToken: 6000 },
-  tracing: { enabled: true },
-});
-
-// Run the agent
-const result = await agent.invoke({
-  messages: [{ 
-    role: "user", 
-    content: "Plan a greeting and send it via the echo tool" 
-  }],
-});
-
-console.log(result.content);
-```
-
-## Key Capabilities
-
-- **Planning Mode**: Structured TODO tool with strict workflow rules
-- **Smart Summarization**: Token-aware context archiving with retrieval
-- **Structured Output**: Zod-powered schema validation and parsing
-- **Tool Limits**: Total and parallel execution limits with automatic finalization
-- **Multi-Agent**: Compose agents via `asTool` and runtime handoffs
-- **Vision Support**: Multimodal message parts and provider normalization
-- **Tracing**: Structured JSON logs with streaming `onEvent` hooks
-
-## Advanced Features
-
-### Planning Mode
-
-```typescript
 const agent = createSmartAgent({
   model,
-  tools,
-  useTodoList: true, // Enable planning mode
+  tools: [lookup],
+  runtimeProfile: "balanced",
+  planning: { mode: "todo" },
+  limits: { maxToolCalls: 6, maxContextTokens: 12000 },
 });
 ```
 
-### Structured Output
+## What This Site Optimizes For
 
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  outputSchema: z.object({
-    summary: z.string(),
-    items: z.array(z.string()),
-  }),
-});
-
-const result = await agent.invoke({ messages });
-console.log(result.output); // Parsed structured output
-```
-
-### Multi-Agent Delegation
-
-```typescript
-const specialist = createSmartAgent({ name: "Specialist", model, tools });
-const coordinator = createSmartAgent({
-  name: "Coordinator",
-  model,
-  tools: [specialist.asTool({ toolName: "delegate_to_specialist" })],
-});
-```
-
-## Why Agent SDK?
-
-- **Minimal Dependencies**: Lightweight core with optional adapters for LangChain and MCP
-- **Type-Safe**: Full TypeScript support with Zod schema validation
-- **Flexible**: Use `createSmartAgent` for batteries-included experience or `createAgent` for full control
-- **Production Ready**: Built-in tracing, guardrails, and token management
-- **Composable**: Easy multi-agent orchestration with delegation and handoffs
-- **Observable**: Predictable events, inspection-ready state, and structured traces
+- Fast product onboarding without hand-wavy architecture claims.
+- Clear separation between the minimal loop and the smart runtime wrapper.
+- Production-oriented guidance for autonomous agents, especially around planning, context pressure, and tracing.
+- A product-led docs surface with platform attribution kept in the footer instead of the header.

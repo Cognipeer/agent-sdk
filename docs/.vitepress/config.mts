@@ -2,17 +2,20 @@ import { defineConfig } from 'vitepress';
 
 export default defineConfig({
   title: 'Agent SDK',
-  description: 'A lightweight, message-first agent loop with planning, summarization, and multi-agent orchestration',
+  description: 'A composable agent runtime for deterministic tool use, adaptive planning, context compaction, and multi-agent orchestration.',
   base: '/agent-sdk/',
   ignoreDeadLinks: true,
+  appearance: false,
   themeConfig: {
-    logo: '/logo.svg',
+    logo: '/agent-sdk-logo.svg',
+    siteTitle: 'agent-sdk',
     nav: [
       { text: 'Guide', link: '/guide/getting-started' },
+      { text: 'Architecture', link: '/guide/architecture' },
       { text: 'API Reference', link: '/api/agent' },
       { text: 'Examples', link: '/examples/' },
       {
-        text: 'v0.1.1',
+        text: 'v0.4.0',
         items: [
           { text: 'Changelog', link: '/changelog' },
           { text: 'Contributing', link: '/contributing' },
@@ -32,7 +35,9 @@ export default defineConfig({
         {
           text: 'Features',
           items: [
-            { text: 'Planning & TODOs', link: '/guide/planning' },
+            { text: 'Runtime Profiles', link: '/guide/runtime-profiles' },
+            { text: 'Planning for Autonomous Agents', link: '/guide/planning' },
+            { text: 'Summarization & Context', link: '/guide/summarization' },
             { text: 'Tool Development', link: '/guide/tool-development' },
             { text: 'Guardrails', link: '/guide/guardrails' },
             { text: 'State Management', link: '/guide/state-management' },
@@ -54,27 +59,59 @@ export default defineConfig({
         {
           text: 'API Reference',
           items: [
-            { text: 'Agent', link: '/api/agent' },
-            { text: 'Tools', link: '/api/tools' },
-            { text: 'Nodes', link: '/api/nodes' },
-            { text: 'Prompts', link: '/api/prompts' },
-            { text: 'Adapters', link: '/api/adapters' },
-            { text: 'Types', link: '/api/types' },
+            { text: 'Overview', link: '/api/' },
+            { text: 'Agent Construction', link: '/api/agent' },
+            { text: 'Tools & Context Tools', link: '/api/tools' },
+            { text: 'Adapters & Models', link: '/api/adapters' },
+            { text: 'Prompting & Planning', link: '/api/prompts' },
+            { text: 'State & Public Types', link: '/api/types' },
+            { text: 'Runtime Internals', link: '/api/nodes' },
           ],
         },
       ],
       '/examples/': [
         {
-          text: 'Examples',
+          text: 'Start Here',
           items: [
             { text: 'Overview', link: '/examples/' },
+          ],
+        },
+        {
+          text: 'Fundamentals',
+          items: [
             { text: 'Basic Agent', link: '/examples/basic' },
+            { text: 'Tools', link: '/examples/tools' },
+          ],
+        },
+        {
+          text: 'Smart Runtime',
+          items: [
             { text: 'Planning & TODOs', link: '/examples/planning' },
-            { text: 'Multi-Agent', link: '/examples/multi-agent' },
+            { text: 'Summarization', link: '/examples/summarization' },
+            { text: 'Archived Tool Retrieval', link: '/examples/summarize-context' },
+            { text: 'Rewrite After Summary', link: '/examples/rewrite-summary' },
+            { text: 'Tool Limit Finalize', link: '/examples/tool-limit' },
+          ],
+        },
+        {
+          text: 'Control & Safety',
+          items: [
             { text: 'Tool Approval', link: '/examples/tool-approval' },
+            { text: 'Pause & Resume', link: '/examples/pause-resume' },
             { text: 'Structured Output', link: '/examples/structured-output' },
             { text: 'Guardrails', link: '/examples/guardrails' },
-            { text: 'Pause & Resume', link: '/examples/pause-resume' },
+          ],
+        },
+        {
+          text: 'Orchestration',
+          items: [
+            { text: 'Multi-Agent', link: '/examples/multi-agent' },
+            { text: 'Handoff', link: '/examples/handoff' },
+          ],
+        },
+        {
+          text: 'Integrations',
+          items: [
             { text: 'Vision', link: '/examples/vision' },
             { text: 'MCP Tools', link: '/examples/mcp' },
           ],
@@ -85,16 +122,19 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/Cognipeer/agent-sdk' },
     ],
     footer: {
-      message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2025 CognipeerAI',
+      message: 'Agent SDK is part of the Cognipeer platform.',
+      copyright: 'Copyright © 2026 Cognipeer',
     },
     search: {
       provider: 'local',
     },
   },
   head: [
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@400;500;600;700;800&display=swap' }],
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/agent-sdk/favicon.svg' }],
-    ['meta', { name: 'theme-color', content: '#3eaf7c' }],
+    ['meta', { name: 'theme-color', content: '#00b5a5' }],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:locale', content: 'en' }],
     ['meta', { name: 'og:site_name', content: 'Agent SDK Documentation' }],

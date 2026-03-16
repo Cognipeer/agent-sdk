@@ -1,65 +1,88 @@
+# Tools And Context Tools
 
-# Tools
+Tools are the action surface of the runtime. They should be typed, explicit, and easy to inspect in traces.
 
-## createTool
+## `createTool(...)`
 
-Define tools quickly with a Zod schema and an async function.
+Use `createTool(...)` for the standard SDK tool shape.
 
 ```ts
 import { createTool } from "@cognipeer/agent-sdk";
 import { z } from "zod";
 
 const search = createTool({
-  name: "search",
-  description: "Simple search",
-  schema: z.object({ q: z.string() }),
-  func: async ({ q }) => ({ results: [`You searched: ${q}`] }),
+  name: "search_docs",
+  description: "Search the docs index",
+  schema: z.object({ query: z.string().min(1) }),
+  func: async ({ query }) => ({ hits: [`result for ${query}`] }),
 });
 ```
 
-Under the hood the helper yields a lightweight internal tool object. It remains duck-typed so LangChain adapters (and other ecosystems) can still interoperate once converted via adapter helpers.
+### Important fields
 
-## Bring your own tool implementation
+- `name`
+- `description`
+- `schema`
+- `func`
+- `needsApproval?`
+- `approvalPrompt?`
+- `approvalDefaults?`
+- `maxExecutionsPerRun?`
 
-You can pass any object that exposes `invoke` or `call`:
+## Approval-gated tools
 
-```ts
-const customTool = {
-  name: "weather",
-  description: "Lookup weather",
-  async invoke({ city }) {
-    const data = await fetchWeather(city);
-    return { summary: data.description, tempC: data.tempC };
-  },
-};
-
-const agent = createAgent({ model, tools: [customTool] });
-```
-
-## MCP and LangChain tools
-
-Any LangChain `ToolInterface` implementation is supported after converting through `fromLangchainTools(...)`. MCP adapters (e.g. `MultiServerMCPClient.tool()`) produce LangChain-style tools, so wrap them first:
+If a tool is risky, mark it for approval:
 
 ```ts
-import { fromLangchainTools } from "@cognipeer/agent-sdk";
-
-const lcTools = await client.getTools();
-const tools = fromLangchainTools(lcTools);
+const writeFile = createTool({
+  name: "dangerous_write",
+  description: "Write content to disk",
+  schema: z.object({ path: z.string(), content: z.string() }),
+  needsApproval: true,
+  approvalPrompt: "Confirm the write is safe.",
+  func: async ({ path, content }) => ({ ok: true, path, bytesWritten: content.length }),
+});
 ```
 
-When using `fromLangchainModel(...)`, tools passed to the agent are automatically bridged back to LangChain (if `@langchain/core` is installed); otherwise the agent falls back to plain callables.
+The runtime pauses before execution, records a pending approval, and resumes after `resolveToolApproval(...)` is applied.
 
-## Context tools (SmartAgent)
-- `manage_todo_list` – exposed when `useTodoList: true`. Maintains an explicit plan. The agent must call it first to write a plan, then after every action to update statuses.
-- `get_tool_response` – always available. Given an `executionId`, returns the raw output of a tool execution even if the conversation shows a summarized placeholder.
-- `response` – added automatically when `outputSchema` is provided. The model must call it exactly once with the final JSON object.
+## Execution limits per tool
 
-These tools share a mutable state reference so they can read/write `toolHistory`, `toolHistoryArchived`, and plan data without leaking implementation details into your application state.
+Use `maxExecutionsPerRun` when one specific tool should not be called indefinitely even if the global tool budget is still available.
 
-## Best practices
+## Non-SDK tools
 
-- Keep tool responsibilities narrow and deterministic.
-- Fail fast with informative errors (`throw new Error("MISSING_API_KEY: ...")`).
-- Bound payload sizes – return structured summaries, not raw megabyte blobs.
-- Include optional metadata (e.g. `source: 'cache'`) to aid downstream reasoning.
-- Document latency and rate limits so users can tune `maxParallelTools` appropriately.
+You can also pass objects that expose `invoke`, `call`, `run`, or `func`. This is how LangChain and MCP-adapted tools integrate cleanly.
+
+## Built-in context tools
+
+`createSmartAgent(...)` may append runtime-managed tools:
+
+- `manage_todo_list`
+- `get_tool_response`
+- `response` when `outputSchema` is active
+
+### `manage_todo_list`
+
+This is the planning tool for autonomous multi-step work.
+
+- `write` creates or replaces the full plan
+- `update` patches existing items by id
+- `read` returns the current plan
+- `expectedVersion` prevents stale writes from overwriting a newer plan
+
+### `get_tool_response`
+
+This is the recovery tool for summarized history. Use it when a large tool output has been archived and you need the raw execution payload again.
+
+### `response`
+
+This finalize tool is injected only when `outputSchema` is active. The model is expected to call it exactly once with the final JSON object.
+
+## Tool authoring guidance
+
+- validate inputs tightly with Zod
+- return structured objects instead of long prose blobs
+- throw actionable errors
+- include source ids, cache flags, or other metadata when it improves downstream reasoning
+- keep large outputs intentional, because they interact directly with summarization pressure

@@ -1,261 +1,85 @@
-# Adapters
+# Adapters And Models
 
-Agent SDK provides adapters to integrate with popular frameworks and protocols.
+Adapters let you keep the runtime generic while still using LangChain models, MCP-hosted tools, or custom provider SDKs.
 
-## LangChain Adapters
+## `fromLangchainModel(...)`
 
-### fromLangchainModel
+Wrap a LangChain chat model so it matches the SDK's model contract.
 
-Wrap LangChain chat models for use with Agent SDK:
-
-```typescript
+```ts
 import { fromLangchainModel } from "@cognipeer/agent-sdk";
 import { ChatOpenAI } from "@langchain/openai";
-import { ChatAnthropic } from "@langchain/anthropic";
 
-// OpenAI
-const openaiModel = fromLangchainModel(
+const model = fromLangchainModel(
   new ChatOpenAI({
     model: "gpt-4o-mini",
     apiKey: process.env.OPENAI_API_KEY,
-    temperature: 0.7,
-  })
-);
-
-// Anthropic
-const anthropicModel = fromLangchainModel(
-  new ChatAnthropic({
-    model: "claude-3-5-sonnet-20241022",
-    apiKey: process.env.ANTHROPIC_API_KEY,
   })
 );
 ```
 
-### fromLangchainTools
+The adapter normalizes message shape and can bind tools when the underlying model supports it.
 
-Convert LangChain tools to Agent SDK format:
+## `fromLangchainTools(...)`
 
-```typescript
+Convert LangChain-compatible tools into SDK-native tools.
+
+```ts
 import { fromLangchainTools } from "@cognipeer/agent-sdk";
-import { DynamicTool } from "@langchain/core/tools";
-
-const langchainTools = [
-  new DynamicTool({
-    name: "search",
-    description: "Search the web",
-    func: async (query: string) => {
-      // Search implementation
-      return `Results for: ${query}`;
-    },
-  }),
-];
 
 const sdkTools = fromLangchainTools(langchainTools);
-
-const agent = createSmartAgent({
-  model,
-  tools: sdkTools,
-});
 ```
 
-### withTools
+This is the main bridge for MCP tooling as well.
 
-Helper to bind tools to models that support it:
+## `withTools(...)`
 
-```typescript
-import { withTools, fromLangchainModel } from "@cognipeer/agent-sdk";
-import { ChatOpenAI } from "@langchain/openai";
+`withTools(...)` is a thin helper that binds tools to models which support native tool binding.
 
-const model = fromLangchainModel(new ChatOpenAI({ model: "gpt-4o-mini" }));
-const tools = [searchTool, calculatorTool];
-
-// Automatically binds tools if model supports bindTools()
+```ts
 const modelWithTools = withTools(model, tools);
 ```
 
-## MCP (Model Context Protocol)
+In most app code you will not call it directly because the runtime handles binding automatically.
 
-### MCP Client Adapter
+## MCP integration pattern
 
-Connect to MCP servers and use their tools:
+Use an MCP client to discover tools, then adapt them with `fromLangchainTools(...)`.
 
-```typescript
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+```ts
+import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { fromLangchainTools } from "@cognipeer/agent-sdk";
 
-// Create MCP client
-const transport = new StdioClientTransport({
-  command: "npx",
-  args: ["-y", "@modelcontextprotocol/server-tavily"],
-  env: { TAVILY_API_KEY: process.env.TAVILY_API_KEY },
-});
-
-const client = new Client(
-  { name: "agent-sdk-client", version: "1.0.0" },
-  { capabilities: {} }
-);
-
-await client.connect(transport);
-
-// List and convert MCP tools
-const mcpTools = await client.listTools();
-const tools = fromLangchainTools(
-  mcpTools.tools.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    schema: tool.inputSchema,
-    func: async (args: any) => {
-      const result = await client.callTool({ name: tool.name, arguments: args });
-      return result.content;
-    },
-  }))
-);
-
-// Use with agent
-const agent = createSmartAgent({
-  model,
-  tools,
-});
+const client = new MultiServerMCPClient({ /* ... */ });
+const tools = fromLangchainTools(await client.getTools());
 ```
 
-For complete MCP integration examples, see the [MCP Guide](/guide/mcp).
+That keeps MCP tools inside the same runtime surface as local tools, approvals, and traces.
 
-## Custom Model Adapter
+## Custom model contract
 
-Create your own model adapter for any LLM provider:
+If you are not using LangChain, the model only needs an `invoke(messages)` method. `bindTools(...)` is optional but helpful.
 
-```typescript
-import { ModelAdapter, Message, AssistantMessage } from "@cognipeer/agent-sdk";
-
-class CustomModelAdapter implements ModelAdapter {
-  constructor(private apiKey: string, private model: string) {}
-
-  async invoke(messages: Message[]): Promise<AssistantMessage> {
-    // Convert messages to your API format
-    const response = await fetch("https://api.example.com/chat", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages.map(m => ({
-          role: m.role,
-          content: m.content,
-        })),
-      }),
-    });
-
-    const data = await response.json();
-
-    // Return in Agent SDK format
+```ts
+const customModel = {
+  async invoke(messages) {
     return {
       role: "assistant",
-      content: data.message.content,
-      // Optional: include tool calls if supported
-      tool_calls: data.tool_calls,
+      content: "hello",
     };
-  }
-
-  // Optional: support tool binding
-  bindTools(tools: ToolInterface[]): ModelAdapter {
-    return new CustomModelAdapter(this.apiKey, this.model);
-  }
-}
-
-// Usage
-const model = new CustomModelAdapter(
-  process.env.CUSTOM_API_KEY,
-  "custom-model-v1"
-);
-
-const agent = createSmartAgent({ model, tools });
-```
-
-## Usage Converter
-
-Customize how usage data is extracted and normalized:
-
-```typescript
-import { UsageConverter } from "@cognipeer/agent-sdk";
-
-const customUsageConverter: UsageConverter = (
-  finalMessage,
-  fullState,
-  model
-) => {
-  // Extract usage from provider-specific format
-  const usage = finalMessage.usage_metadata || finalMessage.usage;
-  
-  return {
-    input_tokens: usage?.input_tokens || 0,
-    output_tokens: usage?.output_tokens || 0,
-    total_tokens: usage?.total_tokens || 0,
-    // Provider-specific fields
-    cache_hits: usage?.cache_hits,
-    reasoning_tokens: usage?.reasoning_tokens,
-  };
+  },
+  bindTools(tools) {
+    return this;
+  },
 };
-
-const agent = createSmartAgent({
-  model,
-  tools,
-  usageConverter: customUsageConverter,
-});
 ```
 
-## Best Practices
+The simpler this adapter stays, the easier your runtime becomes to reason about.
 
-### Model Selection
+## Guidance
 
-- Use **gpt-4o-mini** for most tasks (fast, cost-effective)
-- Use **gpt-4** for complex reasoning
-- Use **claude-3-5-sonnet** for long context windows
-
-### Tool Binding
-
-- Use `withTools()` for models that support native tool binding
-- Models without tool binding will receive tools in system prompt
-
-### Error Handling
-
-```typescript
-try {
-  const result = await agent.invoke({ messages });
-} catch (error) {
-  if (error.message.includes("rate limit")) {
-    // Handle rate limiting
-  } else if (error.message.includes("context length")) {
-    // Handle token limits
-  }
-}
-```
-
-### Provider-Specific Configuration
-
-```typescript
-// OpenAI with streaming
-const model = fromLangchainModel(
-  new ChatOpenAI({
-    model: "gpt-4o-mini",
-    streaming: true,
-    callbacks: [/* streaming callbacks */],
-  })
-);
-
-// Anthropic with system prompt
-const model = fromLangchainModel(
-  new ChatAnthropic({
-    model: "claude-3-5-sonnet-20241022",
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-  })
-);
-```
-
-## See Also
-
-- [MCP Integration Guide](/guide/mcp) - Complete MCP setup
-- [Tool Development](/guide/tool-development) - Creating custom tools
+- prefer `fromLangchainModel(...)` for mainstream provider integrations
+- prefer `fromLangchainTools(...)` for MCP or LangChain tool ecosystems
+- implement a custom adapter only when you need a provider not already covered by your stack
+- keep provider-specific auth and transport logic outside prompts
 - [Agent API](/api/agent) - Agent configuration options

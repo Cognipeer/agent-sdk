@@ -12,6 +12,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       tools: (opts.tools as any) || [],
       guardrails: (opts as any).guardrails,
       systemPrompt: undefined,
+      todoListPrompt: opts.todoListPrompt,
       limits: opts.limits,
       useTodoList: undefined,
       outputSchema: (opts as any).outputSchema,
@@ -119,7 +120,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           }
         }
 
-      } catch (e) {
+      } catch {
         // Debug tool pairing failed silently
       }
     };

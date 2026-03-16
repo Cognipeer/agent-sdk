@@ -76,8 +76,10 @@ describe('SmartAgent Integration', () => {
                 function: {
                   name: 'manage_todo_list',
                   arguments: JSON.stringify({
-                    action: 'add',
-                    item: { id: '1', title: 'Test task', done: false },
+                    operation: 'write',
+                    todoList: [
+                      { id: 1, title: 'Test task', status: 'in-progress' },
+                    ],
                   }),
                 },
               },

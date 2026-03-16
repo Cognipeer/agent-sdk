@@ -1,12 +1,37 @@
 // Lightweight message helpers to avoid hard dependency on LangChain
-import type { SmartAgentOptions, SmartState, BaseMessage, SmartAgentEvent, SummarizationEvent } from "../types.js";
+import type {
+    SmartAgentOptions,
+    SmartState,
+    BaseMessage,
+    SmartAgentEvent,
+    StructuredSummary,
+    SummarizationEvent,
+    SummaryIntegrityCheck,
+} from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
 import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage } from "../utils/usage.js";
+import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
+import { renderStructuredSummary } from "../smart/contextPolicy.js";
 
 // Helper for lightweight message construction
 const systemMessage = (content: string) => ({ role: 'system', content });
 const humanMessage = (content: string) => ({ role: 'user', content });
+
+function isSyntheticSummaryToolMessage(message: BaseMessage): boolean {
+    return message.role === 'tool' && message.name === 'summarize_context';
+}
+
+function isSyntheticSummaryAssistantMessage(message: BaseMessage): boolean {
+    if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) {
+        return false;
+    }
+
+    return message.tool_calls.some((toolCall: any) => {
+        const toolName = toolCall?.function?.name || toolCall?.name;
+        return toolName === 'summarize_context';
+    });
+}
 
 /**
  * Validates message sequence to ensure OpenAI API compatibility.
@@ -49,24 +74,170 @@ function validateMessageSequence(messages: BaseMessage[]): BaseMessage[] {
 /**
  * Gets the summarization configuration normalized
  */
-function getSummarizationConfig(opts: SmartAgentOptions) {
-  if (typeof opts.summarization === 'object') {
-    return {
-      enabled: opts.summarization.enable !== false,
-      maxTokens: opts.summarization.maxTokens ?? 50000,
-      // Max tokens we can send to the model for summarization prompt itself
-      // This should be well under the model's context limit
-            summaryPromptMaxTokens: opts.summarization.summaryPromptMaxTokens ?? 8000,
-            promptTemplate: opts.summarization.promptTemplate
+function extractJsonObject(text: string): string | null {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) return fenced[1].trim();
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+        return text.slice(start, end + 1);
+    }
+    return null;
+}
+
+function normalizeStructuredSummary(input: any, fallbackText: string): StructuredSummary {
+    const summary: StructuredSummary = {
+        stable_facts: Array.isArray(input?.stable_facts)
+            ? input.stable_facts
+                    .filter((fact: any) => fact && typeof fact === "object")
+                    .map((fact: any) => ({
+                        key: String(fact.key || "unknown"),
+                        value: String(fact.value || ""),
+                        confidence: typeof fact.confidence === "number" ? fact.confidence : 0.7,
+                        source: fact.source ? String(fact.source) : undefined,
+                    }))
+            : [],
+        active_goals: Array.isArray(input?.active_goals) ? input.active_goals.map((goal: any) => String(goal)) : [],
+        open_questions: Array.isArray(input?.open_questions) ? input.open_questions.map((question: any) => String(question)) : [],
+        discarded_obsolete: Array.isArray(input?.discarded_obsolete || input?.obsolete_discarded)
+            ? (input.discarded_obsolete || input.obsolete_discarded).map((item: any) => String(item))
+            : [],
+        rawSummary: typeof input?.rawSummary === "string" ? input.rawSummary : fallbackText,
     };
-  }
-  // Fallback to default 50000 if not specified
-  return {
-    enabled: opts.summarization !== false,
-    maxTokens: 50000,
-        summaryPromptMaxTokens: 8000,
-        promptTemplate: undefined
-  }; 
+
+    if (summary.stable_facts.length === 0 && fallbackText) {
+        const importantLines = fallbackText
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .slice(0, 8);
+        summary.stable_facts = importantLines.map((line, index) => ({
+            key: `fact_${index + 1}`,
+            value: line,
+            confidence: 0.5,
+        }));
+    }
+
+    return summary;
+}
+
+function normalizeFactKeySegment(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        || "item";
+}
+
+function extractCanonicalFacts(messages: BaseMessage[]): StructuredSummary["stable_facts"] {
+    const facts = new Map<string, StructuredSummary["stable_facts"][number]>();
+
+    for (const message of messages) {
+        const content = typeof message.content === "string"
+            ? message.content
+            : Array.isArray(message.content)
+                ? message.content.map((part: any) => part?.text ?? part?.content ?? String(part ?? "")).join("\n")
+                : "";
+        if (!content) continue;
+
+        const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+            if (!/^[A-Z0-9_]+\|/.test(line) || !line.includes("=")) continue;
+
+            const segments = line.split("|").map((segment) => segment.trim()).filter(Boolean);
+            const label = segments[0];
+            const entries = segments.slice(1)
+                .map((segment) => {
+                    const eqIndex = segment.indexOf("=");
+                    if (eqIndex <= 0) return null;
+                    return {
+                        key: segment.slice(0, eqIndex).trim(),
+                        value: segment.slice(eqIndex + 1).trim(),
+                    };
+                })
+                .filter((entry): entry is { key: string; value: string } => Boolean(entry?.key));
+            if (entries.length === 0) continue;
+
+            const identifier = entries.find((entry) => ["code", "id", "project", "name", "key"].includes(entry.key.toLowerCase()))?.value;
+            const keyPrefix = [normalizeFactKeySegment(label), identifier ? normalizeFactKeySegment(identifier) : undefined]
+                .filter(Boolean)
+                .join(".");
+
+            for (const entry of entries) {
+                const normalizedEntryKey = normalizeFactKeySegment(entry.key);
+                const factKey = keyPrefix ? `${keyPrefix}.${normalizedEntryKey}` : `${normalizeFactKeySegment(label)}.${normalizedEntryKey}`;
+                facts.set(factKey, {
+                    key: factKey,
+                    value: entry.value,
+                    confidence: 0.98,
+                    source: "canonical_tool_output",
+                });
+            }
+        }
+    }
+
+    return [...facts.values()];
+}
+
+function mergeStableFacts(
+    summary: StructuredSummary,
+    additionalFacts: StructuredSummary["stable_facts"],
+): StructuredSummary {
+    if (additionalFacts.length === 0) return summary;
+
+    const merged = new Map(summary.stable_facts.map((fact) => [fact.key, fact]));
+    for (const fact of additionalFacts) {
+        const existing = merged.get(fact.key);
+        if (!existing || (fact.confidence || 0) >= (existing.confidence || 0)) {
+            merged.set(fact.key, fact);
+        }
+    }
+
+    return {
+        ...summary,
+        stable_facts: [...merged.values()],
+    };
+}
+
+function runIntegrityCheck(previous: StructuredSummary | undefined, current: StructuredSummary): SummaryIntegrityCheck {
+    const notes: string[] = [];
+    const previousKeys = new Set((previous?.stable_facts || []).map((fact) => fact.key));
+    const currentKeys = new Set(current.stable_facts.map((fact) => fact.key));
+    const obsoleteKeys = new Set(current.discarded_obsolete);
+    const criticalFactLoss = [...previousKeys].some((key) => !obsoleteKeys.has(key) && !currentKeys.has(key));
+    const obsoleteFactRevived = current.stable_facts.some((fact) => obsoleteKeys.has(fact.key));
+
+    if (criticalFactLoss) {
+        notes.push("Missing previously retained facts; merged forward during integrity repair.");
+    }
+    if (obsoleteFactRevived) {
+        notes.push("Obsolete facts reappeared; removed during integrity repair.");
+    }
+
+    return {
+        passed: !criticalFactLoss && !obsoleteFactRevived,
+        criticalFactLoss,
+        obsoleteFactRevived,
+        notes,
+    };
+}
+
+function repairStructuredSummary(previous: StructuredSummary | undefined, current: StructuredSummary, integrity: SummaryIntegrityCheck): StructuredSummary {
+    if (!previous) return current;
+    const nextFacts = [...current.stable_facts];
+    if (integrity.criticalFactLoss) {
+        const existingKeys = new Set(nextFacts.map((fact) => fact.key));
+        for (const fact of previous.stable_facts) {
+            if (!existingKeys.has(fact.key) && !current.discarded_obsolete.includes(fact.key)) {
+                nextFacts.push(fact);
+            }
+        }
+    }
+    const filteredFacts = integrity.obsoleteFactRevived
+        ? nextFacts.filter((fact) => !current.discarded_obsolete.includes(fact.key))
+        : nextFacts;
+    return { ...current, stable_facts: filteredFacts };
 }
 
 /**
@@ -83,8 +254,9 @@ function getSummarizationConfig(opts: SmartAgentOptions) {
  */
 export function createContextSummarizeNode(opts: SmartAgentOptions) {
   return async (state: SmartState): Promise<Partial<SmartState>> => {
-    const config = getSummarizationConfig(opts);
-    if (!config.enabled) return {};
+        const resolved = getResolvedSmartConfig(opts, state.agent as any);
+        const config = resolved.summarization;
+        if (!config.enable) return {};
 
     const model = (opts as any).model;
     const messages = state.messages || [];
@@ -94,7 +266,9 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     const traceSession = (state.ctx as any)?.__traceSession;
 
     // Check if there are any tool messages that can be compressed
-    const compressableMessages = messages.filter(m => m.role === 'tool' && m.content !== "SUMMARIZED");
+    const compressableMessages = messages.filter(
+        (m) => m.role === 'tool' && m.content !== "SUMMARIZED" && !isSyntheticSummaryToolMessage(m),
+    );
     if (compressableMessages.length === 0) {
         // Nothing to compress. If we summarize, we only ADD tokens (summary).
         // Abort to prevent infinite loops or growing context.
@@ -124,6 +298,9 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     // Process messages from end to start (most recent first)
     for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
+        if (isSyntheticSummaryToolMessage(m) || isSyntheticSummaryAssistantMessage(m)) {
+            continue;
+        }
         let content = "";
         if (typeof m.content === "string") content = m.content;
         else if (Array.isArray(m.content)) {
@@ -154,25 +331,46 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     }
     
     const conversationText = messageTexts.join("\n\n");
+    const canonicalFacts = extractCanonicalFacts(compressableMessages);
 
         const previousSummary = Array.isArray(state.summaries) && state.summaries.length > 0
             ? state.summaries[state.summaries.length - 1]
             : "";
+        const previousStructuredSummary = Array.isArray(state.summaryRecords) && state.summaryRecords.length > 0
+            ? state.summaryRecords[state.summaryRecords.length - 1]
+            : undefined;
 
-        const defaultPrompt = `Please summarize the following conversation history and update any previous summary.
-Focus on:
-- User goals and intent.
-- Key decisions made and actions taken.
-- Important tool outputs and data retrieved.
-- Current state of the task.
+        const defaultPrompt = `Summarize the conversation into strict JSON.
 
-Previous summary (if any):
+Return exactly one JSON object with this schema:
+{
+  "stable_facts": [{ "key": string, "value": string, "confidence": number }],
+  "active_goals": [string],
+  "open_questions": [string],
+  "discarded_obsolete": [string],
+  "rawSummary": string
+}
+
+Rules:
+- Keep stable_facts only for facts that future turns must remember.
+- Put invalidated or superseded fact keys in discarded_obsolete.
+- Preserve active_goals still relevant to the user.
+- Preserve unresolved questions.
+- Do not include prose outside JSON.
+- Target compression ratio: ${config.summaryCompressionRatioTarget}.
+- Summary mode: ${config.summaryMode}.
+
+Previous summary text:
 ${previousSummary || "(none)"}
+
+Previous structured summary:
+${previousStructuredSummary ? JSON.stringify(previousStructuredSummary) : "(none)"}
 
 Conversation:
 ${conversationText}
 
-Summary:`;
+Canonical facts extracted from tool outputs:
+${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fact.value}`).join("\n") : "(none)"}`;
 
         const template = config.promptTemplate || defaultPrompt;
         const promptBody = template
@@ -180,14 +378,16 @@ Summary:`;
             .replace(/\{\{\s*previousSummary\s*\}\}/g, previousSummary || "");
 
         const summaryPrompt = [
-                systemMessage("You are a helpful assistant that summarizes conversation history efficiently."),
-                humanMessage(promptBody)
+            systemMessage("You are a helpful assistant that summarizes conversation history efficiently. Return strict JSON only."),
+            humanMessage(promptBody)
         ];
 
     // Estimate input tokens for the summarization prompt (fallback if model doesn't provide usage)
     const inputTokensEstimate = countApproxTokens(summaryPrompt.map(m => m.content).join("\n"));
 
     let summaryText = "Summary unavailable.";
+    let structuredSummary: StructuredSummary | undefined;
+    let integrity: SummaryIntegrityCheck | undefined;
     let outputTokensEstimate = 0;
     let durationMs = 0;
     let inputTokensActual: number | undefined;
@@ -196,8 +396,11 @@ Summary:`;
     let totalTokensActual: number | undefined;
     
     const startTime = Date.now();
-    try {
-        const response = await model.invoke(summaryPrompt);
+        try {
+                if (!model || typeof model.invoke !== "function") {
+                    throw new Error("Summarization model is unavailable.");
+                }
+                const response = await model.invoke(summaryPrompt);
         durationMs = Date.now() - startTime;
         summaryText = typeof response.content === "string" 
             ? response.content 
@@ -205,6 +408,19 @@ Summary:`;
                 ? response.content.map((c: any) => c.text || "").join("")
                 : JSON.stringify(response.content);
         outputTokensEstimate = countApproxTokens(summaryText);
+
+                const jsonText = extractJsonObject(summaryText);
+                const parsed = jsonText ? JSON.parse(jsonText) : undefined;
+                structuredSummary = normalizeStructuredSummary(parsed, summaryText);
+                structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
+                integrity = config.integrityCheck
+                    ? runIntegrityCheck(previousStructuredSummary, structuredSummary)
+                    : { passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: [] };
+                if (integrity && !integrity.passed) {
+                    structuredSummary = repairStructuredSummary(previousStructuredSummary, structuredSummary, integrity);
+                    integrity = { ...integrity, passed: true };
+                }
+                summaryText = renderStructuredSummary(structuredSummary);
         
         // Extract actual token usage from model response if available
         const rawUsage = (response as any)?.usage 
@@ -220,19 +436,24 @@ Summary:`;
         }
     } catch (err: any) {
         durationMs = Date.now() - startTime;
-        console.error("[ContextSummarize] Failed to generate summary:", err);
+                structuredSummary = normalizeStructuredSummary(undefined, previousSummary || conversationText.slice(0, 800));
+                structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
+                integrity = { passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: ["Fallback summary generated locally."] };
+                summaryText = renderStructuredSummary(structuredSummary);
         
         // Emit error event for onEvent
         const errorEvent: SummarizationEvent = {
           type: "summarization",
-          summary: "",
-          messagesCompressed: 0,
+                    summary: summaryText,
+                    messagesCompressed: compressableMessages.length,
           inputTokens: inputTokensEstimate,
-          outputTokens: 0,
+                    outputTokens: countApproxTokens(summaryText),
           durationMs,
           previousSummary: previousSummary || undefined,
           tokenCountBefore,
-          tokenCountAfter: tokenCountBefore,
+                    tokenCountAfter: tokenCountBefore,
+                    structuredSummary,
+                    integrity,
         };
         onEvent?.(errorEvent);
         
@@ -244,11 +465,11 @@ Summary:`;
           status: "error",
           durationMs,
           inputTokens: inputTokensEstimate,
-          outputTokens: 0,
+                    outputTokens: countApproxTokens(summaryText),
           error: { message: err?.message || String(err), stack: err?.stack },
           messageList: sanitizeTracePayload(summaryPrompt),
         });
-        return {}; // Abort changes if summarization fails
+                // Continue with local fallback summary to avoid losing the compaction step.
     }
 
     // 2. Build a map of tool_call_id -> assistant message index
@@ -269,6 +490,9 @@ Summary:`;
     // Filter out orphan tool messages that don't have a preceding assistant with tool_calls.
     const newMessages = messages.map((m) => {
         if (m.role === 'tool') {
+            if (isSyntheticSummaryToolMessage(m)) {
+                return m;
+            }
             const toolCallId = m.tool_call_id;
             
             // Check if this tool message has a matching assistant with tool_calls
@@ -319,7 +543,10 @@ Summary:`;
         content: summaryText
     };
 
-    const summaries = Array.isArray(state.summaries) ? [...state.summaries, summaryText] : [summaryText];
+        const summaries = Array.isArray(state.summaries) ? [...state.summaries, summaryText] : [summaryText];
+        const summaryRecords = Array.isArray(state.summaryRecords)
+            ? [...state.summaryRecords, { ...(structuredSummary || normalizeStructuredSummary(undefined, summaryText)), integrity, createdAt: new Date().toISOString() }]
+            : [{ ...(structuredSummary || normalizeStructuredSummary(undefined, summaryText)), integrity, createdAt: new Date().toISOString() }];
 
     // Calculate token count after summarization
     const finalMessages = [...validatedMessages, assistantSummaryCall, toolSummaryResponse];
@@ -342,6 +569,8 @@ Summary:`;
       tokenCountBefore,
       tokenCountAfter,
       archivedCount: compressableMessages.length, // deprecated field for backward compatibility
+            structuredSummary,
+            integrity,
     };
     onEvent?.(summarizationEvent);
 
@@ -368,12 +597,19 @@ Summary:`;
         previousSummaryLength: previousSummary?.length || 0,
         usageFromModel: inputTokensActual !== undefined,
         cachedInputTokens: cachedInputTokens,
+                integrity,
       },
     });
 
     return {
         messages: finalMessages as any,
-        summaries
+                summaries,
+                summaryRecords,
+                watchdog: {
+                    ...(state.watchdog || {}),
+                    compactions: (state.watchdog?.compactions || 0) + 1,
+                    lastAction: "summarized",
+                },
     };
   };
 }

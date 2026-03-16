@@ -1,17 +1,45 @@
-export function buildSystemPrompt(extra?: string, planning?: boolean, name: string = "Agent") {
-  const extraTrimmed = extra?.trim();
-  const agentHeader = `Agent Name: ${name}`;
-  const planningBlock = planning
-    ? `<planning>
-PLANNING IS MANDATORY.
+import type { PlanningMode } from "./types.js";
+
+const DEFAULT_TODO_LIST_PROMPT = `Planning tools are available when they materially improve execution.
 
 Rules:
-1) Your FIRST action in every task is a single call to the tool "manage_todo_list" with operation="write" and a full, ordered plan (1+ items). Even for trivial tasks, write a one-item plan.
-2) After every non-planning tool call, you MUST immediately call "manage_todo_list" with operation="write" (or re-write) to update statuses and append one-line evidence on the affected item only.
-3) Keep exactly ONE item "in-progress" at any time; all others are "not-started" or "completed".
-4) Never reveal the plan text. Never summarize the plan in the assistant messages.
-5) If you ever produce an assistant message without having written a plan in this session, STOP and first write the plan via "manage_todo_list".
-</planning>`
+1) Use "manage_todo_list" for multi-step work, delegation, recovery after a failed attempt, or when the user explicitly asks for a plan.
+2) Do NOT create a plan for direct Q&A, simple recall from existing context, or a single straightforward tool lookup unless the user asks for one.
+3) If a task is multi-step and no valid plan exists yet, create one before substantial execution.
+4) Use operation="write" only to create or fully replace the entire plan. After a plan exists, default to operation="update" for progress, evidence, status, owner changes, blockers, or reprioritization.
+5) When using operation="update", send only the changed items. Do not resend unchanged plan items unless the whole plan structure is being rewritten.
+6) Include expectedVersion from the latest successful plan state whenever you update an existing plan. If you do not know the latest version, read the plan first.
+7) Keep exactly ONE item "in-progress" at a time.
+8) Update the plan whenever a step starts, completes, becomes blocked, fails, or the approach changes. Do not finish a multi-step task with stale plan state.
+9) If tool results materially change the task state, sync the plan before the final answer.
+10) Reuse prior tool results already present in the conversation before calling tools again.
+11) If an update fails because of a version mismatch, read the latest plan and retry instead of blindly rewriting it.
+12) Repeating full operation="write" calls for the same plan is a mistake unless the plan structure itself changed.
+13) Keep the plan internal unless the user explicitly asks to see it.`;
+
+function buildPlanningBlock(todoListPrompt?: string) {
+  const promptBody = todoListPrompt?.trim() || DEFAULT_TODO_LIST_PROMPT;
+  if (promptBody.startsWith("<planning>")) {
+    return promptBody;
+  }
+  return `<planning>\n${promptBody}\n</planning>`;
+}
+
+export function buildSystemPrompt(
+  extra?: string,
+  planning?: boolean | PlanningMode,
+  name: string = "Agent",
+  todoListPrompt?: string,
+) {
+  const extraTrimmed = extra?.trim();
+  const agentHeader = `Agent Name: ${name}`;
+  const planningMode = typeof planning === "string"
+    ? planning
+    : planning
+    ? "todo"
+    : "off";
+  const planningBlock = planningMode !== "off"
+    ? buildPlanningBlock(todoListPrompt)
     : "";
   return [
     agentHeader,

@@ -12,6 +12,7 @@ export function createAgentNode(opts: SmartAgentOptions) {
       model: opts.model,
       tools: (opts.tools as any) || [],
       systemPrompt: opts.systemPrompt,
+      todoListPrompt: opts.todoListPrompt,
       limits: opts.limits,
       useTodoList: opts.useTodoList,
       outputSchema: (opts as any).outputSchema,
@@ -35,7 +36,8 @@ export function createAgentNode(opts: SmartAgentOptions) {
       content: buildSystemPrompt(
         [runtime.systemPrompt, structuredOutputHint].filter(Boolean).join("\n"),
         runtime.useTodoList === true,
-        runtime.name || "Agent"
+        runtime.name || "Agent",
+        runtime.todoListPrompt,
       )
     } as any;
     const messages = [systemMsg, ...state.messages];

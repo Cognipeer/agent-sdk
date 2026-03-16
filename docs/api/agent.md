@@ -1,284 +1,133 @@
-# Agent API
+# Agent Construction
 
-The Agent SDK provides two main entry points for creating agents, each with different levels of control and features:
+The SDK exposes two construction entry points, and choosing the right one is the first important API decision.
 
-- **`createSmartAgent`** - Batteries-included agent with planning, summarization, and structured output (uses `SmartState`)
-- **`createAgent`** - Minimal agent loop without system prompt or auto-summarization (uses `AgentState`)
+## Choose the builder
 
-Both share the same core capabilities (tools, limits, handoffs, tracing) but `SmartAgent` adds opinionated features like planning enforcement and token-aware summarization.
+| Builder | Use it when... |
+|---|---|
+| `createAgent(...)` | you want the minimal loop and will own prompts, planning, and context behavior yourself |
+| `createSmartAgent(...)` | you are building an autonomous or semi-autonomous agent that needs profiles, planning, summarization, memory, and better operational defaults |
 
----
+## `createSmartAgent(...)`
 
-## createSmartAgent
-
-The batteries-included agent with planning, summarization, and structured output support.
-
-### Signature
-
-```typescript
-function createSmartAgent(options: SmartAgentOptions): SmartAgentInstance
+```ts
+function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartAgentInstance<TOutput>
 ```
 
-### Options
+### Key option groups
 
-```typescript
-interface SmartAgentOptions {
-  // Required
-  model: ModelAdapter;              // Model with invoke(messages) => message
-  
-  // Tools & Features
-  tools?: ToolInterface[];          // Zod tools, LangChain, MCP, or custom
-  useTodoList?: boolean;            // Enable planning mode (default: false)
-  handoffs?: HandoffDescriptor[];   // Pre-configured agent handoffs
-  
-  // Limits & Optimization
-  limits?: AgentLimits;             // Execution limits
-  summarization?: boolean | {       // Enable summarization (default: true)
-    enable: boolean;
-    maxTokens: number;
-    summaryPromptMaxTokens?: number;
-    promptTemplate?: string;
-  };
-  
-  // Output & Validation
-  outputSchema?: ZodSchema;         // Structured output schema
-  
-  // Prompts & Behavior
-  systemPrompt?: string;            // Additional system instructions
-  name?: string;                    // Agent name for logging/handoffs
-  
-  // Observability
-  tracing?: TracingConfig;          // Structured JSON tracing
-  
-  // Advanced
-  usageConverter?: UsageConverter;  // Custom usage normalization
-}
-```
-
-### AgentLimits
-
-```typescript
-interface AgentLimits {
-  maxToolCalls?: number;           // Total tool executions per invocation
-  maxParallelTools?: number;       // Concurrent tools per agent turn
-}
-```
-
-### Return Value
-
-```typescript
-interface SmartAgentInstance {
-  // Core methods
-  invoke(state: Partial<SmartState>, config?: InvokeConfig): Promise<AgentInvokeResult>;
-  
-  // Multi-agent composition
-  asTool(options: { toolName: string; description?: string; inputDescription?: string }): ToolInterface;
-  asHandoff(options: { toolName?: string; description?: string; schema?: ZodSchema }): HandoffDescriptor;
-  
-  // State management
-  snapshot(state: SmartState, options?: SnapshotOptions): AgentSnapshot;
-  resume(snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions): Promise<AgentInvokeResult>;
-  
-  // Tool approval
-  resolveToolApproval(state: SmartState, resolution: ToolApprovalResolution): SmartState;
-  
-  // Runtime metadata (read-only)
-  __runtime: AgentRuntimeConfig;
-}
-```
+- `model`: the model adapter used by the runtime
+- `tools`: local or adapted tools
+- `runtimeProfile`: built-in preset or `custom`
+- `planning`: explicit multi-step workflow control
+- `summarization`, `context`, `toolResponses`: context pressure handling
+- `memory`: fact read/write policy
+- `delegation`: child-agent behavior
+- `watchdog`: token drift and over-tooling response
+- `tracing`: execution telemetry
+- `outputSchema`: deterministic structured output
 
 ### Example
 
-```typescript
-import { createSmartAgent, fromLangchainModel } from "@cognipeer/agent-sdk";
+```ts
+import { createSmartAgent, createTool, fromLangchainModel } from "@cognipeer/agent-sdk";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
+const lookup = createTool({
+  name: "lookup_project",
+  description: "Return project facts",
+  schema: z.object({ code: z.string() }),
+  func: async ({ code }) => ({ code, owner: "Ada Lovelace", risk: "low" }),
+});
+
 const agent = createSmartAgent({
-  name: "Assistant",
+  name: "ProjectAssistant",
   model: fromLangchainModel(new ChatOpenAI({ model: "gpt-4o-mini" })),
-  tools: [weatherTool, searchTool],
-  useTodoList: true,
-  limits: {
-    maxToolCalls: 10,
-    maxParallelTools: 3,
-  },
-  summarization: {
-    enable: true,
-    maxTokens: 8000,
-    summaryPromptMaxTokens: 6000,
-    promptTemplate: "Summary so far:\n{{previousSummary}}\n\nConversation:\n{{conversation}}\n\nSummary:",
-  },
-  outputSchema: z.object({
-    summary: z.string(),
-    confidence: z.number().min(0).max(1),
-  }),
+  tools: [lookup],
+  runtimeProfile: "balanced",
+  planning: { mode: "todo" },
+  limits: { maxToolCalls: 8, maxContextTokens: 12000 },
   tracing: { enabled: true },
-  onEvent: (event) => {
-    if (event.type === "plan") {
-      console.log("Plan updated:", event.todoList);
-    }
-  },
 });
-
-const result = await agent.invoke({
-  messages: [{ role: "user", content: "What's the weather?" }],
-});
-
-console.log(result.content);
-console.log(result.output); // Parsed structured output
 ```
 
-## createAgent
+### Why smart runtime users care
 
-Minimal control loop without system prompt or automatic summarization.
+`createSmartAgent(...)` is the entry point you usually want for autonomous agents because it manages:
 
-### Signature
+- adaptive planning
+- model-facing context shaping
+- summarization and archival
+- memory fact sync
+- canonical `state.plan` updates
+- watchdog telemetry such as token drift and context rot
 
-```typescript
-function createAgent(options: AgentOptions): AgentInstance
+## `createAgent(...)`
+
+```ts
+function createAgent<TOutput = unknown>(options: AgentOptions): AgentInstance<TOutput>
 ```
 
-### Options
+Use this when you want the smallest deterministic loop and do not want smart runtime behavior to wrap the model call.
 
-```typescript
-interface AgentOptions {
-  // Required
-  model: ModelAdapter;              // Model with invoke(messages) => message
-  
-  // Tools & Features
-  tools?: ToolInterface[];          // Zod tools, LangChain, MCP, or custom
-  handoffs?: HandoffDescriptor[];   // Pre-configured agent handoffs
-  
-  // Limits & Optimization
-  limits?: AgentLimits;             // Token and execution limits
-  
-  // Output & Validation
-  outputSchema?: ZodSchema;         // Structured output schema
-  
-  // Prompts & Behavior
-  name?: string;                    // Agent name for logging/handoffs
-  
-  // Observability
-  tracing?: TracingConfig;          // Structured JSON tracing
-  
-  // Advanced
-  usageConverter?: UsageConverter;  // Custom usage normalization
-}
-```
-
-### Differences from createSmartAgent
-
-- **No automatic system prompt** - you control all messages
-- **No planning/TODO tools** - no `manage_todo_list` or `get_tool_response`
-- **No automatic summarization** - summarization field ignored
-- **Useful for**: Full control over prompts and conversation flow
-
-### Example
-
-```typescript
-import { createAgent, fromLangchainModel } from "@cognipeer/agent-sdk";
-
+```ts
 const agent = createAgent({
-  model: fromLangchainModel(model),
-  tools: [customTool],
-  // No system prompt, no planning, no summarization
-});
-
-const result = await agent.invoke({
-  messages: [
-    { role: "system", content: "You are a helpful assistant." },
-    { role: "user", content: "Hello!" },
-  ],
+  model,
+  tools: [lookup],
+  limits: { maxToolCalls: 4 },
 });
 ```
 
-## InvokeConfig
+`createAgent(...)` still supports tools, approvals, handoffs, tracing, and structured output. It simply leaves planning and context strategy up to you.
 
-Additional options passed to `invoke()` method:
+## Shared instance methods
 
-```typescript
-interface InvokeConfig {
-  // State monitoring
-  onStateChange?: (state: SmartState) => boolean | void;
-  
-  // Checkpoints
-  checkpointReason?: string;
-  
-  // Per-invocation overrides
-  onEvent?: (event: SmartAgentEvent) => void;
+Both builders expose more than `invoke(...)`:
+
+- `invoke(state, config?)`
+- `snapshot(state, options?)`
+- `resume(snapshot, options?)`
+- `resolveToolApproval(state, resolution)`
+- `asTool(options?)`
+- `asHandoff(options?)`
+
+These methods matter if your agent is long-running, approval-gated, resumable, or composed into a bigger agent system.
+
+## `invoke(...)`
+
+```ts
+agent.invoke(state, config?)
+```
+
+Important `InvokeConfig` hooks:
+
+- `onEvent(event)` for tool, plan, trace, and handoff visibility
+- `onStateChange(state)` for pause and checkpoint workflows
+- `checkpointReason` to annotate why a snapshot was taken
+
+## Result shape
+
+```ts
+type AgentInvokeResult<TOutput = unknown> = {
+  content: string;
+  output?: TOutput;
+  messages: Message[];
+  state?: SmartState;
+  metadata?: { usage?: any };
 }
 ```
 
-## AgentInvokeResult
+## State surfaces worth integrating
 
-Result returned from `invoke()`:
+- `state.messages`
+- `state.toolHistory`
+- `state.toolHistoryArchived`
+- `state.plan`
+- `state.planVersion`
+- `state.summaryRecords`
+- `state.memoryFacts`
+- `state.watchdog`
 
-```typescript
-interface AgentInvokeResult {
-  content: string;              // Final assistant message content
-  output?: any;                 // Parsed structured output (if schema provided)
-  state: SmartState;            // Final state
-  usage?: UsageInfo;            // Aggregated token usage
-  error?: Error;                // Error if failed
-}
-```
-
-## Model Adapters
-
-### fromLangchainModel
-
-Wrap LangChain models for use with Agent SDK:
-
-```typescript
-import { fromLangchainModel } from "@cognipeer/agent-sdk";
-import { ChatOpenAI } from "@langchain/openai";
-
-const model = fromLangchainModel(new ChatOpenAI({
-  model: "gpt-4o-mini",
-  apiKey: process.env.OPENAI_API_KEY,
-}));
-```
-
-### Custom Adapter
-
-Implement your own model adapter:
-
-```typescript
-interface ModelAdapter {
-  invoke(messages: Message[]): Promise<AssistantMessage>;
-  bindTools?(tools: ToolInterface[]): ModelAdapter;
-}
-
-const customModel: ModelAdapter = {
-  async invoke(messages) {
-    // Call your model API
-    return { role: "assistant", content: "response" };
-  },
-  bindTools(tools) {
-    // Optional: return new instance with tools bound
-    return this;
-  },
-};
-```
-
-## Events
-
-Monitor agent execution via events:
-
-```typescript
-type SmartAgentEvent = 
-  | { type: "plan"; version: number; todoList: TodoItem[] }
-  | { type: "tool_execution"; tool: string; args: any; result: any }
-  | { type: "summarization"; summary: string; archivedCount: number }
-  | { type: "pause"; reason: string; metadata: any }
-  | { type: "resume"; stage: string }
-  | { type: "error"; error: Error };
-```
-
-## See Also
-
-- [Tools API](/api/tools) - Creating and using tools
-- [Nodes API](/api/nodes) - Understanding the execution graph
-- [Types API](/api/types) - Complete TypeScript definitions
-- [State Management](/guide/state-management) - Working with agent state
+If you are using the smart runtime, prefer `state.plan` over any event-only or legacy todo mental model.

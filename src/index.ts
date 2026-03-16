@@ -11,6 +11,9 @@ export * from "./utils/tokenManager.js";
 export * from "./utils/utilTokens.js";
 export * from "./contextTools.js";
 export * from "./smart/index.js";
+export * from "./smart/eval.js";
+export * from "./smart/memory.js";
+export * from "./smart/runtimeConfig.js";
 export * from "./guardrails/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
@@ -27,6 +30,28 @@ export type {
 	SmartAgentInstance,
 	SmartAgentTracingConfig,
 	SmartAgentEvent,
+	RuntimeProfile,
+	BuiltInRuntimeProfile,
+	ProfileConfig,
+	ResolvedSmartAgentConfig,
+	SmartAgentCustomProfileConfig,
+	StructuredSummary,
+	SummaryIntegrityCheck,
+	MemoryFact,
+	MemoryStore,
+	MemoryScope,
+	MemoryReadPolicy,
+	MemoryWritePolicy,
+	PlanningMode,
+	ReplanPolicy,
+	DelegationMode,
+	ChildContextPolicy,
+	ToolResponseClassification,
+	ToolResponseRetentionPolicy,
+	EvalCase,
+	EvalCaseResult,
+	EvalHarnessMetrics,
+	EvalHarnessResult,
 	// Base Agent types
 	AgentOptions,
 	AgentLimits,
@@ -78,4 +103,37 @@ export type {
 	PendingToolApproval,
 	ToolApprovalResolution,
 	ToolApprovalEvent,
+	// Event types
+	ToolCallEvent,
+	PlanEvent,
+	SummarizationEvent,
+	FinalAnswerEvent,
+	MetadataEvent,
+	ProgressEvent,
+	StreamEvent,
+	CancelledEvent,
+	HandoffEvent,
+	// Smart Agent config sub-types
+	SummarizationMode,
+	ContextPolicy,
+	SummaryFactItem,
+	PlanStepRecord,
+	SmartAgentSummarizationConfig,
+	SmartAgentContextConfig,
+	SmartAgentPlanningConfig,
+	SmartAgentDelegationConfig,
+	SmartAgentMemoryConfig,
+	SmartAgentToolResponseConfig,
+	SmartAgentWatchdogConfig,
+	SmartAgentBudgetConfig,
+	MemoryProviderKind,
+	// Eval types
+	EvalFamily,
+	EvalProfileDescriptor,
+	EvalProfileTarget,
+	// Utility types
+	ToolApprovalStatus,
+	CancellationTokenLike,
+	ProgressUpdate,
+	StreamChunk,
 } from "./types.js";

@@ -451,7 +451,7 @@ Break down the task into steps. Then execute the steps.
       console.log("Events:", events.map((e) => e.type));
       console.log("Plan data:", JSON.stringify(planData, null, 2)?.slice(0, 500));
       console.log("File operations:", logs);
-      console.log("State todoList:", (result.state as any)?.todoList || "none");
+      console.log("State plan:", result.state?.plan || "none");
       console.log(
         "Usage:",
         JSON.stringify(result.metadata?.usage?.totals, null, 2)

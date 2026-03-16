@@ -9,11 +9,23 @@ import type {
 } from "../types.js";
 import { nanoid } from "nanoid";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
+import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
+import { resolveToolResponsePolicy, validateToolArgs } from "../smart/toolResponses.js";
+
+function normalizeMaxExecutionsPerRun(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized >= 0 ? normalized : null;
+}
+
+function countSuccessfulToolExecutions(toolHistory: SmartState["toolHistory"], toolName: string): number {
+  if (!Array.isArray(toolHistory)) return 0;
+  return toolHistory.filter((entry) => entry?.toolName === toolName && (entry?.status === "success" || entry?.status === "handoff")).length;
+}
 
 export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>>, opts?: SmartAgentOptions) {
-  const baseToolByName = new Map<string, ToolInterface>();
-  for (const t of initialTools) baseToolByName.set((t as any).name, t);
-
   return async (state: SmartState): Promise<any> => {
     const runtime = state.agent || {
       name: opts?.name,
@@ -21,15 +33,18 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       tools: initialTools,
       limits: opts?.limits,
       systemPrompt: opts?.systemPrompt,
+      todoListPrompt: opts?.todoListPrompt,
       useTodoList: opts?.useTodoList,
       outputSchema: (opts as any)?.outputSchema,
     } as AgentRuntimeConfig;
+    const resolved = getResolvedSmartConfig(opts || ({} as SmartAgentOptions), runtime as any);
     const activeTools: Array<ToolInterface<any, any, any>> = runtime.tools as any;
     const toolByName = new Map<string, ToolInterface>();
-    for (const t of activeTools) toolByName.set((t as any).name, t);
+    for (const tool of activeTools) toolByName.set((tool as any).name, tool);
+
     const limits = {
-      maxToolCalls: (runtime.limits?.maxToolCalls ?? 10) as number,
-      maxParallelTools: Math.max(1, (runtime.limits?.maxParallelTools ?? 1) as number),
+      maxToolCalls: (runtime.limits?.maxToolCalls ?? resolved.limits.maxToolCalls ?? 10) as number,
+      maxParallelTools: Math.max(1, (runtime.limits?.maxParallelTools ?? resolved.limits.maxParallelTools ?? 1) as number),
     };
     const appended: Message[] = [];
     const onEvent = (state.ctx as any)?.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
@@ -42,34 +57,24 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       : [];
     const pendingByCallId = new Map(pendingApprovals.map((entry) => [entry.toolCallId, entry]));
     let awaitingApproval = false;
-    // Sync latest state into context tools if they carry a stateRef
-    for (const t of toolByName.values()) {
-      const anyT: any = t as any;
-      if (anyT._stateRef && typeof anyT._stateRef === "object") {
-        anyT._stateRef.toolHistory = state.toolHistory;
-        anyT._stateRef.toolHistoryArchived = state.toolHistoryArchived;
-        anyT._stateRef.__onEvent = onEvent;
+
+    for (const tool of toolByName.values()) {
+      const anyTool: any = tool as any;
+      if (anyTool._stateRef && typeof anyTool._stateRef === "object") {
+        anyTool._stateRef.toolHistory = state.toolHistory;
+        anyTool._stateRef.toolHistoryArchived = state.toolHistoryArchived;
+        anyTool._stateRef.__onEvent = onEvent;
       }
     }
+
     const last = state.messages[state.messages.length - 1] as any;
     let toolCount = state.toolCallCount || 0;
-    const toolCalls: Array<{ id?: string; name: string; args: any }> = Array.isArray(
-      last?.tool_calls
-    )
-      ? last.tool_calls
-      : [];
-
-
+    const toolCalls: Array<{ id?: string; name: string; args: any }> = Array.isArray(last?.tool_calls) ? last.tool_calls : [];
     const toolHistory = state.toolHistory || [];
-    // Enforce global maxToolCalls across turns
+    const toolHistoryArchived = state.toolHistoryArchived || [];
     const remaining = Math.max(0, limits.maxToolCalls - toolCount);
     const planned = toolCalls.slice(0, remaining);
     const skipped = toolCalls.slice(remaining);
-
-    // NOTE: Skipped tools are processed AFTER planned tools to maintain tool_call order.
-    // This is important because some LLM providers (like Bedrock) expect tool results
-    // to appear in the same order as tool_calls, or at least the first result must
-    // match the first tool_call.
 
     type ToolExecutionResult =
       | { status: "success" | "error"; approval?: PendingToolApproval }
@@ -81,7 +86,18 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       return { cancelled: false, reason: undefined } as const;
     };
 
-    // Helper to run a single tool call
+    const markToolFailure = (message: string, toolName: string, toolCallId?: string) => {
+      const ctx = { ...(state.ctx || {}) } as any;
+      ctx.__lastToolError = message;
+      if (toolCallId) {
+        ctx.__toolSchemaError = { toolName, toolCallId, message };
+      }
+      if (resolved.watchdog.autoReplanOnFailure) {
+        ctx.__planNeedsReplan = true;
+      }
+      state.ctx = ctx;
+    };
+
     const runOne = async (tc: { id?: string; name: string; args: any }): Promise<ToolExecutionResult> => {
       const cancelState = isCancelled();
       if (cancelState.cancelled) {
@@ -91,36 +107,81 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         onProgress?.({ stage: "tools", message: "Cancelled", detail: { reason: cancelState.reason } });
         return { status: "error" };
       }
-      const t = toolByName.get(tc.name);
-      if (!t) {
+
+      const tool = toolByName.get(tc.name);
+      if (!tool) {
+        appended.push({ role: "tool", content: `Tool not found: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args: tc.args, error: { message: "Tool not found" } });
-        appended.push({
-          role: "tool",
-          content: `Tool not found: ${tc.name}`,
-          tool_call_id: tc.id || `${tc.name}_${appended.length}`,
-          name: tc.name,
-        });
         toolCount += 1;
         return { status: "error" };
       }
+
       let args: any = tc.args;
       if (typeof args === "string") {
-        try { args = JSON.parse(args); } catch (_) { /* keep as string */ }
+        try { args = JSON.parse(args); } catch { /* keep raw string */ }
       }
+
       const toolCallId = tc.id || `${tc.name}_${toolCount + 1}`;
+      const validatedArgs = validateToolArgs(tool, args);
+      if (!validatedArgs.ok && resolved.toolResponses.schemaValidation === "strict") {
+        const errorMessage = `Tool argument validation failed for ${tc.name}: ${validatedArgs.message}`;
+        appended.push({ role: "tool", content: errorMessage, tool_call_id: toolCallId, name: tc.name });
+        markToolFailure(errorMessage, tc.name, toolCallId);
+        onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args, error: { message: errorMessage } });
+        toolCount += 1;
+        return { status: "error" };
+      }
+      if (validatedArgs.ok) {
+        args = validatedArgs.value;
+      }
+
+      const toolName = (tool as any).name || tc.name;
+      const maxExecutionsPerRun = normalizeMaxExecutionsPerRun((tool as any).maxExecutionsPerRun);
+      if (maxExecutionsPerRun !== null) {
+        const currentExecutions = countSuccessfulToolExecutions(toolHistory, toolName);
+        if (currentExecutions >= maxExecutionsPerRun) {
+          const limitMessage = `Skipped tool due to per-tool execution limit: ${toolName} (${maxExecutionsPerRun}/run)`;
+          appended.push({ role: "tool", content: limitMessage, tool_call_id: toolCallId, name: tc.name });
+          onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args });
+          recordTraceEvent(traceSession, {
+            type: "tool_call",
+            label: `Tool Skipped - ${toolName}`,
+            actor: { scope: "tool", name: toolName, role: "tool" },
+            status: "skipped",
+            toolExecutionId: tc.id,
+            messageList: [
+              {
+                role: "assistant",
+                name: toolName,
+                content: limitMessage,
+                tool_calls: [
+                  {
+                    id: tc.id,
+                    type: "function",
+                    function: { name: toolName, arguments: sanitizeTracePayload(args) },
+                  },
+                ],
+              },
+            ],
+          });
+          toolCount += 1;
+          return { status: "error" };
+        }
+      }
+
       let approvalEntry = pendingByCallId.get(toolCallId);
-      const needsApproval = Boolean((t as any).needsApproval);
+      const needsApproval = Boolean((tool as any).needsApproval);
       if (needsApproval) {
         if (!approvalEntry) {
           approvalEntry = {
             id: nanoid(),
             toolCallId,
-            toolName: (t as any).name || tc.name,
+            toolName: (tool as any).name || tc.name,
             args,
             status: "pending",
             requestedAt: new Date().toISOString(),
-            metadata: (t as any).approvalPrompt || (t as any).approvalDefaults
-              ? { prompt: (t as any).approvalPrompt, defaults: (t as any).approvalDefaults }
+            metadata: (tool as any).approvalPrompt || (tool as any).approvalDefaults
+              ? { prompt: (tool as any).approvalPrompt, defaults: (tool as any).approvalDefaults }
               : undefined,
           };
           pendingApprovals.push(approvalEntry);
@@ -145,74 +206,107 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
         if (approvalEntry.status === "rejected") {
           const rejectionMessage = approvalEntry.comment || "Tool call rejected by reviewer.";
-          appended.push({
-            role: "tool",
-            content: `Tool call rejected: ${rejectionMessage}`,
-            tool_call_id: toolCallId,
-            name: tc.name,
-          });
-          onEvent?.({ type: "tool_approval", status: "rejected", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, comment: approvalEntry.comment, decidedBy: approvalEntry.decidedBy });
+          appended.push({ role: "tool", content: `Tool call rejected: ${rejectionMessage}`, tool_call_id: toolCallId, name: tc.name });
           approvalEntry.metadata = { ...(approvalEntry.metadata || {}), resolution: "rejected" };
           approvalEntry.status = "executed";
           approvalEntry.resolvedAt = new Date().toISOString();
-          toolHistory.push({ executionId: nanoid(), toolName: (t as any).name, args, output: `Rejected: ${rejectionMessage}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id });
           pendingByCallId.set(toolCallId, approvalEntry);
+          toolHistory.push({ executionId: nanoid(), toolName: (tool as any).name, args, output: `Rejected: ${rejectionMessage}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "rejected" });
+          onEvent?.({ type: "tool_approval", status: "rejected", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, comment: approvalEntry.comment, decidedBy: approvalEntry.decidedBy });
           toolCount += 1;
           return { status: "rejected", approval: approvalEntry };
         }
 
-        if (approvalEntry.status === "approved") {
-          if (approvalEntry.approvedArgs !== undefined) {
-            args = approvalEntry.approvedArgs;
-          }
+        if (approvalEntry.status === "approved" && approvalEntry.approvedArgs !== undefined) {
+          args = approvalEntry.approvedArgs;
           onEvent?.({ type: "tool_approval", status: "approved", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, decidedBy: approvalEntry.decidedBy, comment: approvalEntry.comment });
         }
       }
+
       const start = Date.now();
+      const sanitizedArgs = sanitizeTracePayload(args);
+      const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
+
       try {
-        onEvent?.({ type: "tool_call", phase: "start", name: (t as any).name, id: tc.id, args });
+        onEvent?.({ type: "tool_call", phase: "start", name: toolName, id: tc.id, args });
         onProgress?.({ stage: "tools", message: `Running tool ${tc.name}` });
-        const sanitizedArgs = sanitizeTracePayload(args);
-        const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
-        let output: any;
-        const anyTool = t as any;
+        const anyTool = tool as any;
         const callOptions = { cancellationToken, signal: abortSignal };
+        let output: any;
         if (typeof anyTool.func === "function") output = await anyTool.func(args, callOptions);
         else if (typeof anyTool.invoke === "function") output = await anyTool.invoke(args, callOptions);
         else if (typeof anyTool.call === "function") output = await anyTool.call(args, callOptions);
         else if (typeof anyTool._call === "function") output = await anyTool._call(args, callOptions);
         else if (typeof anyTool.run === "function") output = await anyTool.run(args, callOptions);
         else throw new Error("Tool is not invokable");
-        // Detect handoff signature output: we decide that a handoff tool returns { __handoff: AgentRuntimeConfig }
-        if (output && typeof output === 'object' && output.__handoff && output.__handoff.runtime) {
-          const newRuntime: AgentRuntimeConfig = output.__handoff.runtime;
-          // switch active agent; messages unchanged except we reply ok
-          const executionId = nanoid();
-          toolHistory.push({ executionId, toolName: (t as any).name, args, output: 'handoff:ok', rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id });
-          appended.push({ role: "tool", content: 'ok', tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
-          onEvent?.({ type: 'handoff', from: runtime.name, to: newRuntime.name, toolName: (t as any).name });
-          state.agent = newRuntime;
-          onEvent?.({ type: 'tool_call', phase: 'success', name: (t as any).name, id: tc.id, args, result: 'handoff', durationMs: Date.now() - start });
-          toolCount += 1;
+
+        const durationMs = Date.now() - start;
+        const executionId = nanoid();
+
+        if (output && typeof output === "object" && output.__handoff && output.__handoff.runtime) {
+          toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
+          appended.push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+          state.agent = output.__handoff.runtime as AgentRuntimeConfig;
+          onEvent?.({ type: "handoff", from: runtime.name, to: state.agent?.name, toolName });
+          onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: "handoff", durationMs });
           if (needsApproval && approvalEntry) {
             approvalEntry.status = "executed";
             approvalEntry.resolvedAt = new Date().toISOString();
             approvalEntry.executionId = executionId;
             pendingByCallId.set(toolCallId, approvalEntry);
           }
+          toolCount += 1;
           return { status: "success", approval: approvalEntry };
         }
-        const content = typeof output === "string" ? output : JSON.stringify(output);
-        if (output && typeof output === 'object' && output.__finalStructuredOutput) {
+
+        if (output && typeof output === "object" && output.__finalStructuredOutput) {
           if (!state.ctx) state.ctx = {};
           state.ctx.__structuredOutputParsed = output.data;
           state.ctx.__finalizedDueToStructuredOutput = true;
         }
-        const durationMs = Date.now() - start;
-        const executionId = nanoid();
-        toolHistory.push({ executionId, toolName: (t as any).name, args, output, rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id });
-        appended.push({ role: "tool", content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
-        onEvent?.({ type: "tool_call", phase: "success", name: (t as any).name, id: tc.id, args, result: output, durationMs });
+
+        const responsePolicy = resolveToolResponsePolicy(toolName, output, resolved);
+        const timestamp = new Date().toISOString();
+        const storedOutput = responsePolicy.retentionPolicy === "keep_full" ? output : responsePolicy.summary;
+
+        toolHistory.push({
+          executionId,
+          toolName,
+          args,
+          output: storedOutput,
+          rawOutput: output,
+          timestamp,
+          tool_call_id: tc.id,
+          summarized: responsePolicy.retentionPolicy !== "keep_full",
+          originalTokenCount: responsePolicy.tokenCount,
+          classification: responsePolicy.classification,
+          retentionPolicy: responsePolicy.retentionPolicy,
+          summary: responsePolicy.summary,
+          archiveId: responsePolicy.retentionPolicy === "summarize_archive" || responsePolicy.retentionPolicy === "drop" ? executionId : undefined,
+          status: "success",
+        });
+
+        if (resolved.context.archiveLargeToolResponses && (responsePolicy.retentionPolicy === "summarize_archive" || responsePolicy.retentionPolicy === "drop")) {
+          toolHistoryArchived.push({
+            executionId,
+            toolName,
+            args,
+            output,
+            rawOutput: output,
+            timestamp,
+            tool_call_id: tc.id,
+            summarized: true,
+            originalTokenCount: responsePolicy.tokenCount,
+            classification: responsePolicy.classification,
+            retentionPolicy: responsePolicy.retentionPolicy,
+            summary: responsePolicy.summary,
+            archiveId: executionId,
+            status: "success",
+          });
+        }
+
+        appended.push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
         if (needsApproval && approvalEntry) {
@@ -224,7 +318,6 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
         const sanitizedOutput = sanitizeTracePayload(output);
         const outputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedOutput) : undefined;
-        const toolName = (t as any).name || tc.name;
         const messageList = [
           {
             role: "assistant",
@@ -244,7 +337,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           {
             role: "tool",
             name: toolName,
-            content: sanitizedOutput ?? output ?? "",
+            content: responsePolicy.content,
           },
         ];
         recordTraceEvent(traceSession, {
@@ -256,42 +349,23 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           responseBytes: outputBytes,
           toolExecutionId: executionId,
           messageList,
+          debug: {
+            classification: responsePolicy.classification,
+            retentionPolicy: responsePolicy.retentionPolicy,
+            originalTokenCount: responsePolicy.tokenCount,
+          },
         });
         toolCount += 1;
-  return { status: "success", approval: approvalEntry };
-      } catch (e: any) {
+        return { status: "success", approval: approvalEntry };
+      } catch (error: any) {
         const durationMs = Date.now() - start;
         const executionId = nanoid();
-        toolHistory.push({ executionId, toolName: (t as any).name, args, output: `Error executing tool: ${e?.message || String(e)}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id });
-        appended.push({ role: "tool", content: `Error executing tool: ${e?.message || String(e)}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
-        onEvent?.({ type: "tool_call", phase: "error", name: (t as any).name, id: tc.id, args, error: { message: e?.message || String(e) } });
-        onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: e?.message || String(e) } });
-        const sanitizedArgs = sanitizeTracePayload(args);
-        const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
-        const toolName = (t as any).name || tc.name;
-        const errorMessage = e?.message || String(e);
-        const messageList = [
-          {
-            role: "assistant",
-            name: toolName,
-            content: "",
-            tool_calls: [
-              {
-                id: tc.id || executionId,
-                type: "function",
-                function: {
-                  name: toolName,
-                  arguments: sanitizedArgs,
-                },
-              },
-            ],
-          },
-          {
-            role: "tool",
-            name: toolName,
-            content: `Error executing tool: ${errorMessage}`,
-          },
-        ];
+        const message = error?.message || String(error);
+        toolHistory.push({ executionId, toolName, args, output: `Error executing tool: ${message}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "error" });
+        appended.push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        markToolFailure(message, toolName, toolCallId);
+        onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message } });
+        onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: message } });
         recordTraceEvent(traceSession, {
           type: "tool_call",
           label: `Tool Error - ${toolName}`,
@@ -300,8 +374,26 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           durationMs,
           requestBytes: inputBytes,
           toolExecutionId: executionId,
-          error: { message: e?.message || String(e), stack: e?.stack },
-          messageList,
+          error: { message, stack: error?.stack },
+          messageList: [
+            {
+              role: "assistant",
+              name: toolName,
+              content: "",
+              tool_calls: [
+                {
+                  id: tc.id || executionId,
+                  type: "function",
+                  function: { name: toolName, arguments: sanitizedArgs },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              name: toolName,
+              content: `Error executing tool: ${message}`,
+            },
+          ],
         });
         toolCount += 1;
         return { status: "error", approval: approvalEntry };
@@ -319,49 +411,37 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         break;
       }
       const result = await runOne(tc);
-      if (result?.status === "awaiting_approval") {
+      if (result.status === "awaiting_approval") {
         awaitingApproval = true;
         break;
       }
     }
 
-    // Process skipped tools AFTER planned tools to maintain tool_call order.
-    // This ensures the first tool result matches the first tool_call ID,
-    // which is required by some providers' normalizeBedrockToolPairing logic.
     for (const tc of skipped) {
       onEvent?.({ type: "tool_call", phase: "skipped", name: tc.name, id: tc.id, args: tc.args });
       const sanitizedArgs = sanitizeTracePayload(tc.args);
-      const messageList = [
-        {
-          role: "assistant",
-          name: tc.name,
-          content: `Skipped tool due to tool-call limit: ${tc.name}`,
-          tool_calls: [
-            {
-              id: tc.id,
-              type: "function",
-              function: {
-                name: tc.name,
-                arguments: sanitizedArgs,
-              },
-            },
-          ],
-        },
-      ];
       recordTraceEvent(traceSession, {
         type: "tool_call",
         label: `Tool Skipped - ${tc.name}`,
         actor: { scope: "tool", name: tc.name, role: "tool" },
         status: "skipped",
         toolExecutionId: tc.id,
-        messageList,
+        messageList: [
+          {
+            role: "assistant",
+            name: tc.name,
+            content: `Skipped tool due to tool-call limit: ${tc.name}`,
+            tool_calls: [
+              {
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: sanitizedArgs },
+              },
+            ],
+          },
+        ],
       });
-      appended.push({
-        role: "tool",
-        content: `Skipped tool due to tool-call limit: ${tc.name}`,
-        tool_call_id: tc.id || `${tc.name}_${appended.length}`,
-        name: tc.name,
-      });
+      appended.push({ role: "tool", content: `Skipped tool due to tool-call limit: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
       toolCount += 1;
     }
 
@@ -378,6 +458,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       messages: [...state.messages, ...appended],
       toolCallCount: toolCount,
       toolHistory,
+      toolHistoryArchived,
       agent: state.agent,
       pendingApprovals,
     };

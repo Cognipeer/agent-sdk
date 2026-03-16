@@ -1,309 +1,161 @@
 # Examples
 
-Comprehensive examples demonstrating Agent SDK capabilities.
+This section is a recipe catalog, not a loose folder dump. Each example is here to demonstrate one concrete runtime behavior, how to run it, what to inspect, and which integration problem it helps solve.
 
-## Quick Links
+## Browse by track
 
-| Example | Capability | Description |
-|---------|-----------|-------------|
-| [Basic Agent](#basic-agent) | Core loop | Simple agent with tools |
-| [Planning](#planning-todos) | TODOs | Structured task planning |
-| [Multi-Agent](#multi-agent) | Composition | Agent delegation |
-| [Tool Approval](#tool-approval) | Human-in-loop | Approval workflows |
-| [Structured Output](#structured-output) | Validation | Schema-based responses |
-| [Guardrails](#guardrails) | Safety | Content filtering |
-| [Pause & Resume](#pause-resume) | State | Long-running sessions |
-| [Vision](#vision) | Multimodal | Image + text input |
-| [MCP](#mcp-tools) | Integration | Remote tool servers |
+<div class="example-grid">
+	<a class="example-card" href="/agent-sdk/examples/basic">
+		<span class="example-card-badge">Fundamentals</span>
+		<strong>Basic Agent</strong>
+		<span>Understand the minimal loop, one tool call, and final response assembly.</span>
+		<code>example:basic</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/tools">
+		<span class="example-card-badge">Fundamentals</span>
+		<strong>Tools</strong>
+		<span>See typed local tools, env checks, and an external API-backed tool in one place.</span>
+		<code>example:tools</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/planning">
+		<span class="example-card-badge">Smart Runtime</span>
+		<strong>Planning &amp; TODOs</strong>
+		<span>Inspect how a smart agent turns multi-step work into durable plan state.</span>
+		<code>example:todo-planning</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/summarization">
+		<span class="example-card-badge">Smart Runtime</span>
+		<span>Understand context compaction before adding retrieval and resume behaviors.</span>
+		<code>example:summarization</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/summarize-context">
+		<span class="example-card-badge">Smart Runtime</span>
+		<span>Recover raw tool payloads after the runtime archived heavy responses.</span>
+		<code>example:summarize-context</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/rewrite-summary">
+		<span class="example-card-badge">Smart Runtime</span>
+		<span>Continue on a later turn after history was already rewritten into a compact form.</span>
+		<code>example:rewrite-summary</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/tool-limit">
+		<span class="example-card-badge">Smart Runtime</span>
+		<span>See how the runtime forces a direct answer once the tool-call budget is exhausted.</span>
+		<code>example:tool-limit</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/tool-approval">
+		<span class="example-card-badge">Control &amp; Safety</span>
+		<span>Pause before sensitive execution, then resume from an approved runtime state.</span>
+		<code>example:tool-approval</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/pause-resume">
+		<span class="example-card-badge">Control &amp; Safety</span>
+		<span>Snapshot a paused run, serialize it, and continue later without replaying the session.</span>
+		<code>example:pause-resume</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/structured-output">
+		<span class="example-card-badge">Control &amp; Safety</span>
+		<span>Require a schema-shaped final result while keeping the standard assistant response path.</span>
+		<code>example:structured-output</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/guardrails">
+		<span class="example-card-badge">Control &amp; Safety</span>
+		<span>Enforce request and response policy at runtime instead of relying on prompt wording.</span>
+		<code>example:guardrails</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/multi-agent">
+		<span class="example-card-badge">Orchestration</span>
+		<span>Compose specialist agents as tools without moving into a heavier orchestration stack.</span>
+		<code>example:multi-agent</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/handoff">
+		<span class="example-card-badge">Orchestration</span>
+		<span>Transfer ownership to another agent and inspect explicit handoff events.</span>
+		<code>example:handoff</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/vision">
+		<span class="example-card-badge">Integrations</span>
+		<span>Start with the smallest multimodal message format before wrapping it in a full agent.</span>
+		<code>example:vision</code>
+	</a>
+	<a class="example-card" href="/agent-sdk/examples/mcp">
+		<span class="example-card-badge">Integrations</span>
+		<span>Connect a remote MCP server and run discovered tools inside the same smart runtime.</span>
+		<code>example:mcp-tavily</code>
+	</a>
+</div>
 
-## Example Coverage Matrix
 
-| Folder | Capability | Highlights |
-|--------|------------|------------|
-| `basic` | Base agent loop | Minimal tool call run with a real model |
-| `tools` | Multiple tools + events | Tavily search integration, `onEvent` logging |
-| `todo-planning` | Planning discipline | Enforced TODO updates with `useTodoList` |
-| `tool-limit` | Tool cap + finalize | Shows injected finalize system notice |
-| `summarization` | Token threshold | Demonstrates summarization triggers |
-| `summarize-context` | Summary + retrieval | Uses `get_tool_response` to fetch archived data |
-| `rewrite-summary` | Continue after summaries | Works with summarized history in follow-up turns |
-| `structured-output` | Schema finalize | Parses JSON into typed outputs |
-| `multi-agent` | Agent-as-tool | Delegation via `agent.asTool` |
-| `handoff` | Runtime handoff | Transfers control between agents |
-| `mcp-tavily` | MCP tools | Demonstrates remote MCP tool usage |
-| `guardrails` | Policy enforcement | Guardrails blocking secrets and code responses |
-| `vision` | Multimodal input | Sends text + image parts through the adapter |
-
-## Running Examples
-
-All examples are in the `examples/` directory at the repository root:
+1. Pick the runtime problem you are trying to solve.
+2. Open the closest example page.
+3. Run the script from `examples/package.json`.
+4. Compare the documented flow with the example source and the output you see locally.
+## Setup once
 
 ```bash
-# Clone repository
-git clone https://github.com/Cognipeer/agent-sdk
-cd agent-sdk
-
-# Install root dependencies
-npm install
-
-# Install example dependencies
 cd examples
 npm install
 
-# Set up API key
-export OPENAI_API_KEY=sk-...
+Some examples run entirely with fake models. Others need real provider credentials.
 
-# Run an example
-npm run example:basic
-npm run example:planning
-npm run example:multi-agent
-```
+## Environment matrix
 
-## Example Details
+| Example type | Real provider key required | Notes |
+|---|---|---|
+| `basic`, `planning`, `summarization`, `tool-limit` | optional | These examples include a fake model fallback. |
+| `tools` | `OPENAI_API_KEY` | `TAVILY_API_KEY` is optional unless the search tool is used. |
+| `structured-output` | optional | Includes a fake model fallback. |
+| `pause-resume`, `tool-approval`, `guardrails` | no | Built for local runtime behavior inspection. |
+| `multi-agent` | optional | Includes fake-model fallback. |
+| `handoff` | yes | Uses `ChatOpenAI` directly. |
+| `vision` | yes | Requires a multimodal-capable provider model. |
+| `mcp` | yes | Requires `OPENAI_API_KEY` and `TAVILY_API_KEY`. |
 
-### Basic Agent
+## Choose by product need
 
-Simple agent with a few tools demonstrating the core loop.
+| If you need to... | Open this example first |
+|---|---|
+| understand the minimal runtime loop | `/examples/basic` |
+| define and call local typed tools | `/examples/tools` |
+| make the agent manage multi-step work | `/examples/planning` |
+| keep a long-running agent alive under context pressure | `/examples/summarization` |
+| recover archived raw tool payloads | `/examples/summarize-context` |
+| continue after compaction on a later turn | `/examples/rewrite-summary` |
+| stop unbounded tool recursion | `/examples/tool-limit` |
+| pause for human approval | `/examples/tool-approval` |
+| snapshot and resume later | `/examples/pause-resume` |
+| force typed final output | `/examples/structured-output` |
+| block unsafe requests or responses | `/examples/guardrails` |
+| compose specialist agents | `/examples/multi-agent` |
+| hand off ownership to another agent | `/examples/handoff` |
+| connect a remote MCP tool server | `/examples/mcp` |
+| send image input to a multimodal model | `/examples/vision` |
 
-**File**: `examples/basic/basic.ts`
+## Suggested learning path
 
-**Features**:
-- Tool creation with Zod schemas
-- Basic invoke flow
-- Simple error handling
+### 1. Fundamentals
 
-```typescript
-import { createSmartAgent, createTool } from "@cognipeer/agent-sdk";
-import { z } from "zod";
+- `basic`
+- `tools`
+- `planning`
 
-const echo = createTool({
-  name: "echo",
-  description: "Echo back text",
-  schema: z.object({ text: z.string() }),
-  func: async ({ text }) => ({ echoed: text }),
-});
+### 2. Smart runtime behavior
 
-const agent = createSmartAgent({ model, tools: [echo] });
-const result = await agent.invoke({
-  messages: [{ role: "user", content: "Say hello" }],
-});
-```
+- `summarization`
+- `summarize-context`
+- `rewrite-summary`
+- `tool-limit`
 
-### Planning & TODOs
+### 3. Production control surfaces
 
-Demonstrates structured planning with TODO management.
+- `tool-approval`
+- `pause-resume`
+- `structured-output`
+- `guardrails`
 
-**File**: `examples/todo-planning/todo-planning.ts`
+### 4. Orchestration and integrations
 
-**Features**:
-- Planning mode enabled
-- Plan event monitoring
-- Multi-step task breakdown
-
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  useTodoList: true,
-  onEvent: (event) => {
-    if (event.type === "plan") {
-      console.log("Plan:", event.todoList);
-    }
-  },
-});
-```
-
-### Multi-Agent
-
-Agent composition and delegation patterns.
-
-**File**: `examples/multi-agent/multi-agent.ts`
-
-**Features**:
-- Agent-as-tool delegation
-- Nested agent execution
-- Result aggregation
-
-```typescript
-const specialist = createSmartAgent({
-  name: "Specialist",
-  model,
-  tools: [specializedTool],
-});
-
-const coordinator = createSmartAgent({
-  name: "Coordinator",
-  model,
-  tools: [specialist.asTool({ toolName: "delegate" })],
-});
-```
-
-### Tool Approval
-
-Human-in-the-loop approval workflow.
-
-**File**: `examples/tool-approval/tool-approval.ts`
-
-**Features**:
-- Pause before tool execution
-- User approval prompt
-- Resume after approval
-
-```typescript
-const result = await agent.invoke(state, {
-  onStateChange: (s) => {
-    const lastMsg = s.messages.at(-1);
-    if (lastMsg?.tool_calls) {
-      // Pause for approval
-      return true;
-    }
-  },
-});
-
-// Show tools to user, get approval
-const approved = await getUserApproval(result.state);
-
-if (approved) {
-  const resumed = await agent.resume(
-    agent.snapshot(result.state)
-  );
-}
-```
-
-### Structured Output
-
-Schema-based output validation and parsing.
-
-**File**: `examples/structured-output/structured-output.ts`
-
-**Features**:
-- Zod schema validation
-- Automatic parsing
-- Type-safe outputs
-
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  outputSchema: z.object({
-    summary: z.string(),
-    items: z.array(z.string()),
-    confidence: z.number().min(0).max(1),
-  }),
-});
-
-const result = await agent.invoke({ messages });
-console.log(result.output); // Typed and validated
-```
-
-### Guardrails
-
-Content filtering and safety checks.
-
-**File**: `examples/guardrails/guardrails.ts`
-
-**Features**:
-- Built-in guardrail presets
-- Custom guardrail checks
-- Severity levels (warn/block)
-
-```typescript
-import { guardrailPresets } from "@cognipeer/agent-sdk";
-
-const agent = createSmartAgent({
-  model,
-  tools,
-  guardrails: [
-    ...guardrailPresets.noSecrets,
-    ...guardrailPresets.noCodeExecution,
-  ],
-});
-```
-
-### Pause & Resume
-
-Long-running session management.
-
-**File**: `examples/pause-resume/pause-resume.ts`
-
-**Features**:
-- State snapshots
-- Checkpoint persistence
-- Resume from snapshot
-
-```typescript
-// Initial run
-const result = await agent.invoke(state, {
-  onStateChange: (s) => shouldPause(s),
-});
-
-// Save snapshot
-const snapshot = agent.snapshot(result.state, {
-  tag: "checkpoint-1",
-});
-fs.writeFileSync("checkpoint.json", JSON.stringify(snapshot));
-
-// Later: resume
-const savedSnapshot = JSON.parse(fs.readFileSync("checkpoint.json"));
-const resumed = await agent.resume(savedSnapshot);
-```
-
-### Vision
-
-Multimodal input with images and text.
-
-**File**: `examples/vision/vision.ts`
-
-**Features**:
-- Image URL input
-- Base64 image support
-- Mixed text + image messages
-
-```typescript
-const result = await agent.invoke({
-  messages: [{
-    role: "user",
-    content: [
-      { type: "text", text: "What's in this image?" },
-      { type: "image_url", image_url: "https://example.com/image.jpg" },
-    ],
-  }],
-});
-```
-
-### MCP Tools
-
-Integration with Model Context Protocol servers.
-
-**File**: `examples/mcp-tavily/mcp-tavily.ts`
-
-**Features**:
-- MCP client setup
-- Remote tool discovery
-- Tool execution
-
-```typescript
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-
-const client = new Client(/* ... */);
-await client.connect(transport);
-
-const mcpTools = await client.listTools();
-const tools = fromLangchainTools(/* convert MCP tools */);
-
-const agent = createSmartAgent({ model, tools });
-```
-
-## Next Steps
-
-1. **Clone the repository** and explore `examples/` folder
-2. **Read the source code** for each example
-3. **Run examples locally** with your API keys
-4. **Modify examples** to test your use cases
-5. **Check the logs** in `logs/` directory after running
-
-## See Also
-
-- [Getting Started](/guide/getting-started) - Setup guide
-- [API Reference](/api/agent) - Complete API docs
-- [GitHub Repository](https://github.com/Cognipeer/agent-sdk) - Source code
+- `multi-agent`
+- `handoff`
+- `vision`
+- `mcp`

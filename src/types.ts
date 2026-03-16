@@ -24,6 +24,7 @@ export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> 
   needsApproval?: boolean;
   approvalPrompt?: string;
   approvalDefaults?: any;
+  maxExecutionsPerRun?: number | null;
   [key: string]: any;
 }
 
@@ -112,6 +113,8 @@ export type AgentLimits = {
   maxToolCalls?: number;
   // Maximum number of tools to execute in parallel per turn
   maxParallelTools?: number;
+  // Approximate maximum context tokens the smart runtime should build for model calls
+  maxContextTokens?: number;
 };
 
 // Alias for backward compatibility
@@ -142,11 +145,11 @@ export type TraceSinkHttpConfig = {
 
 export type TraceSinkOtlpConfig = {
   type: "otlp";
-  /** OTLP endpoint (e.g. https://console.cognipeer.com/api/client/v1/traces). */
   endpoint: string;
-  /** Custom headers (e.g. Authorization). */
   headers?: Record<string, string>;
 };
+
+export type TracingMode = "batched" | "streaming";
 
 export type TraceSinkConfig =
   | TraceSinkFileConfig
@@ -155,15 +158,12 @@ export type TraceSinkConfig =
   | TraceSinkHttpConfig
   | TraceSinkOtlpConfig;
 
-export type TracingMode = "batched" | "streaming";
-
 export type TracingConfig = {
   enabled: boolean;
   mode?: TracingMode;
-  /** Thread identifier; groups multiple sessions across agents into a single thread. */
-  threadId?: string;
   logData?: boolean;
   sink?: TraceSinkConfig;
+  threadId?: string;
 };
 
 // Alias for backward compatibility
@@ -182,6 +182,9 @@ export type AgentOptions = {
   // Predefined handoff targets exposed as tools automatically
   handoffs?: HandoffDescriptor[];
   limits?: AgentLimits;
+  // Optional override for the built-in todo list planning instructions.
+  // Applied only when todo/planning guidance is enabled.
+  todoListPrompt?: string;
   // Optional: normalize provider-specific usage into a common shape
   usageConverter?: (finalMessage: AIMessage, fullState: SmartState, model: any) => any;
   // Optional Zod schema for structured output; when provided, invoke() will attempt to parse
@@ -189,6 +192,186 @@ export type AgentOptions = {
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+};
+
+export type BuiltInRuntimeProfile = "fast" | "balanced" | "deep" | "research";
+
+export type RuntimeProfile = BuiltInRuntimeProfile | "custom";
+
+export type SummarizationMode = "incremental" | "full_rewrite";
+
+export type ContextPolicy = "raw" | "summary_only" | "hybrid";
+
+export type ToolResponseRetentionPolicy = "keep_full" | "keep_structured" | "summarize_archive" | "drop";
+
+export type ToolResponseClassification = "critical" | "informative" | "verbose" | "redundant";
+
+export type PlanningMode = "off" | "todo" | "planner_executor" | "reasoning_then_tools";
+
+export type ReplanPolicy = "never" | "on_failure" | "on_conflict" | "every_n_steps";
+
+export type DelegationMode = "off" | "role_based" | "automatic";
+
+export type ChildContextPolicy = "minimal" | "scoped" | "full";
+
+export type MemoryProviderKind = "inMemory" | "redis" | "postgres" | "mongo" | "s3";
+
+export type MemoryScope = "session" | "user" | "workspace" | "tenant";
+
+export type MemoryWritePolicy = "manual" | "auto_important" | "always";
+
+export type MemoryReadPolicy = "recent_only" | "semantic" | "hybrid";
+
+export type MemoryFact = {
+  key: string;
+  value: string;
+  sourceTurn: number;
+  confidence: number;
+  ttl?: number | null;
+  obsolete?: boolean;
+  lastUpdatedAt?: string;
+  scope?: MemoryScope;
+  tags?: string[];
+};
+
+export interface MemoryStore {
+  get(scope: MemoryScope, options?: { includeObsolete?: boolean; limit?: number }): Promise<MemoryFact[]>;
+  upsert(scope: MemoryScope, facts: MemoryFact[]): Promise<void>;
+  markObsolete(scope: MemoryScope, keys: string[]): Promise<void>;
+  semanticSearch?(scope: MemoryScope, query: string, options?: { limit?: number }): Promise<MemoryFact[]>;
+}
+
+export type SummaryFactItem = {
+  key: string;
+  value: string;
+  confidence?: number;
+  source?: string;
+};
+
+export type StructuredSummary = {
+  stable_facts: SummaryFactItem[];
+  active_goals: string[];
+  open_questions: string[];
+  discarded_obsolete: string[];
+  rawSummary?: string;
+};
+
+export type SummaryIntegrityCheck = {
+  passed: boolean;
+  criticalFactLoss: boolean;
+  obsoleteFactRevived: boolean;
+  notes: string[];
+};
+
+export type PlanStepRecord = {
+  id: number;
+  step: string;
+  owner: "agent" | "user" | "tool" | string;
+  exitCriteria: string;
+  evidence?: string;
+  status: "not-started" | "in-progress" | "completed" | "blocked";
+  title?: string;
+  description?: string;
+};
+
+export type SmartAgentSummarizationConfig = {
+  enable?: boolean;
+  maxTokens?: number;
+  summaryTriggerTokens?: number;
+  summaryPromptMaxTokens?: number;
+  summaryCompressionRatioTarget?: number;
+  summaryMode?: SummarizationMode;
+  promptTemplate?: string;
+  toolFreeCall?: boolean;
+  integrityCheck?: boolean;
+};
+
+export type SmartAgentBudgetConfig = {
+  systemReserveTokens?: number;
+  goalsReserveTokens?: number;
+  recentTurnsReserveTokens?: number;
+  toolResponseReserveTokens?: number;
+};
+
+export type SmartAgentContextConfig = {
+  policy?: ContextPolicy;
+  lastTurnsToKeep?: number;
+  toolResponsePolicy?: ToolResponseRetentionPolicy;
+  archiveLargeToolResponses?: boolean;
+  retrieveArchivedToolResponseOnDemand?: boolean;
+  budget?: SmartAgentBudgetConfig;
+};
+
+export type SmartAgentPlanningConfig = {
+  mode?: PlanningMode;
+  replanPolicy?: ReplanPolicy;
+  everyNSteps?: number;
+};
+
+export type SmartAgentDelegationConfig = {
+  mode?: DelegationMode;
+  maxDelegationDepth?: number;
+  maxChildCalls?: number;
+  maxParallelChild?: number;
+  childContextPolicy?: ChildContextPolicy;
+  requireJsonOutputContract?: boolean;
+};
+
+export type SmartAgentMemoryConfig = {
+  provider?: MemoryProviderKind;
+  store?: MemoryStore;
+  scope?: MemoryScope;
+  writePolicy?: MemoryWritePolicy;
+  readPolicy?: MemoryReadPolicy;
+};
+
+export type SmartAgentToolResponseConfig = {
+  maxToolResponseChars?: number;
+  maxToolResponseTokens?: number;
+  defaultPolicy?: ToolResponseRetentionPolicy;
+  largeResponsePolicy?: ToolResponseRetentionPolicy;
+  toolResponseRetentionByTool?: Record<string, ToolResponseRetentionPolicy>;
+  criticalTools?: string[];
+  schemaValidation?: "strict" | "warn";
+  retryOnSchemaError?: boolean;
+  fallbackPolicy?: ToolResponseRetentionPolicy;
+};
+
+export type SmartAgentWatchdogConfig = {
+  enabled?: boolean;
+  tokenDriftThreshold?: number;
+  overToolingSpikeThreshold?: number;
+  contextRotThreshold?: number;
+  autoCompaction?: boolean;
+  autoReplanOnFailure?: boolean;
+};
+
+export type SmartAgentCustomProfileConfig = {
+  extends?: BuiltInRuntimeProfile;
+  limits?: AgentLimits;
+  summarization?: SmartAgentSummarizationConfig;
+  context?: SmartAgentContextConfig;
+  planning?: SmartAgentPlanningConfig;
+  memory?: SmartAgentMemoryConfig;
+  delegation?: SmartAgentDelegationConfig;
+  toolResponses?: SmartAgentToolResponseConfig;
+  watchdog?: SmartAgentWatchdogConfig;
+};
+
+export type ProfileConfig = {
+  limits: Required<AgentLimits>;
+  summarization: Required<SmartAgentSummarizationConfig>;
+  context: Required<SmartAgentContextConfig> & { budget: Required<SmartAgentBudgetConfig> };
+  planning: Required<SmartAgentPlanningConfig>;
+  memory: Required<Omit<SmartAgentMemoryConfig, "store">> & { store?: MemoryStore };
+  delegation: Required<SmartAgentDelegationConfig>;
+  toolResponses: Required<SmartAgentToolResponseConfig>;
+  watchdog: Required<SmartAgentWatchdogConfig>;
+};
+
+export type ResolvedSmartAgentConfig = ProfileConfig & {
+  runtimeProfile: RuntimeProfile;
+  baseProfile: BuiltInRuntimeProfile;
 };
 
 // --- Smart Agent (batteries-included with planning & summarization) ---
@@ -204,18 +387,23 @@ export type SmartAgentOptions = {
   // Predefined handoff targets exposed as tools automatically
   handoffs?: HandoffDescriptor[];
   limits?: AgentLimits;
+  runtimeProfile?: RuntimeProfile;
+  customProfile?: SmartAgentCustomProfileConfig;
   // Toggle token-aware context summarization. Default: true. Set to false to disable.
-  summarization?: boolean | {
-    enable: boolean;
-    maxTokens: number;
-    /** Max tokens to include in the summarization prompt itself (to avoid sending huge context to summarizer). Default: 8000 */
-    summaryPromptMaxTokens?: number;
-    /** Optional prompt template. Use {{conversation}} and {{previousSummary}} placeholders. */
-    promptTemplate?: string;
-  };
+  summarization?: boolean | SmartAgentSummarizationConfig;
+  context?: SmartAgentContextConfig;
+  memory?: SmartAgentMemoryConfig;
+  planning?: SmartAgentPlanningConfig;
+  delegation?: SmartAgentDelegationConfig;
+  toolResponses?: SmartAgentToolResponseConfig;
+  watchdog?: SmartAgentWatchdogConfig;
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults
+  // Optional override for the built-in todo list planning instructions.
+  // Applied only when planning mode injects todo guidance.
+  todoListPrompt?: string;
   // Enable internal planning workflow (todo list tool + prompt hints)
+  /** @deprecated Use planning.mode="todo" */
   useTodoList?: boolean;
   // Optional: normalize provider-specific usage into a common shape
   usageConverter?: (finalMessage: AIMessage, fullState: SmartState, model: any) => any;
@@ -234,10 +422,13 @@ export type AgentRuntimeConfig = {
   tools: Array<ToolInterface<any, any, any>>;
   guardrails?: ConversationGuardrail[];
   systemPrompt?: string;
+  todoListPrompt?: string;
   limits?: AgentLimits;
   useTodoList?: boolean;
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  runtimeProfile?: RuntimeProfile;
+  smart?: ResolvedSmartAgentConfig;
 };
 
 export type TraceMessageSection = {
@@ -282,6 +473,8 @@ export type TraceToolResponseSection = {
   summary?: string;
   items?: TraceToolResultItem[];
   output?: any;
+  classification?: ToolResponseClassification;
+  retentionPolicy?: ToolResponseRetentionPolicy;
 };
 
 export type TraceSummarySection = {
@@ -309,16 +502,13 @@ export type TraceDataSection =
 export type TraceEventRecord = {
   sessionId: string;
   id: string;
-  /** W3C-compatible trace identifier (32 hex chars). Shared across all events in a session. */
-  traceId?: string;
-  /** Unique span identifier for this event (16 hex chars). */
-  spanId?: string;
-  /** Parent span identifier; establishes hierarchy (16 hex chars). */
-  parentSpanId?: string;
   type: string;
   label: string;
   sequence: number;
   timestamp: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
   actor?: { scope?: string; name?: string; role?: string; version?: string };
   status: "success" | "error" | "skipped" | "retry";
   durationMs?: number;
@@ -372,9 +562,7 @@ export type TraceSessionConfigSnapshot = {
 
 export type TraceSessionFile = {
   sessionId: string;
-  /** W3C-compatible trace identifier (32 hex chars). */
   traceId?: string;
-  /** Root span identifier for the session (16 hex chars). */
   rootSpanId?: string;
   threadId?: string;
   startedAt: string;
@@ -404,14 +592,13 @@ export type ResolvedTraceConfig = {
 
 export type TraceSessionRuntime = {
   sessionId: string;
-  /** W3C-compatible trace identifier (32 hex chars). */
-  traceId: string;
-  /** Root span identifier for the session (16 hex chars). */
-  rootSpanId: string;
-  /** Currently active iteration span ID. Updated during agent loop. */
+  startedAt: number;
+  traceId?: string;
+  rootSpanId?: string;
   currentIterationSpanId?: string;
   threadId?: string;
-  startedAt: number;
+  sessionStarted?: boolean;
+  agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
   resolvedConfig: ResolvedTraceConfig;
   events: TraceEventRecord[];
   summary: TraceSessionSummary;
@@ -419,8 +606,6 @@ export type TraceSessionRuntime = {
   errors: TraceErrorRecord[];
   fileBaseDir?: string;
   fileSessionDir?: string;
-  sessionStarted?: boolean;
-  agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
 };
 
 // Handoff descriptor returned from childAgent.asHandoff(...)
@@ -450,6 +635,11 @@ export type AgentState = {
     messageId?: string;
     tool_call_id?: string;
     fromCache?: boolean;
+    classification?: ToolResponseClassification;
+    retentionPolicy?: ToolResponseRetentionPolicy;
+    archiveId?: string;
+    summary?: string;
+    status?: "success" | "error" | "rejected" | "handoff";
   }>;
   toolCache?: Record<string, any>;
   toolCallCount?: number;
@@ -475,6 +665,8 @@ export type AgentState = {
 // Smart Agent State (extends base with planning & summarization)
 export type SmartState = AgentState & {
   summaries?: string[];
+  summaryRecords?: Array<StructuredSummary & { integrity?: SummaryIntegrityCheck; createdAt?: string }>;
+  memoryFacts?: MemoryFact[];
   toolHistoryArchived?: Array<{
     executionId: string;
     toolName: string;
@@ -487,9 +679,21 @@ export type SmartState = AgentState & {
     messageId?: string;
     tool_call_id?: string;
     fromCache?: boolean;
+    classification?: ToolResponseClassification;
+    retentionPolicy?: ToolResponseRetentionPolicy;
+    archiveId?: string;
+    summary?: string;
+    status?: "success" | "error" | "rejected" | "handoff";
   }>;
-  plan?: { version: number; steps: Array<{ index: number; title: string; status: string }>; lastUpdated?: string } | null;
+  plan?: { version: number; steps: PlanStepRecord[]; lastUpdated?: string; adherenceScore?: number } | null;
   planVersion?: number;
+  watchdog?: {
+    tokenDrift?: number;
+    contextRotScore?: number;
+    overToolingRate?: number;
+    compactions?: number;
+    lastAction?: string;
+  };
 };
 
 // Event types for observability and future streaming support
@@ -507,9 +711,10 @@ export type ToolCallEvent = {
 export type PlanEvent = {
   type: "plan";
   source: "manage_todo_list" | "system";
-  operation?: "write" | "read";
-  todoList?: Array<{ id: number; title: string; description: string; status: string; evidence?: string }>;
+  operation?: "write" | "read" | "update";
+  todoList?: PlanStepRecord[];
   version?: number;
+  adherenceScore?: number;
 };
 
 export type SummarizationEvent = {
@@ -535,6 +740,66 @@ export type SummarizationEvent = {
   tokenCountAfter?: number;
   /** @deprecated Use messagesCompressed instead */
   archivedCount?: number;
+  structuredSummary?: StructuredSummary;
+  integrity?: SummaryIntegrityCheck;
+};
+
+export type EvalFamily = "recall" | "state_continuity" | "summarization_fidelity" | "context_rollover" | "query_focused_summary";
+
+export type EvalCase = {
+  id: string;
+  family: EvalFamily;
+  prompt: string;
+  expectedPhrases?: string[];
+  forbiddenPhrases?: string[];
+  expectedFacts?: Array<{ key: string; value: string }>;
+  expectedToolNames?: string[];
+};
+
+export type EvalProfileDescriptor = {
+  label: string;
+  runtimeProfile: RuntimeProfile;
+  baseProfile?: BuiltInRuntimeProfile;
+  customProfile?: SmartAgentCustomProfileConfig;
+};
+
+export type EvalProfileTarget = RuntimeProfile | EvalProfileDescriptor;
+
+export type EvalCaseResult = {
+  id: string;
+  family: EvalFamily;
+  success: boolean;
+  recallAccuracy: number;
+  obsoleteDropAccuracy: number;
+  trajectoryScore: number;
+  recoveryRate: number;
+  overToolingRate: number;
+  latencyMs: number;
+  totalTokens?: number;
+  profile: RuntimeProfile;
+  profileLabel?: string;
+  baseProfile?: BuiltInRuntimeProfile;
+  notes: string[];
+};
+
+export type EvalHarnessMetrics = {
+  taskSuccess: number;
+  recallAccuracy: number;
+  obsoleteDropAccuracy: number;
+  trajectoryScore: number;
+  recoveryRate: number;
+  overToolingRate: number;
+  latencyMs: number;
+  totalTokens: number;
+  score: number;
+};
+
+export type EvalHarnessResult = {
+  profile: RuntimeProfile;
+  profileLabel: string;
+  baseProfile?: BuiltInRuntimeProfile;
+  metrics: EvalHarnessMetrics;
+  cases: EvalCaseResult[];
 };
 
 export type FinalAnswerEvent = {

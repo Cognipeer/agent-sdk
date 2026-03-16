@@ -27,10 +27,14 @@ describe('stateSnapshot', () => {
         },
       ],
       toolHistoryArchived: [],
-      todoList: [
-        { id: '1', title: 'Task 1', done: false },
-        { id: '2', title: 'Task 2', done: true },
-      ],
+      plan: {
+        version: 2,
+        steps: [
+          { id: 1, title: 'Task 1', step: 'Task 1', owner: 'agent', exitCriteria: 'Task 1 finished', status: 'in-progress' },
+          { id: 2, title: 'Task 2', step: 'Task 2', owner: 'agent', exitCriteria: 'Task 2 finished', status: 'completed' },
+        ],
+      },
+      planVersion: 2,
       ctx: {
         customKey: 'customValue',
       },
@@ -62,11 +66,12 @@ describe('stateSnapshot', () => {
       expect(snapshot.state.toolHistory![0].toolName).toBe('search');
     });
 
-    it('should preserve todo list', () => {
+    it('should preserve plan state', () => {
       const snapshot = captureSnapshot(baseState);
 
-      expect((snapshot.state as any).todoList).toHaveLength(2);
-      expect((snapshot.state as any).todoList![0].title).toBe('Task 1');
+      expect(snapshot.state.plan?.steps).toHaveLength(2);
+      expect(snapshot.state.plan?.steps[0].title).toBe('Task 1');
+      expect(snapshot.state.planVersion).toBe(2);
     });
 
     it('should exclude internal ctx keys', () => {
@@ -257,7 +262,11 @@ describe('stateSnapshot', () => {
           },
         ],
         toolHistoryArchived: [],
-        todoList: [{ id: '1', title: 'Task', done: false }],
+        plan: {
+          version: 1,
+          steps: [{ id: 1, title: 'Task', step: 'Task', owner: 'agent', exitCriteria: 'Task finished', status: 'not-started' }],
+        },
+        planVersion: 1,
       } as SmartState;
 
       const snapshot = captureSnapshot(original);
@@ -266,7 +275,8 @@ describe('stateSnapshot', () => {
       expect(restored.messages).toEqual(original.messages);
       expect(restored.toolCallCount).toBe(original.toolCallCount);
       expect(restored.toolHistory).toEqual(original.toolHistory);
-      expect((restored as any).todoList).toEqual((original as any).todoList);
+      expect(restored.plan).toEqual(original.plan);
+      expect(restored.planVersion).toBe(original.planVersion);
     });
   });
 });

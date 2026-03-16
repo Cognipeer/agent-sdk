@@ -12,6 +12,7 @@ export function createTool({
     needsApproval,
     approvalPrompt,
     approvalDefaults,
+    maxExecutionsPerRun,
 }: {
     name: string;
     description?: string;
@@ -20,6 +21,7 @@ export function createTool({
     needsApproval?: boolean;
     approvalPrompt?: string;
     approvalDefaults?: any;
+    maxExecutionsPerRun?: number | null;
 }): ToolInterface {
     const execute: SmartToolFn = async (input: any) => func(input);
 
@@ -42,6 +44,9 @@ export function createTool({
     }
     if (approvalDefaults !== undefined) {
         (toolRecord as any).approvalDefaults = approvalDefaults;
+    }
+    if (maxExecutionsPerRun !== undefined) {
+        (toolRecord as any).maxExecutionsPerRun = maxExecutionsPerRun;
     }
 
     (toolRecord as any).__source = (toolRecord as any).__source || "smart";

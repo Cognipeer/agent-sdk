@@ -13,6 +13,22 @@ import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
 import { countMessagesTokens } from "./utils/utilTokens.js";
 
+function isSyntheticSummaryMessage(message: any): boolean {
+  if (!message) return false;
+  if (message.role === 'tool' && message.name === 'summarize_context') {
+    return true;
+  }
+
+  if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+    return message.tool_calls.some((toolCall: any) => {
+      const toolName = toolCall?.function?.name || toolCall?.name;
+      return toolName === 'summarize_context';
+    });
+  }
+
+  return false;
+}
+
 export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
   const agentCore = createAgentCoreNode(opts);
@@ -69,6 +85,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     tools: toolsBase,
     guardrails: opts.guardrails,
     systemPrompt: undefined,
+    todoListPrompt: opts.todoListPrompt,
     limits: opts.limits,
     useTodoList: undefined,
     outputSchema: opts.outputSchema as any,
@@ -227,11 +244,30 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
 
         if (maxTok) {
-          const tokenCount = countMessagesTokens(state.messages || []);
+          // Exclude synthetic summary messages AND context overhead injected by SmartAgent's
+          // buildModelMessages (context_summary, memory_context). These system messages are
+          // added on top of the conversation and shouldn't trigger re-summarization.
+          const tokCountMessages = (state.messages || []).filter((message: any) => {
+            if (isSyntheticSummaryMessage(message)) return false;
+            if (message.role === 'system' && (message.name === 'context_summary' || message.name === 'memory_context')) return false;
+            return true;
+          });
+          const tokenCount = countMessagesTokens(tokCountMessages);
           if (tokenCount > maxTok) {
-            const ctx = { ...(state.ctx || {}), __needsSummarization: true };
-            state = { ...state, ctx } as AgentState;
-            break;
+            // Only signal summarization if tokens exceed the threshold by a meaningful margin
+            // or if summarization hasn't just been performed (prevents infinite break loops
+            // where summarized output + context overhead barely exceeds the limit).
+            const hasFreshSummary = (state.messages || []).some((m: any) =>
+              m.role === 'tool' && m.content === 'SUMMARIZED'
+            );
+            if (hasFreshSummary && tokenCount <= maxTok * 1.15) {
+              // Summarization was recently performed and the overshoot is within 15%.
+              // Proceed to agent call instead of re-triggering summarization.
+            } else {
+              const ctx = { ...(state.ctx || {}), __needsSummarization: true };
+              state = { ...state, ctx } as AgentState;
+              break;
+            }
           }
         }
 
@@ -498,7 +534,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         schema,
         func: async ({ input }) => {
           const res = await instance.invoke({ messages: [{ role: 'user', content: input } as any] });
-          return { content: res.content };
+          return {
+            content: res.content,
+            output: res.output,
+            summary: res.state?.summaries?.[res.state.summaries.length - 1],
+          };
         }
       });
     },

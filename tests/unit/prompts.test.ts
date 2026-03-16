@@ -34,6 +34,12 @@ describe('buildSystemPrompt', () => {
       const prompt = buildSystemPrompt('Base prompt', true, 'PlanningAgent');
 
       expect(prompt).toContain('todo');
+      expect(prompt).not.toContain('PLANNING IS MANDATORY');
+      expect(prompt).toContain('Do NOT create a plan for direct Q&A');
+      expect(prompt).toContain('If a task is multi-step and no valid plan exists yet, create one before substantial execution.');
+      expect(prompt).toContain('Use operation="write" only to create or fully replace the entire plan.');
+      expect(prompt).toContain('Include expectedVersion from the latest successful plan state whenever you update an existing plan.');
+      expect(prompt).toContain('Do not finish a multi-step task with stale plan state.');
     });
 
     it('should not include todo list instructions when disabled', () => {
@@ -42,6 +48,21 @@ describe('buildSystemPrompt', () => {
 
       // Should not have explicit todo tool mentions (unless in base prompt)
       expect(promptLower.includes('manage_todo_list')).toBe(false);
+    });
+
+    it('should allow overriding the todo list prompt', () => {
+      const prompt = buildSystemPrompt('Base prompt', true, 'PlanningAgent', 'Custom planning rules:\n- Always read before update.');
+
+      expect(prompt).toContain('Custom planning rules:');
+      expect(prompt).toContain('Always read before update.');
+      expect(prompt).not.toContain('Do not finish a multi-step task with stale plan state.');
+    });
+
+    it('should not double-wrap a custom planning block', () => {
+      const prompt = buildSystemPrompt('Base prompt', true, 'PlanningAgent', '<planning>\nCustom block\n</planning>');
+
+      expect(prompt.match(/<planning>/g)).toHaveLength(1);
+      expect(prompt).toContain('Custom block');
     });
   });
 
@@ -84,6 +105,14 @@ You should:
       expect(prompt).toContain('Be concise');
       expect(prompt).toContain('Be accurate');
       expect(prompt).toContain('Be helpful');
+    });
+
+    it('should keep planning optional for simple tasks', () => {
+      const prompt = buildSystemPrompt('Base prompt', 'planner_executor', 'DeepAgent');
+
+      expect(prompt).toContain('single straightforward tool lookup');
+      expect(prompt).toContain('If you do not know the latest version, read the plan first.');
+      expect(prompt).toContain('If tool results materially change the task state, sync the plan before the final answer.');
     });
   });
 });

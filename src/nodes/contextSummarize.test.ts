@@ -59,4 +59,118 @@ describe('contextSummarize', () => {
     // Just verify the function completed without throwing
     expect(next.messages).toBeDefined();
   });
+
+  it('should ignore synthetic summarize_context messages when deciding what to compress', async () => {
+    const summarizer = createContextSummarizeNode({
+      summarization: true,
+      model: {
+        async invoke() {
+          return { role: 'assistant', content: 'unexpected summary' };
+        },
+      },
+    } as any);
+
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'hello' },
+        {
+          role: 'assistant',
+          content: 'calling real tool',
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'search_in_knowledgebase', arguments: '{"query":"x"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          name: 'search_in_knowledgebase',
+          tool_call_id: 'call_1',
+          content: 'SUMMARIZED',
+        },
+        {
+          role: 'assistant',
+          content: 'Context limit reached. Summarizing conversation history to reduce token usage.',
+          tool_calls: [
+            {
+              id: 'call_summary_1',
+              type: 'function',
+              function: { name: 'summarize_context', arguments: '{}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          name: 'summarize_context',
+          tool_call_id: 'call_summary_1',
+          content: 'PROJECT_FACT|code=ORBIT|owner=Ada Lovelace|risk=low|milestone=design',
+        },
+      ],
+      summaries: ['PROJECT_FACT|code=ORBIT|owner=Ada Lovelace|risk=low|milestone=design'],
+      ctx: {},
+    };
+
+    const delta = await summarizer(state);
+
+    expect(delta).toEqual({});
+  });
+
+  it('should preserve canonical tool facts even if the model omits them', async () => {
+    const summarizer = createContextSummarizeNode({
+      summarization: true,
+      model: {
+        async invoke() {
+          return {
+            role: 'assistant',
+            content: JSON.stringify({
+              stable_facts: [],
+              active_goals: [],
+              open_questions: [],
+              discarded_obsolete: [],
+              rawSummary: 'minimal summary',
+            }),
+          };
+        },
+      },
+    } as any);
+
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'Fetch project facts and preserve them.' },
+        {
+          role: 'assistant',
+          content: 'calling tool',
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'fetch_project_snapshot', arguments: '{"project":"orbit"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          name: 'fetch_project_snapshot',
+          tool_call_id: 'call_1',
+          content: 'PROJECT_FACT|code=ORBIT|owner=Ada Lovelace|risk=low|milestone=design',
+        },
+      ],
+      summaries: [],
+      summaryRecords: [],
+      ctx: {},
+    };
+
+    const delta = await summarizer(state);
+    const record = delta.summaryRecords?.[0];
+
+    expect(record?.stable_facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'project_fact.orbit.owner', value: 'Ada Lovelace' }),
+        expect.objectContaining({ key: 'project_fact.orbit.risk', value: 'low' }),
+        expect.objectContaining({ key: 'project_fact.orbit.milestone', value: 'design' }),
+      ]),
+    );
+  });
 });

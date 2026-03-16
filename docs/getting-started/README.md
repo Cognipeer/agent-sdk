@@ -6,253 +6,141 @@ permalink: /getting-started/
 
 # Getting Started
 
-This guide helps you install, configure, and run your first agent. Two entry points are available:
+Agent SDK exposes two usable entry points, and the right one depends on whether you want product-ready runtime behavior or the thinnest possible tool loop.
 
-- **`createSmartAgent`** – batteries-included loop with planning, summarization, context tools, and structured-output helpers.
-- **`createAgent`** – minimal control loop with no system prompt or summarization so you can orchestrate everything yourself.
-## Prerequisites
+- `createSmartAgent` when you want adaptive planning, context compaction, memory syncing, and trace-friendly state.
+- `createAgent` when you want a minimal deterministic loop without smart runtime prompt shaping.
 
-- Node.js >= 18 (recommended LTS)
-- A supported model provider API key (e.g. `OPENAI_API_KEY`) **or** a fake model for offline experimentation.
-- Package manager: npm, pnpm, or yarn (examples use npm).
-## Why this agent?
+## Who this guide is for
 
-- Structured output enforcement via Zod schemas.
-- Safe tool limits (total + parallel) with finalize messaging.
-- Planning/TODO mode, summarization, and context tools when using `createSmartAgent`.
-- Built-in multi-agent composition (`asTool`, `asHandoff`).
-- Adapter helpers for LangChain models/tools and MCP clients without taking a hard dependency.
-- Structured JSON tracing with optional payload capture.
+Use this guide if you need to answer these questions quickly:
+
+1. What do I install to get the first working agent running?
+2. Which runtime entry point should my product start from?
+3. What should I expect to exist in `result.state` after the run?
+4. How do I move from a toy example to a production integration without re-architecting the whole app?
+
 ## Install
+
 ```sh
 npm install @cognipeer/agent-sdk zod
+```
 
-# Optional: install if you want LangChain adapters or MCP tool clients
+Optional adapters:
+
+```sh
 npm install @langchain/core @langchain/openai
 ```
 
-Install other adapters (e.g. MCP clients) as needed for your tools.
-## Environment Setup
+Requirements:
 
-Expose your model key (OpenAI example):
-```sh
-export OPENAI_API_KEY=sk-...
-```
-Add this to your shell profile for persistence (`~/.zshrc` or similar).
+- Node.js 18.17+
+- A model adapter compatible with the SDK's message interface
+- A concrete decision about whether planning should be `off` or `todo` for your first integration
 
-## Your first agent
+## Choose the right starting point
 
-### Option A: Smart agent with planning and summarization
+| If you need... | Start with... | Why |
+|---|---|---|
+| Sensible defaults for real product work | `createSmartAgent` | You get profiles, plan sync, context compaction, and memory reads without assembling those behaviors manually. |
+| Maximum control with minimal abstraction | `createAgent` | You keep only the base loop: model call, tool execution, limits, and finalize behavior. |
+| Durable planning state that survives UI refreshes or resumes | `createSmartAgent` | The smart runtime synchronizes the canonical plan onto `state.plan`. |
+| A debugging sandbox for provider behavior | `createAgent` | Fewer moving parts means fewer runtime heuristics to inspect. |
+
+## First smart agent
 
 ```ts
 import { createSmartAgent, createTool, fromLangchainModel } from "@cognipeer/agent-sdk";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
-const echo = createTool({
-  name: "echo",
-  description: "Echo back",
-  schema: z.object({ text: z.string().min(1) }),
-  func: async ({ text }) => ({ echoed: text }),
+const lookup = createTool({
+  name: "lookup_owner",
+  description: "Return the owner for a project code",
+  schema: z.object({ code: z.enum(["ORBIT", "NOVA"]) }),
+  func: async ({ code }) => ({ owner: code === "ORBIT" ? "Ada Lovelace" : "Grace Hopper" }),
 });
 
-const model = fromLangchainModel(new ChatOpenAI({
-  model: "gpt-4o-mini",
-  apiKey: process.env.OPENAI_API_KEY,
-}));
-
 const agent = createSmartAgent({
-  name: "Planner",
-  model,
-  tools: [echo],
-  useTodoList: true,
-  limits: { maxToolCalls: 5, maxToken: 6000 },
+  name: "Assistant",
+  model: fromLangchainModel(new ChatOpenAI({ model: "gpt-4o-mini" })),
+  tools: [lookup],
+  runtimeProfile: "balanced",
+  planning: { mode: "todo" },
+  limits: { maxToolCalls: 6, maxContextTokens: 12000 },
   tracing: { enabled: true },
 });
 
-const res = await agent.invoke({
-  messages: [{ role: "user", content: "Plan a greeting and send it via the echo tool" }],
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "Compare ORBIT and NOVA." }],
+}, {
+  onEvent: (event) => {
+    if (event.type === "plan") {
+      console.log(event.operation, event.version, event.todoList?.length ?? 0);
+    }
+  },
 });
 
-console.log(res.content);
+console.log(result.content);
+console.log(result.state?.plan?.steps);
 ```
 
-What happens:
-1. A Zod-backed tool (`echo`) is registered.
-2. The smart agent injects a system prompt with planning rules and exposes the `manage_todo_list` + `get_tool_response` helpers.
-3. `invoke` runs the loop, executing tool calls until the assistant provides a final answer.
-4. When tracing is enabled, a `trace.session.json` file is written under `logs/[session]/`.
+## What this example actually proves
 
-### Option B: Minimal agent loop
+1. The runtime can bind typed tools and still keep the transcript message-first.
+2. Planning is available, but still adaptive. The runtime does not force a todo list for every prompt.
+3. If a plan is created or updated, the durable representation ends up on `result.state.plan`.
+4. If context pressure builds, the smart wrapper can summarize while preserving recovery paths for raw tool output.
+5. With tracing enabled, you can inspect the run without instrumenting the whole loop yourself.
+
+## What the smart runtime adds on top of the base loop
+
+| Capability | `createAgent` | `createSmartAgent` |
+|---|---|---|
+| System prompt composition | Manual | Built in |
+| Planning tool injection | Manual | Built in when planning is enabled |
+| Context summarization | Manual | Built in through smart runtime config |
+| Memory facts sync | No | Yes |
+| Canonical `state.plan` sync | No | Yes |
+| Runtime profiles | No | Yes |
+| Watchdog metrics like token drift and context rot | No | Yes |
+
+## What to inspect after your first run
+
+Check these surfaces before you move on:
+
+- `result.content`: the final assistant answer.
+- `result.state.plan`: the durable plan, if planning was used.
+- `result.state.summaryRecords`: evidence that the runtime compacted prior context.
+- `result.state.memoryFacts`: facts reloaded from memory policy.
+- `result.state.watchdog`: runtime telemetry such as token drift or over-tooling rate.
+
+This is the minimum sanity check that tells you whether the runtime is behaving as an operational system instead of just returning text.
+
+## Minimal loop example
 
 ```ts
-import { createAgent, createTool, fromLangchainModel } from "@cognipeer/agent-sdk";
-import { ChatOpenAI } from "@langchain/openai";
-import { z } from "zod";
-
-const echo = createTool({
-  name: "echo",
-  description: "Echo back",
-  schema: z.object({ text: z.string().min(1) }),
-  func: async ({ text }) => ({ echoed: text }),
-});
-
-const model = fromLangchainModel(new ChatOpenAI({
-  model: "gpt-4o-mini",
-  apiKey: process.env.OPENAI_API_KEY,
-}));
-
 const agent = createAgent({
   model,
-  tools: [echo],
-  limits: { maxToolCalls: 5 },
-});
-
-const res = await agent.invoke({
-  messages: [{ role: "user", content: "Say hi via echo" }],
-});
-
-console.log(res.content);
-```
-
-The base agent gives you full control: no system prompt, no planning rules, and no auto-summarization. Perfect when you already orchestrate prompts elsewhere.
-
-> **Tip:** already have LangChain tools or MCP adapters? Wrap them with `fromLangchainTools(...)` before passing them into `tools`.
-
-### Optional: Offline fake model
-
-```ts
-const fakeModel = {
-  bindTools() { return this; },
-  async invoke() {
-    return { role: "assistant", content: "hello (fake)" };
-  },
-};
-
-const agent = createAgent({ model: fakeModel as any });
-```
-
-## Adding structured output
-
-Provide `outputSchema` on either agent variant to validate and parse the final message. The framework exposes `res.output` when parsing succeeds and injects a finalize tool called `response`.
-
-```ts
-const Result = z.object({ title: z.string(), bullets: z.array(z.string()).min(1) });
-const agent = createAgent({ model, outputSchema: Result });
-
-const res = await agent.invoke({
-  messages: [{ role: "user", content: "Give 3 bullets about agents" }],
-});
-
-console.log(res.output?.bullets);
-```
-
-## Smart layer: planning, TODO, and summarization
-
-Listen for plan updates emitted by the smart agent:
-
-```ts
-await agent.invoke(
-  { messages: [{ role: "user", content: "Plan and echo hi" }] },
-  {
-    onEvent: (event) => {
-      if (event.type === "plan") {
-        console.log("Plan size", event.todoList?.length ?? 0);
-      }
-    },
-  }
-);
-```
-
-## Handling tool limits
-
-Set caps to prevent runaway loops:
-
-```ts
-createAgent({
-  model,
-  tools: [echo],
-  limits: { maxToolCalls: 3, maxParallelTools: 2 },
+  tools: [lookup],
+  limits: { maxToolCalls: 4 },
 });
 ```
 
-When the limit is hit, a system finalize message is injected and the next model turn must answer directly.
+Use this variant when you do not want prompt injection, runtime profiles, or any smart-runtime heuristics. It is especially useful when you are validating model behavior, testing tool contract quality, or embedding the SDK inside another orchestration layer that already owns planning and memory.
 
-## Context summarization (SmartAgent)
+## Recommended first integration path
 
-Configure summarization under `summarization`:
+1. Start with `createSmartAgent` and the `balanced` profile.
+2. Explicitly choose `planning: { mode: "todo" }` only if the user journey includes genuine multi-step work.
+3. Turn on tracing from day one so you can see whether the agent is over-tooling or summarizing too aggressively.
+4. Only move to `runtimeProfile: "custom"` after you can explain which built-in preset is close but not correct.
 
-```ts
-createSmartAgent({
-  model,
-  tools: [echo],
-  summarization: {
-    enable: true,
-    maxTokens: 6000,
-    summaryPromptMaxTokens: 4000,
-    promptTemplate: "Summary so far:\n{{previousSummary}}\n\nConversation:\n{{conversation}}\n\nSummary:",
-  },
-});
-```
+That order matters. Teams often customize limits too early and lose the benefit of the preset tradeoffs.
 
-Disable summarization entirely with `summarization: false`.
+## Next steps
 
-## Tracing & observability
-
-Enable structured JSON traces:
-
-```ts
-createSmartAgent({
-  model,
-  tracing: {
-    enabled: true,
-    logData: true,
-  },
-});
-```
-
-By default, traces land in `logs/[session]/trace.session.json`. Keep `logData: true` for payload snapshots, set it to `false` for metrics-only mode, and swap in `fileSink(path?)`, `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` when you want a different destination.
-
-## Quick capability tour
-
-| Capability | How | Example Folder |
-|------------|-----|----------------|
-| Multiple Tools | tools array | `examples/tools` |
-| Planning / TODO | `useTodoList: true` | `examples/todo-planning` |
-| Tool Limits | `limits.maxToolCalls` | `examples/tool-limit` |
-| Summarization | `summarization.maxTokens` | `examples/summarization` |
-| Structured Output | `outputSchema` | `examples/structured-output` |
-| Multi-Agent | `agent.asTool()` | `examples/multi-agent` |
-| Handoff | `agent.asHandoff()` | `examples/handoff` |
-| MCP Tools | MCP adapter client | `examples/mcp-tavily` |
-| Vision Input | message parts with `image_url` | `examples/vision` |
-
-## Next Steps
-
-Proceed to:
-- Architecture – understand the loop & phases.
-- Tools – author richer tools and error handling.
-- Limits & Tokens – tune summarization & caps.
-- Examples – experiment hands-on.
-
-## Troubleshooting
-
-| Issue | Likely Cause | Fix |
-|-------|--------------|-----|
-| No tool calls emitted | Model lacks tool calling | Use OpenAI-compatible model or fake scenario |
-| Summarization not triggering | `maxToken` not reached or disabled | Lower `maxToken` or remove `summarization:false` |
-| Parsed output missing | Schema mismatch / invalid JSON | Inspect `res.content`, adjust prompt, broaden schema |
-| Handoff ignored | Tool not included | Ensure `handoffs` array includes the target agent |
-| Trace file missing | `tracing.enabled` false | Enable tracing or ensure the process can write to `logs/` |
-
-If stuck, enable tracing and review the most recent `trace.session.json` for error metadata.
-
-## Running examples
-
-The repository ships runnable scripts in `examples/`. Build the package once (`npm run build` from repo root) and run with `tsx`, e.g.:
-
-```sh
-OPENAI_API_KEY=... npx tsx examples/tools/tools.ts
-```
-
-Each folder includes a README describing required environment variables and the capability it showcases.
+- [Core Concepts](/core-concepts/)
+- [Architecture](/architecture/)
+- [Planning Guide](/guide/planning)
+- [API Reference](/api/agent)

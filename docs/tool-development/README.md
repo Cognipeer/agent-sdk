@@ -96,6 +96,24 @@ Set `needsApproval: true` on any tool that should pause execution until a review
 
 When the model selects the tool, the SDK stores a pending entry in `state.pendingApprovals`. Your host app can present the request to a human and then resolve it. See the dedicated [Tool Approvals](/tool-approvals/) guide for end-to-end wiring, including `resolveToolApproval` usage, event payloads, and checkpoint integration.
 
+## Per-tool execution limits
+
+Set `maxExecutionsPerRun` when a tool should only succeed a fixed number of times within a single run:
+
+```ts
+const weather = createTool({
+  name: "weather_lookup",
+  description: "Lookup current weather for a city",
+  schema: z.object({ city: z.string().min(2) }),
+  func: async ({ city }) => ({ city, temp: 21 }),
+  maxExecutionsPerRun: 3,
+});
+```
+
+- `maxExecutionsPerRun: 3` means the fourth successful call is skipped with a tool message.
+- `maxExecutionsPerRun: null` or omitting the field means unlimited usage.
+- This limit is per tool and per run; it does not replace global controls like `limits.maxToolCalls` or `limits.maxParallelTools`.
+
 ## Patterns
 | Pattern | Description | When to Use |
 |---------|-------------|-------------|

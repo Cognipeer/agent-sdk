@@ -1369,8 +1369,9 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
   }
 
   const hadNonSinkErrors = session.errors.some((error) => error.type && error.type !== "sink");
+  const hadSinkErrors = session.errors.some((error) => error.type === "sink");
   let status: TraceSessionStatus = params.status ?? (hadNonSinkErrors ? "error" : "success");
-  if (status === "success" && sinkFailed) {
+  if (status === "success" && (sinkFailed || hadSinkErrors)) {
     status = "partial";
   }
 

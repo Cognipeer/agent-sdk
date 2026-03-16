@@ -6,37 +6,62 @@ permalink: /faq/
 
 # FAQ
 
-## Why are my tool calls not triggering?
-Your model may not support structured tool calls. Try:
+## Should I start with `createAgent` or `createSmartAgent`?
 
-- Ensuring your adapter exposes a real `bindTools` implementation (LangChain models already do).
-- Wrapping the model with `withTools(model, tools)` as a best-effort fallback.
-- Switching to a model that supports OpenAI-style tool calling (e.g. GPT-4o variants).
+Start with `createSmartAgent` unless you have a strong reason to own prompt construction, planning, summarization, and memory behavior yourself. `createAgent` is better for minimal loops, testing, or lower-level orchestration.
 
 ## When does summarization run?
-When `limits.maxToken` would be exceeded before the next model call, the `contextSummarize` node compacts history.
+
+Summarization depends on the smart runtime configuration and context pressure. The primary context budget knob is `limits.maxContextTokens`.
 
 ## How do I disable summarization?
-It is enabled by default. Pass `summarization: false` to `createSmartAgent({ ... })` to turn it off. When disabled, `limits.maxToken` will not trigger compaction.
 
-## Can I use MCP tools?
-Yes. Most MCP clients expose LangChain-style tools. Pass them through `fromLangchainTools(...)` first, then include the returned objects in the `tools` array. They behave like any other SDK-native tool.
+Pass `summarization: false` to `createSmartAgent(...)`.
 
-## What's the difference between `createAgent` and `createSmartAgent`?
-`createAgent` is the minimal loop: no system prompt, no planning helpers, no summaries. `createSmartAgent` adds those features automatically (planning rules, context tools, summarization, optional structured output finalize). Choose the one that matches your orchestration needs.
+## Why did the agent skip planning?
 
-## Why is my structured output not parsed?
-- Ensure `outputSchema` is a Zod schema (or object compatible with `parse`).
-- Confirm the model invoked the hidden `response` tool; if it didn’t, inspect the final assistant message and adjust prompting.
-- Check the trace session – look for `metadata.error` entries or `__structuredOutputParsed` flags inside events.
+Planning is adaptive. Simple direct answers or single straightforward tool lookups often skip plan creation unless the user explicitly asks for a plan.
+
+## Are planning events the source of truth?
+
+No. Treat `state.plan` as the canonical planning surface. `plan` events are useful for UI updates and streaming, but they are not the durable state model.
+
+## Where is the current plan stored?
+
+On `state.plan`. The `plan` event still exposes `todoList` for compatibility, but `state.plan` is the durable state surface.
 
 ## How do I inspect raw tool outputs after summarization?
-Call the `get_tool_response` tool with the `executionId` printed in the summarized message (e.g. `SUMMARIZED executionId:'abc123'`). The agent will return the original payload from `toolHistoryArchived`.
 
-## Why do I see “Skipped tool due to tool-call limit”? 
-The assistant proposed additional tool calls after hitting `limits.maxToolCalls`. Increase the limit or refine your prompts to encourage earlier final answers. The skip is intentional to force the next turn to respond directly.
+Call `get_tool_response` with the relevant `executionId`.
 
-## Traces aren't showing up
-- Verify `tracing: { enabled: true }` was passed.
-- Confirm your process has write access to the tracing path (defaults to `[cwd]/logs`).
-- If you configured a non-file sink, check its HTTP responses/callback errors; failures are appended to the session `errors` array with type `sink`.
+## What runtime profile should I pick first?
+
+Use `balanced` first. Move to `fast` for latency-sensitive tasks, `deep` for heavier inspection, and `research` for long-running agents with broader context and delegation needs.
+
+## Do built-in profiles automatically enable planning?
+
+No. Built-in profiles currently default planning to `off`. Turn on `planning.mode: "todo"` when the workflow really needs autonomous multi-step coordination.
+
+## When should I use MCP?
+
+Use MCP when tool capabilities live outside your process or need to be discovered from remote tool servers. MCP tools can still participate in planning, tracing, approvals, and summarization through the normal runtime.
+
+## How do pause and resume work?
+
+Use `onStateChange` to checkpoint, then persist a snapshot with `agent.snapshot(...)`. Later, restore it with `agent.resume(...)`. This is useful for long-running or human-in-the-loop agent flows.
+
+## How do tool approvals work?
+
+Mark a tool with `needsApproval: true`. The runtime pauses before execution, records the pending approval, and resumes after `resolveToolApproval(...)` returns an approved state.
+
+## What happens when the tool-call limit is reached?
+
+The runtime injects a finalize signal so the next assistant turn must answer directly without calling more tools.
+
+## Why is tracing marked `partial`?
+
+At least one sink operation failed, but the session still completed and was finalized.
+
+## Does structured output replace the normal assistant message?
+
+No. You still receive `result.content`. When `outputSchema` succeeds, you also get a parsed value on `result.output`.

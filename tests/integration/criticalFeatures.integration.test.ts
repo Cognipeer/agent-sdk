@@ -343,7 +343,7 @@ runReal('2. Summarization', () => {
   let model: any;
 
   beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
+    model = createOpenAIModel(API_KEY!, 'gpt-5.1');
   });
 
   it('should trigger summarization when context exceeds limit', async () => {
@@ -443,6 +443,99 @@ runReal('2. Summarization', () => {
     // With aggressive limits, should trigger multiple summarizations
     expect(result.state?.summaries?.length || 0).toBeGreaterThanOrEqual(1);
   }, 120000);
+
+  it('should retain key facts across summarization and answer a follow-up recall question', async () => {
+    const projectFacts = {
+      orbit: {
+        code: 'ORBIT',
+        owner: 'Ada Lovelace',
+        risk: 'low',
+        milestone: 'design',
+      },
+      nova: {
+        code: 'NOVA',
+        owner: 'Grace Hopper',
+        risk: 'medium',
+        milestone: 'blocked',
+      },
+    } as const;
+
+    const buildPayload = (fact: typeof projectFacts.orbit) => [
+      `PROJECT_FACT|code=${fact.code}|owner=${fact.owner}|risk=${fact.risk}|milestone=${fact.milestone}`,
+      'Detailed archived payload '.repeat(220),
+    ].join('\n');
+
+    const fetchProjectSnapshot = createTool({
+      name: 'fetch_project_snapshot',
+      description: 'Return a large project snapshot with a canonical fact line at the top.',
+      schema: z.object({ project: z.enum(['orbit', 'nova']) }),
+      func: async ({ project }) => buildPayload(projectFacts[project]),
+    });
+
+    const smartAgent = createSmartAgent({
+      name: 'SummarizationRecallAgent',
+      model,
+      tools: [fetchProjectSnapshot],
+      summarization: {
+        enable: true,
+        maxTokens: 450,
+        summaryPromptMaxTokens: 2200,
+        promptTemplate: [
+          'Summarize the conversation while preserving any project facts exactly.',
+          'When you see a line formatted like PROJECT_FACT|code=...|owner=...|risk=...|milestone=..., copy it exactly into the summary.',
+          'Retain earlier exact fact lines from the previous summary as well.',
+          '',
+          'Previous summary:',
+          '{{previousSummary}}',
+          '',
+          'Conversation:',
+          '{{conversation}}',
+          '',
+          'Updated summary:'
+        ].join('\n'),
+      },
+      limits: { maxToolCalls: 4 },
+    });
+
+    const firstResult = await smartAgent.invoke({
+      messages: [{
+        role: 'user',
+        content: 'Fetch the ORBIT and NOVA project snapshots. Preserve the key facts so you can answer a follow-up question later.',
+      }],
+    });
+
+    console.log('Summaries after first run:', firstResult.state?.summaries?.length || 0);
+    console.log('Last summary preview:', firstResult.state?.summaries?.at(-1)?.slice(0, 300));
+
+    expect(firstResult.state?.summaries?.length || 0).toBeGreaterThanOrEqual(1);
+    expect(firstResult.state?.messages.some((message) => message.role === 'tool' && message.content === 'SUMMARIZED')).toBe(true);
+
+    const followUp = await smartAgent.invoke({
+      messages: [
+        ...(firstResult.state?.messages || firstResult.messages),
+        {
+          role: 'user',
+          content: 'What are the owner and risk for ORBIT and NOVA? Answer in one sentence.',
+        },
+      ],
+      summaries: firstResult.state?.summaries,
+      toolHistory: firstResult.state?.toolHistory,
+      toolHistoryArchived: firstResult.state?.toolHistoryArchived,
+      toolCallCount: firstResult.state?.toolCallCount,
+    });
+
+    const normalized = followUp.content.toLowerCase();
+    console.log('Follow-up response:', followUp.content);
+
+    expect(normalized).toContain('ada');
+    expect(normalized).toContain('lovelace');
+    expect(normalized).toContain('grace');
+    expect(normalized).toContain('hopper');
+    expect(normalized).toContain('orbit');
+    expect(normalized).toContain('nova');
+    expect(normalized).toContain('low');
+    expect(normalized).toContain('medium');
+  }, 180000);
 });
 
 // ============================================================================

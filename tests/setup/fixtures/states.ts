@@ -101,12 +101,23 @@ export function createStateWithToolResult(
 }
 
 /**
- * Create state with todo list
+ * Create state with plan data
  */
-export function createStateWithTodos(todos: Array<{ id: string; title: string; done: boolean }>): SmartState {
+export function createStateWithTodos(todos: Array<{ id: number; title: string; done: boolean }>): SmartState {
   return {
     messages: [{ role: 'user', content: 'Complete the tasks' }],
-    todoList: todos,
+    plan: {
+      version: 1,
+      steps: todos.map((todo) => ({
+        id: todo.id,
+        title: todo.title,
+        step: todo.title,
+        owner: 'agent',
+        exitCriteria: todo.title,
+        status: todo.done ? 'completed' : 'not-started',
+      })),
+    },
+    planVersion: 1,
   } as SmartState;
 }
 

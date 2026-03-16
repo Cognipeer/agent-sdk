@@ -1,60 +1,110 @@
 # Changelog
 
-## [0.1.3] - 2025-01-06
+## [0.4.0] - 2026-03-16
+
+### Added
+- OTLP tracing sink/export helpers plus richer trace/session correlation fields (`traceId`, `spanId`, `parentSpanId`, `threadId`)
+- Workbench integration tests covering invoke, tools, streaming, planning, and summarization flows
 
 ### Changed
-- Updated all example README files with consistent structure and npm run commands
-- Improved examples/README.md with better categorization and detailed instructions
-- Enhanced documentation for running examples with two-step installation process
-- Updated main README.md with clearer example execution instructions
+- Tracing configuration now exposes explicit `mode` support and a wider public export surface for remote session handling
+- Debugging, getting-started, and core-concepts docs were refreshed to describe the expanded tracing model
+
+## [0.3.1] - 2026-02-18
+
+### Added
+- `threadId` tracing support for grouping multiple agent sessions under a single workflow or conversation
+
+### Changed
+- Debugging docs were updated to explain grouped trace sessions and workflow-level correlation
+
+## [0.3.0] - 2026-02-16
+
+### Added
+- `startStreamingSession` tracing helper export for streaming trace backends
+
+### Changed
+- Agent/tracing runtime wiring was updated to prepare the streaming-session path
+
+## [0.2.9] - 2026-02-06
+
+### Added
+- Tracing integration test coverage
+
+### Changed
+- Token counting and context-budget heuristics were tightened for more accurate summarization thresholds
+- Agent-core and decision logic around summarization flow were simplified
+
+## [0.2.8] - 2026-02-06
+
+### Changed
+- Version-only npm publish on top of the `0.2.7` line; no distinct source diff was recorded beyond the release bump
+
+## [0.2.7] - 2026-02-06
+
+### Added
+- Comprehensive unit and integration test suites for agents, smart agents, approvals, pause/resume, snapshots, prompts, summarization, and token management
+- Shared test fixtures/mocks and a Bedrock example in the examples workspace
+
+### Changed
+- Example workspace dependencies and package metadata were refreshed
+- Trace section utilities and usage helpers were expanded for diagnostics and testability
+
+## [0.2.6] - 2026-02-05
+
+### Changed
+- npm republish of the `0.2.3` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish
+
+## [0.2.5] - 2026-02-05
+
+### Changed
+- npm republish of the `0.2.3` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish
+
+## [0.2.4] - 2026-02-05
+
+### Changed
+- npm republish of the `0.2.3` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish
+
+## [0.2.3] - 2026-02-04
+
+### Changed
+- SmartAgent summarization settings were refactored around clearer configuration and limit semantics
+- Core agent, model, tools, tracing, and public types were updated to match the new summarization/runtime shape
+- API docs, getting-started guides, limits docs, and examples were refreshed accordingly
+
+## [0.2.2] - 2026-01-09
+
+### Changed
+- npm republish of the `0.2.0` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish
+
+## [0.2.1] - 2026-01-08
+
+### Changed
+- npm republish of the `0.2.0` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish
+
+## [0.2.0] - 2026-01-06
+
+### Changed
+- Documentation and example instructions were cleaned up for more consistent project setup and example execution
+- README and examples were clarified ahead of the `0.2.x` release line
+
+## [0.1.2] - 2025-10-17
+
+### Added
+- Conversation guardrails, human-in-the-loop tool approvals, and comprehensive tracing with multiple sink options and session management
+
+### Changed
+- Agent and Smart Agent types were unified and observability hooks were improved
+- README and docs were expanded and reorganized across the published package surface
 
 ### Fixed
-- Installation instructions now clearly indicate root and examples directory setup
-- Example execution commands now consistently use `npm run example:<name>` format
-- All example READMEs now include both npm run and direct tsx execution methods
+- Trace `ai_call` events now include token fields consistently
+- Session path references were normalized in the docs
 
-## [0.1.1] - 2025-01-XX
-
-### Added
-- VitePress documentation with modern UI
-- Comprehensive API reference
-- Interactive examples with code snippets
-- GitHub Pages deployment workflow
-- Logo and branding assets
-
-### Changed
-- Migrated from Jekyll to VitePress for documentation
-- Reorganized documentation structure
-- Improved navigation and search
-
-### Documentation
-- New guide structure with clear categorization
-- Enhanced API documentation with TypeScript examples
-- Added planning and multi-agent guides
-- Created example-focused documentation
-
-## [0.1.0] - Initial Release
+## [0.1.1] - 2025-09-26
 
 ### Added
-- Core agent loop with `createSmartAgent` and `createAgent`
-- Planning mode with TODO management
-- Token-aware summarization
-- Structured output with Zod schemas
-- Tool limits (total and parallel)
-- Multi-agent composition via `asTool` and `asHandoff`
-- LangChain and MCP adapters
-- Tracing and debugging support
-- Guardrails system
-- Pause and resume functionality
-- Vision/multimodal support
-
-### Features
-- Type-safe tool development
-- Provider usage normalization
-- Structured JSON tracing
-- Event streaming with `onEvent`
-- State snapshots for resumability
-- Tool approval workflows
+- Initial npm release of the SDK with the base agent loop, smart-agent runtime, planning/TODO tools, summarization, structured output, tool limits, tracing/debug hooks, and documentation
 
 ---
 

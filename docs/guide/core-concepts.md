@@ -1,138 +1,104 @@
-
 # Core Concepts
 
-This page distills the mental model of `@cognipeer/agent-sdk` before you dive into the detailed guides.
+Agent SDK is easiest to reason about when you treat it as a stateful runtime with a compact control loop, not as a prompt template with tools attached.
 
-## 1. State container
-A `SmartState` object flows through the loop. Key fields:
-- `messages`: Conversation list (user, assistant, tool, system)
-- `toolCallCount`: Aggregate count across the invocation
-- `toolHistory` / `toolHistoryArchived`: Raw + summarized tool outputs
-- `summaries`: Summarization messages (compressed context)
-- `plan` / `planVersion`: Planning/TODO metadata
-- `usage`: Aggregated usage (provider‐normalized where possible)
-- `agent`: Active runtime metadata (name, tools, limits) – swaps on handoff
-- `ctx`: Scratchpad for system internals (structured output flags, event hooks)
+## 1. The runtime is state-first
 
-## 2. Nodes (phases)
-Each node is a pure-ish async function that receives the state and returns deltas:
-- **resolver** – normalizes incoming state, seeds counters, wires runtime.
-- **agentCore** – invokes the model, optionally binding tools, and appends the assistant response.
-- **tools** – executes proposed tool calls (respecting global and per-turn limits).
-- **contextSummarize** *(conditional)* – archives heavy tool outputs and writes summaries when token pressure is high.
-- **toolLimitFinalize** – injects a system notice when the global tool-call cap is hit.
+`SmartState` is the real integration surface for the smart runtime. Messages matter, but operational correctness depends on more than the visible transcript.
 
-## 3. Tools
+Important fields include:
 
-Tools are any object satisfying a minimal contract (`invoke`/`call`/`func`). Use `createTool({ name, schema, func })` for convenience; schemas are Zod and outputs are serialized directly to tool messages.
+- `messages`
+- `toolHistory`
+- `toolHistoryArchived`
+- `summaryRecords`
+- `memoryFacts`
+- `plan`
+- `planVersion`
+- `watchdog`
 
-Guidelines:
-- Validate inputs strictly (Zod will throw on invalid args).
-- Return concise structured objects – the framework can summarize large blobs later.
-- Throw informative errors for recoverable vs fatal failures.
+The practical implication is simple: if your app only renders the last assistant message, you are ignoring most of the runtime.
 
-## 4. Planning helpers
+## 2. Plans are durable state, not just events
 
-When `useTodoList: true`, the smart agent injects:
-- `manage_todo_list` – CRUD the structured plan (must keep exactly one item `in-progress`).
-- Planning system prompt block with strict rules (plan first, update after every action, never reveal plan text).
-
-`plan` events fire whenever the TODO list is written, carrying the latest list and version.
-
-## 5. Structured output finalize
-
-Provide `outputSchema` (Zod). The framework:
-- Adds a hidden `response` tool instructing the model to call it exactly once with the final JSON.
-- Stores the parsed result in `state.ctx.__structuredOutputParsed` and surfaces it via `result.output`.
-- Falls back to attempting to parse JSON from the final assistant message if the model skips the finalize tool.
-
-## 6. Multi-agent composition
-- `agent.asTool({ toolName })` wraps an agent so another agent can delegate to it like any other tool.
-- `agent.asHandoff()` creates a handoff descriptor; when invoked, the runtime switches to the target agent until it returns a final answer.
-
-## 7. Limits
-
-`AgentLimits` control throughput (also exported as `SmartAgentLimits` for backward compatibility):
-- `maxToolCalls` – total tool executions allowed per invocation.
-- `maxParallelTools` – concurrent tool executions per agent turn.
-
-Summarization limits live under `summarization` on `SmartAgentOptions`:
-- `summarization.maxTokens` – token threshold before the next model call; exceeding it triggers `contextSummarize`.
-- `summarization.summaryPromptMaxTokens` – upper bound for the summarization prompt size.
-- `summarization.promptTemplate` – optional template with `{{conversation}}` and `{{previousSummary}}` placeholders.
-
-## 8. Summarization lifecycle
-1. Estimate token usage using `countApproxTokens` (~4 chars per token).
-2. When over budget, build a bounded summarization prompt (`summaryPromptMaxTokens`).
-3. Include the previous summary (hierarchical chaining) when present.
-4. Replace tool responses in `messages` with `SUMMARIZED` placeholders.
-5. Append a synthetic assistant/tool pair labelled `summarize_context` containing the summary.
-6. Store summaries in `state.summaries` (latest summary is used next time).
-
-## 9. Pause & resume runs
-
-Long-running or supervised sessions often need to pause mid-flight and resume later. The loop supports this in two ways:
-
-- `invoke({ onStateChange })` lets you break out after any major stage. If the callback returns `true`, the loop sets `state.ctx.__paused` with metadata and returns immediately.
-- `agent.snapshot(state)` *(or the exported `captureSnapshot(state)` helper)* produces a JSON-serialisable snapshot that strips internal callbacks. Persist it to disk, then call `agent.resume(snapshot)` or `agent.invoke(restoreSnapshot(snapshot))` when you want to continue.
-
-When resuming, the agent inspects `state.ctx.__resumeStage` to skip straight to tool execution if the previous run stopped before tools executed. You rarely need to touch this flag manually; `resolveToolApproval` and `captureSnapshot` set it appropriately.
+The canonical plan is stored on `state.plan` and versioned through `state.planVersion`.
 
 ```ts
-const result = await agent.invoke(state, {
-	onStateChange(current) {
-		const last = current.messages.at(-1);
-		return !current.ctx?.__resumeStage && Array.isArray(last?.tool_calls);
-	},
-	checkpointReason: "waiting-for-review",
-});
-
-if (result.state?.ctx?.__paused) {
-	const snapshot = agent.snapshot(result.state, { tag: "checkpoint" });
-	// persist snapshot (JSON.stringify) and resume later
-}
-
-📚 For deeper patterns (checkpoint metadata, resume flow, and telemetry ideas) see [State Management](/state-management/).
+state.plan?.steps
+state.plan?.version
+state.planVersion
 ```
 
-## 10. Human approvals for tools
+`plan` events still emit `todoList` for compatibility and streaming UIs, but application state, persistence, and resume logic should treat `state.plan` as the source of truth.
 
-Any tool can opt into human-in-the-loop gating by setting `needsApproval: true` when created. The tool call is registered in `state.pendingApprovals` and execution halts until you resolve it.
+This distinction prevents a common integration bug: rebuilding UI from ephemeral event payloads and drifting away from the canonical runtime state.
 
-- `pendingApprovals` contains entries keyed by the tool-call id (`toolCallId`) and a generated `id`.
-- Use `agent.resolveToolApproval(state, { id, approved, approvedArgs?, decidedBy?, comment? })` to record the decision. Approved calls will run on the next turn; rejected calls append a rejection message back to the agent.
-- The event stream emits `tool_approval` events for pending, approved, and rejected statuses.
+## 3. Planning is adaptive, not mandatory
 
-```ts
-const pending = state.pendingApprovals?.[0];
-if (pending) {
-	const updated = agent.resolveToolApproval(state, {
-		id: pending.id,
-		approved: true,
-		decidedBy: "on-call",
-		comment: "Safe to execute",
-	});
-	const resumed = await agent.invoke(updated);
-}
-```
+The runtime does not force a plan for every request.
 
-Optional metadata (`approvalPrompt`, `approvalDefaults`) can be attached to tools to help drive reviewer UIs.
+- Direct questions can answer immediately.
+- Multi-step work can create a plan.
+- Once a plan exists, updates should usually use `operation: "update"` rather than full rewrites.
 
-📚 Need an end-to-end review workflow? Visit [Tool Approvals](/tool-approvals/) for guidance on events, UI hints, and checkpoint coordination.
+That means planning is a runtime decision surface, not a universal behavior. If your product treats every user turn as a project plan, you are probably over-constraining the model.
 
-## 11. Events & observability
+## 4. Summarization is designed for recoverability
 
-`onEvent` (per-invoke via `InvokeConfig`) surfaces:
-- `tool_call` lifecycle events (start/success/error/skipped).
-- `plan` write/read events from `manage_todo_list`.
-- `summarization` notifications when context is compacted.
-- `metadata` with model name, limits, and normalized usage per turn.
-- `handoff` announcements when control switches to another runtime.
-- `finalAnswer` with the final assistant content.
+Large tool responses can be compacted into summaries while raw outputs remain retrievable through `get_tool_response`.
 
-Enable `tracing.enabled` to persist JSON trace sessions under `logs/[session]/`. Set `logData: false` for metrics-only mode or swap in a sink (`httpSink`, `cognipeerSink`, `otlpSink`, `customSink`) to ship traces to your observability API.
+The important conceptual model is:
 
-## 12. Usage tracking
+1. Context can be shortened.
+2. Raw evidence is not necessarily lost.
+3. Recovery is explicit through a tool, not hidden in private runtime state.
 
-Each assistant turn can contribute provider usage (if available). `normalizeUsage` maps the raw provider object into a consistent shape. Aggregated totals are stored in `state.usage.totals[modelName]` and emitted in `metadata` events.
+This keeps the agent cheaper to run while preserving auditability for workflows that need the original output later.
 
+## 5. Profiles are layered operating modes
+
+- built-in: `fast`, `balanced`, `deep`, `research`
+- custom: `runtimeProfile: "custom"` plus `customProfile.extends`
+
+Profiles are not marketing labels. They bundle tradeoffs around limits, summarization, memory, delegation, and watchdog behavior. A custom profile is useful only when you can name which part of a built-in preset is wrong for your workload.
+
+## 6. Tool history and archived tool history are different surfaces
+
+| Surface | What it holds | When to read it |
+|---|---|---|
+| `toolHistory` | Tool executions still kept in active state | You need current-turn or recent-turn tool inspection |
+| `toolHistoryArchived` | Older or summarized executions preserved for retrieval | You need lossless access after context compaction |
+
+This separation matters because not every tool result should stay live in the model-facing context.
+
+## 7. Watchdog metrics describe runtime health
+
+The smart runtime can maintain a `watchdog` object with signals such as:
+
+- `tokenDrift`
+- `contextRotScore`
+- `overToolingRate`
+- `compactions`
+- `lastAction`
+
+These are not user-facing features by themselves. They are operator-facing signals that help you decide whether the runtime is becoming noisy, bloated, or too tool-happy.
+
+## 8. Events are observability signals, not your data model
+
+The runtime can emit events such as `tool_call`, `plan`, `summarization`, `metadata`, `handoff`, and `finalAnswer`.
+
+Use them for:
+
+- Streaming UI updates
+- Logging and analytics
+- Real-time activity views
+
+Do not use them as the only persistent record of execution. Persistent state should still come from `result.state`.
+
+## Mental model to keep
+
+If you remember only one rule, use this one:
+
+> Messages are what the model sees. State is what your product depends on.
+
+That is the conceptual split that explains most of the SDK design.

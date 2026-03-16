@@ -1,152 +1,97 @@
-# Planning & TODOs
+# Planning for Autonomous Agents
 
-Agent SDK includes a powerful planning mode that helps manage complex multi-step tasks through structured TODO management.
+Planning in Agent SDK is designed for autonomous or semi-autonomous agents that need to own a multi-step workflow, not for every chat interaction.
 
-## Overview
+## When planning should be on
 
-When you enable `useTodoList: true`, the smart agent gains access to a special `manage_todo_list` tool that enforces disciplined planning workflows. This is particularly useful for:
+Use `planning: { mode: "todo" }` when the agent is expected to:
 
-- Complex multi-step tasks that require breaking down into subtasks
-- Tasks where order of operations matters
-- Scenarios requiring checkpoints and progress tracking
-- Long-running operations that benefit from structured plans
+- inspect a codebase before changing it
+- delegate to sub-agents or specialist tools
+- recover from failures and continue with a revised sequence
+- persist visible task progress to a UI or execution log
 
-## Enabling Planning Mode
+Leave planning off when the task is basically one lookup, one transform, or one answer.
 
-```typescript
-import { createSmartAgent } from "@cognipeer/agent-sdk";
+## Enable it
 
+```ts
 const agent = createSmartAgent({
   model,
   tools,
-  useTodoList: true, // Enable planning mode
+  runtimeProfile: "balanced",
+  planning: { mode: "todo", replanPolicy: "on_failure" },
 });
 ```
 
-## How It Works
+`useTodoList: true` still works, but `planning.mode` is the preferred API for new code.
 
-### 1. Initial Planning
+## The planning contract
 
-When planning is enabled, the agent must create a plan before taking any action:
+When planning is active, the smart runtime exposes `manage_todo_list`.
 
-```typescript
-const result = await agent.invoke({
-  messages: [{
-    role: "user",
-    content: "Research the top 3 AI frameworks and compare their features"
-  }],
-});
+It supports:
+
+- `read`
+- `write`
+- `update`
+
+`write` creates the initial plan or replaces it entirely. `update` patches existing items by id and is the normal path once a plan already exists.
+
+```ts
+{
+  operation: "update",
+  expectedVersion: 3,
+  todoList: [
+    { id: 1, status: "completed", evidence: "workspace inspected" },
+    { id: 2, status: "in-progress", evidence: "rewriting MCP docs" },
+  ],
+}
 ```
 
-The agent will:
-1. Call `manage_todo_list` to create an initial plan
-2. Break down the request into actionable items
-3. Mark one item as `in-progress`
-4. Execute tools to complete each item
-5. Update the plan after each action
+## What the runtime enforces
 
-### 2. Plan Structure
+- keep at most one item `in-progress`
+- keep ids unique
+- keep `write` ids sequential from `1`
+- prefer `update` over repeated `write`
+- recover from version mismatch with `read` and a fresh `update`
 
-Each TODO item has:
-- **id**: Unique identifier
-- **title**: Short description (3-7 words)
-- **description**: Detailed context and requirements
-- **status**: `not-started`, `in-progress`, or `completed`
+This matters for autonomous agents because plans are not just narration. They become a synchronization contract between the model, the runtime, and any UI or persistence layer around it.
 
-### 3. Strict Workflow Rules
+## Durable state vs event payloads
 
-The planning system enforces these rules:
+Use `state.plan` for the durable source of truth.
 
-1. **Plan First**: Must create a plan before any other tool execution
-2. **Update After Action**: Must update plan after every tool call
-3. **Single In-Progress**: Keep exactly one item `in-progress` at a time
-4. **Evidence Required**: Attach brief evidence when marking items complete
-5. **No Plan Exposure**: Never include plan text in assistant messages
+Listen to `plan` events only for transient UI updates.
 
-## Monitoring Plans
-
-Listen to plan events to track progress:
-
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  useTodoList: true,
+```ts
+await agent.invoke(state, {
   onEvent: (event) => {
     if (event.type === "plan") {
-      console.log("Plan updated:");
-      console.log(`Version: ${event.version}`);
-      console.log(`Items: ${event.todoList.length}`);
-      event.todoList.forEach(item => {
-        console.log(`  [${item.status}] ${item.title}`);
-      });
+      console.log(event.operation, event.version, event.todoList);
     }
   },
 });
 ```
 
-## Benefits
+For product integrations, this rule keeps your autonomous agent stable across refresh, resume, and trace replay:
 
-- **Transparency**: See exactly what the agent plans to do
-- **Control**: Intervene or approve before actions execute
-- **Traceability**: Track which steps succeeded or failed
-- **Resumability**: Resume from where the agent left off
-- **Debugging**: Understand agent reasoning and decision-making
+> `state.plan` is authoritative. `plan` events are just signals.
 
-## Example: Multi-Step Research
+## How planning behaves in practice
 
-```typescript
-const agent = createSmartAgent({
-  name: "Researcher",
-  model,
-  tools: [searchTool, analyzeTool, summarizeTool],
-  useTodoList: true,
-});
+Planning is adaptive, not mandatory.
 
-const result = await agent.invoke({
-  messages: [{
-    role: "user",
-    content: "Research recent developments in quantum computing and create a summary"
-  }],
-});
+- simple direct answers usually skip planning
+- multi-step edits, delegation, and recovery flows tend to create a plan
+- explicit user requests for a plan also trigger it
 
-// Agent creates plan:
-// 1. [in-progress] Search for quantum computing news
-// 2. [not-started] Analyze top 5 results
-// 3. [not-started] Create structured summary
-// 4. [not-started] Validate sources
+That behavior is especially useful for autonomous agents because it avoids paying the planning tax on trivial work while still making longer executions explicit and inspectable.
 
-// After each step, plan is updated automatically
-```
+## Good usage pattern
 
-## Advanced: Custom Plan Prompts
-
-You can customize planning behavior by providing additional instructions:
-
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  useTodoList: true,
-  systemPrompt: `
-    When creating plans:
-    - Break tasks into 3-5 items maximum
-    - Include estimated time for each step
-    - Prioritize data validation
-  `,
-});
-```
-
-## Best Practices
-
-1. **Use for Complex Tasks**: Planning overhead makes sense for multi-step operations
-2. **Monitor Events**: Track plan updates to understand agent behavior
-3. **Test Resumability**: Ensure plans work with pause/resume workflows
-4. **Limit Plan Size**: Keep plans focused (3-7 items typically)
-5. **Clear Descriptions**: Provide detailed task descriptions for better planning
-
-## See Also
-
-- [State Management](/guide/state-management) - Pause and resume with plans
-- [Tool Approvals](/guide/tool-approvals) - Combine planning with human approval
-- [Debugging](/guide/debugging) - Trace plan execution
+1. Start with a smart runtime profile such as `balanced`.
+2. Turn on `planning.mode: "todo"` only for agent flows that actually require coordination.
+3. Persist `result.state.plan` if your UI or service needs recovery.
+4. Use traces and plan events to explain what the agent is doing while it works.

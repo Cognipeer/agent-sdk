@@ -1,53 +1,80 @@
-# Multi-Agent Example
+# Multi-Agent
 
-Agent composition and delegation patterns.
+This example shows how to compose specialist agents without adopting a separate graph or workflow framework.
 
-## Overview
+<div class="example-meta"><a class="example-source-link" href="https://github.com/Cognipeer/agent-sdk/blob/main/examples/multi-agent/multi-agent.ts" target="_blank" rel="noreferrer">Open source: examples/multi-agent/multi-agent.ts</a></div>
 
-Shows how to compose multiple agents and delegate tasks between them.
+## Use this when
 
-[View full source](https://github.com/Cognipeer/agent-sdk/tree/main/examples/multi-agent)
+- one agent should delegate a sub-problem to another
+- specialist behavior should stay modular
+- you want orchestration that still looks like ordinary tool use
 
-## Patterns
+## What it shows
 
-### Agent as Tool
+- child agents exposed as tools or routed collaborators
+- role-based decomposition of work
+- one runtime coordinating multiple specialized responsibilities
 
-```typescript
-const specialist = createSmartAgent({
-  name: "Specialist",
-  model,
-  tools: [domainTool],
-});
-
-const coordinator = createSmartAgent({
-  name: "Coordinator",
-  model,
-  tools: [
-    specialist.asTool({
-      toolName: "consult_specialist",
-      toolDescription: "Delegate to domain specialist",
-    }),
-  ],
-});
-```
-
-### Runtime Handoff
-
-```typescript
-const agent = createSmartAgent({
-  model,
-  tools,
-  handoffs: [specialistAgent.asHandoff()],
-});
-```
-
-## Running
+## Run it
 
 ```bash
+cd examples
 npm run example:multi-agent
 ```
 
-## See Also
+## Core code
 
-- [Core Concepts](/guide/core-concepts)
-- [Agent API](/api/agent)
+```ts
+const specialist = createAgent({
+	name: "Specialist",
+	model: secondaryModel,
+	tools: [summarize],
+	limits: { maxToolCalls: 3 },
+});
+
+const specialistTool = specialist.asTool({
+	toolName: "specialist_agent",
+	description: "Delegate complex sub-question to specialist agent",
+});
+
+const primary = createAgent({
+	name: "Primary",
+	model: primaryModel,
+	tools: [specialistTool],
+	limits: { maxToolCalls: 4 },
+});
+```
+
+## End-to-end flow
+
+1. A specialist agent is created with its own tools and prompt.
+2. That agent is exposed as a normal tool.
+3. The primary agent calls the specialist tool when it needs help.
+4. The specialist solves the sub-task and returns control.
+5. The primary agent continues and finalizes the answer.
+
+## When to use this pattern
+
+Use it when a single prompt is no longer enough, but you still want orchestration that stays close to the normal agent loop.
+
+## Look for
+
+- where specialist agents are created
+- how the parent agent delegates
+- what state is preserved across the composed workflow
+
+## Production takeaway
+
+This pattern is often enough for specialist orchestration. Many teams do not need a heavier multi-node graph until much later.
+
+## Expected output
+
+- the primary agent finishes with a final content message
+- delegation happens through the specialist tool path
+- the example stays understandable even with fake models
+
+## Common failure modes
+
+- the specialist tool name does not match what the parent model tries to call
+- you assume handoff semantics, but this example uses agent-as-tool delegation instead

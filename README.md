@@ -32,7 +32,7 @@ Lightweight, message-first agent runtime that keeps tool calls transparent, auto
 Highlights:
 - **Message-first design** – assistant tool calls and tool responses stay in the transcript.
 - **Token-aware summarization** – chunked rewriting archives oversized tool outputs while exposing `get_tool_response` for lossless retrieval.
-- **Planning mode** – strict system prompt + TODO tool keeps one task in progress and emits plan events.
+- **Planning mode** – adaptive system prompt + TODO tool supports full plan writes and version-safe partial updates.
 - **Structured output** – provide a Zod schema and the agent injects a finalize tool to capture JSON deterministically.
 - **Multi-agent and handoffs** – wrap agents as tools or transfer control mid-run with `asTool` / `asHandoff`.
 - **Usage + events** – normalize provider usage, surface `tool_call`, `plan`, `summarization`, `metadata`, and `handoff` events.
@@ -73,7 +73,8 @@ const echo = createTool({
   name: "echo",
   description: "Echo back user text",
   schema: z.object({ text: z.string().min(1) }),
-  func: async ({ text }) => ({ echoed: text })
+  func: async ({ text }) => ({ echoed: text }),
+  maxExecutionsPerRun: null,
 });
 
 const model = fromLangchainModel(new ChatOpenAI({
@@ -85,8 +86,13 @@ const agent = createSmartAgent({
   name: "ResearchHelper",
   model,
   tools: [echo],
-  useTodoList: true,
-  limits: { maxToolCalls: 5, maxToken: 8000 },
+  runtimeProfile: "balanced",
+  planning: { mode: "todo", replanPolicy: "on_failure" },
+  memory: { provider: "inMemory", scope: "session", writePolicy: "auto_important" },
+  summarization: { summaryTriggerTokens: 8000, summaryMode: "incremental" },
+  context: { policy: "hybrid", lastTurnsToKeep: 8 },
+  toolResponses: { maxToolResponseChars: 4000, maxToolResponseTokens: 1200 },
+  limits: { maxToolCalls: 5, maxContextTokens: 12000 },
   tracing: { enabled: true },
 });
 
@@ -98,7 +104,24 @@ const result = await agent.invoke({
 console.log(result.content);
 ```
 
-The smart wrapper injects a system prompt, manages TODO tooling, and runs summarization passes whenever `limits.maxToken` would be exceeded.
+The smart wrapper now supports runtime presets (`fast`, `balanced`, `deep`, `research`), custom profiles layered on top of a base preset, structured summarization, hybrid context compaction, configurable tool-response retention, in-memory fact storage, delegation limits, and an eval harness via `runSmartAgentEvalHarness(...)`.
+
+You can also define a custom profile by extending a built-in preset and overriding only the knobs you need:
+
+```ts
+const agent = createSmartAgent({
+  name: "CustomPlanner",
+  model,
+  runtimeProfile: "custom",
+  customProfile: {
+    extends: "balanced",
+    limits: { maxToolCalls: 10, maxContextTokens: 18000 },
+    planning: { mode: "todo" },
+    context: { lastTurnsToKeep: 10 },
+    memory: { writePolicy: "manual" },
+  },
+});
+```
 
 ### Base agent (minimal loop)
 
@@ -131,7 +154,7 @@ console.log(res.content);
 ## Key capabilities
 
 - **Summarization pipeline** – automatic chunking keeps tool call history within `contextTokenLimit` / `summaryTokenLimit`, archiving originals so `get_tool_response` can fetch them later.
-- **Planning discipline** – when `useTodoList` is true the system prompt enforces a plan-first workflow and emits `plan` events as todos change.
+- **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
 - **Usage normalization** – provider `usage` blobs are normalized into `{ prompt_tokens, completion_tokens, total_tokens }` with cached token tracking and totals grouped by model.
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
@@ -199,13 +222,15 @@ Exported helpers (`agent-sdk/src/index.ts`):
 
 - `createSmartAgent(options)`
 - `createAgent(options)`
-- `createTool({ name, description?, schema, func })`
+- `createTool({ name, description?, schema, func, needsApproval?, approvalPrompt?, approvalDefaults?, maxExecutionsPerRun? })`
 - `fromLangchainModel(model)`
 - `withTools(model, tools)`
 - `buildSystemPrompt(extra?, planning?, name?)`
 - Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
 
-`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `useTodoList`, `summarization`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
+`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
+
+Tools can also declare `maxExecutionsPerRun` to cap successful executions for that tool within a single agent run. Leave it unset or set it to `null` for unlimited usage. This is separate from global limits such as `limits.maxToolCalls` and `limits.maxParallelTools`.
 
 ## Tracing & observability
 
