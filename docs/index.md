@@ -5,9 +5,6 @@ hero:
   name: Agent SDK
   text: Build Reliable Agent Workflows
   tagline: A smart runtime for autonomous agents that need typed tools, explicit planning, resilient context handling, and inspectable execution.
-  image:
-    src: /agent-sdk-logo.svg
-    alt: Agent SDK
   actions:
     - theme: brand
       text: Get Started

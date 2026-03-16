@@ -98,7 +98,13 @@ body,
 }
 
 .VPFeature {
+  border: none;
   border-radius: 24px;
+  background: transparent;
+}
+
+.VPFeature.link:hover {
+  border-color: transparent;
 }
 
 .VPFeature .title {
@@ -114,8 +120,13 @@ body,
 .VPFeature .box {
   min-height: 100%;
   border: 1px solid rgba(0, 124, 112, 0.12);
-  border-radius: 24px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.74);
+}
+
+.VPFeature.link:hover .box {
+  border-color: rgba(0, 124, 112, 0.24);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .vp-doc h1,
