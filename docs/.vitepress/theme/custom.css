@@ -2,19 +2,29 @@
   --vp-font-family-base: 'Lexend Deca', 'Segoe UI', sans-serif;
   --vp-font-family-mono: 'SFMono-Regular', 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
 
+  --cp-c-ink-1: #212b57;
+  --cp-c-ink-2: #3f4d79;
+  --cp-c-ink-3: #6f7c99;
+  --cp-c-link-1: #1e3d74;
+  --cp-c-link-2: #17305d;
+
   --vp-c-brand-1: #00b5a5;
   --vp-c-brand-2: #009689;
   --vp-c-brand-3: #007c70;
   --vp-c-brand-soft: rgba(0, 181, 165, 0.14);
 
-  --vp-c-text-1: #173331;
-  --vp-c-text-2: #496462;
-  --vp-c-text-3: #6b8481;
+  --vp-c-text-1: var(--cp-c-ink-1);
+  --vp-c-text-2: var(--cp-c-ink-2);
+  --vp-c-text-3: var(--cp-c-ink-3);
 
   --vp-c-bg: #f7f8f8;
   --vp-c-bg-alt: #f1f3f3;
   --vp-c-bg-soft: #ebeeee;
   --vp-c-bg-elv: #ffffff;
+
+  --vp-code-color: var(--cp-c-link-1);
+  --vp-code-link-color: var(--cp-c-link-1);
+  --vp-code-link-hover-color: var(--cp-c-link-2);
 
   --vp-home-hero-name-color: transparent;
   --vp-home-hero-name-background: linear-gradient(135deg, #009689 0%, #00b5a5 45%, #07e3d0 100%);
@@ -136,7 +146,52 @@ body,
 }
 
 .vp-doc a {
+  color: var(--cp-c-link-1);
   font-weight: 600;
+  text-decoration-color: rgba(0, 181, 165, 0.35);
+  text-underline-offset: 0.16em;
+}
+
+.vp-doc a:hover,
+.vp-doc a > code,
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuLink.active,
+.VPLocalNav .menu-link:hover,
+.VPLocalNav .menu-link.active,
+.VPSidebarItem .item .link:hover .text,
+.VPDocOutlineItem .outline-link:hover,
+.VPDocOutlineItem.is-active > .outline-link,
+.VPDocPager .link:hover .title,
+.example-card code,
+.example-source-link:hover {
+  color: var(--cp-c-link-2);
+}
+
+.VPNavBarMenuLink,
+.VPLocalNav .menu-link,
+.VPSidebarItem .item .text,
+.VPDocOutlineItem .outline-link,
+.VPDocPager .title {
+  color: var(--vp-c-text-2);
+}
+
+.VPLocalNav .menu-link[aria-current='true'],
+.VPDocOutlineItem .outline-link.active {
+  color: var(--cp-c-link-2) !important;
+}
+
+.VPSidebarItem.is-active > .item .text,
+.VPSidebarItem.is-active > .item .link > .text,
+.VPSidebarItem .item .link[aria-current='page'] .text,
+.VPSidebarItem .item .link.active .text {
+  color: var(--vp-c-brand-1) !important;
+}
+
+.vp-doc :not(pre, h1, h2, h3, h4, h5, h6) > code,
+.vp-doc a > code,
+.vp-doc td > code,
+.vp-doc th > code {
+  color: var(--cp-c-link-2);
 }
 
 .vp-doc table {
@@ -199,7 +254,7 @@ body,
 .example-card code {
   display: inline-block;
   margin-top: 0.8rem;
-  color: var(--vp-c-brand-3);
+  color: var(--cp-c-link-2);
 }
 
 .example-meta {
@@ -221,7 +276,7 @@ body,
 
 .example-source-link:hover {
   border-color: rgba(0, 124, 112, 0.28);
-  color: var(--vp-c-brand-3);
+  color: var(--cp-c-link-2);
 }
 
 @media (max-width: 760px) {
