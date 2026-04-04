@@ -10,10 +10,15 @@ import { countApproxTokens } from "../utils/utilTokens.js";
 function safeStringify(value: unknown): string {
   if (typeof value === "string") return value;
   try {
-    return JSON.stringify(value);
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === "string") {
+      return serialized;
+    }
   } catch {
-    return String(value);
+    // Fall through to String coercion below.
   }
+
+  return String(value);
 }
 
 function summarizeObject(value: any): string {
@@ -74,10 +79,12 @@ export function resolveToolResponsePolicy(
     retentionPolicy = byTool || "drop";
   }
 
-  const summary = summarizeObject(output);
   if (retentionPolicy === "keep_full") {
+    const summary = "";
     return { classification, retentionPolicy, content: serialized, rawOutput: output, summary, tokenCount };
   }
+
+  const summary = summarizeObject(output);
   if (retentionPolicy === "keep_structured") {
     return { classification, retentionPolicy, content: summary, rawOutput: output, summary, tokenCount };
   }

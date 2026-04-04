@@ -305,7 +305,13 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           });
         }
 
-        appended.push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        let toolMessageContent = responsePolicy.content;
+        if (responsePolicy.retentionPolicy === "summarize_archive") {
+          toolMessageContent = `ARCHIVED_TOOL_RESPONSE [executionId=${executionId}]: ${responsePolicy.summary}\nUse get_tool_response with executionId "${executionId}" to retrieve the full output.`;
+        } else if (responsePolicy.retentionPolicy === "drop") {
+          toolMessageContent = `DROPPED_TOOL_RESPONSE [executionId=${executionId}]: ${responsePolicy.summary}\nUse get_tool_response with executionId "${executionId}" to retrieve the full output.`;
+        }
+        appended.push({ role: "tool", content: toolMessageContent, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
