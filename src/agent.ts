@@ -234,10 +234,12 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           }
         }
 
-        // Check if context is too large and needs summarization (signal to SmartAgent)
+        // Check if context is too large and needs summarization (signal to SmartAgent).
+        // Use summaryTriggerTokens (the intended threshold) rather than maxTokens
+        // (which controls summary output size) to avoid premature compaction.
         let maxTok: number | undefined;
-        if ((opts as any).summarization && typeof (opts as any).summarization === 'object' && (opts as any).summarization.maxTokens) {
-          maxTok = (opts as any).summarization.maxTokens;
+        if ((opts as any).summarization && typeof (opts as any).summarization === 'object') {
+          maxTok = (opts as any).summarization.summaryTriggerTokens || (opts as any).summarization.maxTokens;
         }
         if (maxTok === undefined) {
           maxTok = 50000; // Default if not found

@@ -11,14 +11,10 @@ function safeStringify(value: unknown): string {
   if (typeof value === "string") return value;
   try {
     const serialized = JSON.stringify(value);
-    if (typeof serialized === "string") {
-      return serialized;
-    }
+    return typeof serialized === "string" ? serialized : String(value);
   } catch {
-    // Fall through to String coercion below.
+    return String(value);
   }
-
-  return String(value);
 }
 
 function summarizeObject(value: any): string {
@@ -79,12 +75,10 @@ export function resolveToolResponsePolicy(
     retentionPolicy = byTool || "drop";
   }
 
+  const summary = summarizeObject(output);
   if (retentionPolicy === "keep_full") {
-    const summary = "";
     return { classification, retentionPolicy, content: serialized, rawOutput: output, summary, tokenCount };
   }
-
-  const summary = summarizeObject(output);
   if (retentionPolicy === "keep_structured") {
     return { classification, retentionPolicy, content: summary, rawOutput: output, summary, tokenCount };
   }
