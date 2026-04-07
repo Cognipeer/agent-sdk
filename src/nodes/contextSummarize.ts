@@ -180,6 +180,89 @@ function extractCanonicalFacts(messages: BaseMessage[]): StructuredSummary["stab
     return [...facts.values()];
 }
 
+function flattenToolMessageContent(message: BaseMessage): string {
+    if (typeof message.content === "string") {
+        return message.content;
+    }
+
+    if (Array.isArray(message.content)) {
+        return message.content
+            .map((part: any) => (typeof part === "string" ? part : part?.text ?? part?.content ?? String(part ?? "")))
+            .join(" ");
+    }
+
+    return "";
+}
+
+function isSummarizedToolPlaceholder(content: BaseMessage["content"]): boolean {
+    return typeof content === "string"
+        && (content === "SUMMARIZED" || content.startsWith("SUMMARIZED_TOOL_RESPONSE"));
+}
+
+function summarizeToolMessagePreview(message: BaseMessage): string {
+    const preview = flattenToolMessageContent(message).trim();
+    if (!preview) {
+        return "No summary available.";
+    }
+
+    return preview.length > 240 ? `${preview.slice(0, 240)}...` : preview;
+}
+
+function findToolHistoryEntry(state: SmartState, toolCallId?: string, toolName?: string) {
+    const entries = [
+        ...(state.toolHistory || []),
+        ...(state.toolHistoryArchived || []),
+    ];
+
+    if (toolCallId) {
+        for (let index = entries.length - 1; index >= 0; index -= 1) {
+            const entry = entries[index];
+            if (entry?.tool_call_id === toolCallId) {
+                return entry;
+            }
+        }
+    }
+
+    if (!toolName) {
+        return undefined;
+    }
+
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry?.toolName === toolName) {
+            return entry;
+        }
+    }
+
+    return undefined;
+}
+
+function buildSummarizedToolMessage(message: BaseMessage, state: SmartState): string {
+    const toolName = message.name || "unknown_tool";
+    const toolCallId = message.tool_call_id;
+    const historyEntry = findToolHistoryEntry(state, toolCallId, toolName);
+    const executionId = historyEntry?.executionId;
+    const summary = historyEntry?.summary || summarizeToolMessagePreview(message);
+    const references = [
+        `toolName=${toolName}`,
+        toolCallId ? `toolCallId=${toolCallId}` : null,
+        executionId ? `executionId=${executionId}` : null,
+    ].filter(Boolean).join("; ");
+
+    let retrievalHint = "Use get_tool_response if exact details are still needed.";
+    if (executionId && toolCallId) {
+        retrievalHint = `Use get_tool_response with executionId "${executionId}" or tool call id "${toolCallId}" if exact details are still needed.`;
+    } else if (executionId || toolCallId) {
+        retrievalHint = `Use get_tool_response with executionId "${executionId || toolCallId}" if exact details are still needed.`;
+    }
+
+    return [
+        `SUMMARIZED_TOOL_RESPONSE [${references}]`,
+        `Summary: ${summary}`,
+        retrievalHint,
+    ].join("\n");
+}
+
 function mergeStableFacts(
     summary: StructuredSummary,
     additionalFacts: StructuredSummary["stable_facts"],
@@ -267,7 +350,7 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
 
     // Check if there are any tool messages that can be compressed
     const compressableMessages = messages.filter(
-        (m) => m.role === 'tool' && m.content !== "SUMMARIZED" && !isSyntheticSummaryToolMessage(m),
+        (m) => m.role === 'tool' && !isSummarizedToolPlaceholder(m.content) && !isSyntheticSummaryToolMessage(m),
     );
     if (compressableMessages.length === 0) {
         // Nothing to compress. If we summarize, we only ADD tokens (summary).
@@ -486,7 +569,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     });
 
     // 3. Modify existing messages
-    // Replace content of tool messages with "SUMMARIZED", but only if they have a matching assistant.
+    // Replace content of tool messages with a compact placeholder, but only if they have a matching assistant.
     // Filter out orphan tool messages that don't have a preceding assistant with tool_calls.
     const newMessages = messages.map((m) => {
         if (m.role === 'tool') {
@@ -502,11 +585,11 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
             }
             
             // Check if it's already summarized to avoid double-processing
-            if (m.content === "SUMMARIZED") return m;
+            if (isSummarizedToolPlaceholder(m.content)) return m;
             
             return { 
                 ...m, 
-                content: "SUMMARIZED" 
+                content: buildSummarizedToolMessage(m, state)
             };
         }
         return m;

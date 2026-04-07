@@ -260,7 +260,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             // or if summarization hasn't just been performed (prevents infinite break loops
             // where summarized output + context overhead barely exceeds the limit).
             const hasFreshSummary = (state.messages || []).some((m: any) =>
-              m.role === 'tool' && m.content === 'SUMMARIZED'
+              m.role === 'tool'
+              && typeof m.content === 'string'
+              && (m.content === 'SUMMARIZED' || m.content.startsWith('SUMMARIZED_TOOL_RESPONSE'))
             );
             if (hasFreshSummary && tokenCount <= maxTok * 1.15) {
               // Summarization was recently performed and the overshoot is within 15%.

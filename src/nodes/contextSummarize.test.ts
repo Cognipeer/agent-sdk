@@ -173,4 +173,72 @@ describe('contextSummarize', () => {
       ]),
     );
   });
+
+  it('should preserve tool retrieval hints when compacting tool messages', async () => {
+    const summarizer = createContextSummarizeNode({
+      summarization: true,
+      model: {
+        async invoke() {
+          return {
+            role: 'assistant',
+            content: JSON.stringify({
+              stable_facts: [],
+              active_goals: [],
+              open_questions: [],
+              discarded_obsolete: [],
+              rawSummary: 'compact summary',
+            }),
+          };
+        },
+      },
+    } as any);
+
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'Count daily CRM logs exactly.' },
+        {
+          role: 'assistant',
+          content: 'calling tool',
+          tool_calls: [
+            {
+              id: 'call_crm_1',
+              type: 'function',
+              function: { name: 'crm_list_logs', arguments: '{"range":"2026-04-06..2026-04-12"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          name: 'crm_list_logs',
+          tool_call_id: 'call_crm_1',
+          content: JSON.stringify({ rows: Array.from({ length: 25 }, (_, index) => ({ day: index + 1, count: index * 3 })) }),
+        },
+      ],
+      toolHistory: [
+        {
+          executionId: 'exec_crm_1',
+          toolName: 'crm_list_logs',
+          tool_call_id: 'call_crm_1',
+          output: { rows: Array.from({ length: 25 }, (_, index) => ({ day: index + 1, count: index * 3 })) },
+          rawOutput: { rows: Array.from({ length: 25 }, (_, index) => ({ day: index + 1, count: index * 3 })) },
+          summary: 'array(length=25) day/count rows for requested CRM log range',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      toolHistoryArchived: [],
+      summaries: [],
+      summaryRecords: [],
+      ctx: {},
+    };
+
+    const delta = await summarizer(state);
+    const summarizedToolMsg = delta.messages?.find((message: any) => message.role === 'tool' && message.name === 'crm_list_logs');
+
+    expect(typeof summarizedToolMsg?.content).toBe('string');
+    expect(summarizedToolMsg?.content).toContain('SUMMARIZED_TOOL_RESPONSE');
+    expect(summarizedToolMsg?.content).toContain('toolCallId=call_crm_1');
+    expect(summarizedToolMsg?.content).toContain('executionId=exec_crm_1');
+    expect(summarizedToolMsg?.content).toContain('array(length=25) day/count rows for requested CRM log range');
+    expect(summarizedToolMsg?.content).toContain('get_tool_response');
+  });
 });

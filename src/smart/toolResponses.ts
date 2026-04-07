@@ -68,7 +68,7 @@ export function resolveToolResponsePolicy(
   let retentionPolicy: ToolResponseRetentionPolicy = byTool || config.toolResponses.defaultPolicy;
 
   if (classification === "critical") {
-    retentionPolicy = byTool || "keep_structured";
+    retentionPolicy = byTool || config.toolResponses.fallbackPolicy;
   } else if (classification === "verbose") {
     retentionPolicy = byTool || config.toolResponses.largeResponsePolicy;
   } else if (classification === "redundant") {

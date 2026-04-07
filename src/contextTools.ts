@@ -230,8 +230,8 @@ export function createContextTools(
   const getTool = createTool({
     name: "get_tool_response",
     description:
-      "RETRIEVE the full output of a tool execution whose response was archived or dropped. When a tool response appears as 'ARCHIVED_TOOL_RESPONSE [executionId=xxx]' or 'DROPPED_TOOL_RESPONSE [executionId=xxx]', pass that exact executionId to this tool to get the complete data. You can also pass the tool_call_id from your original tool call.",
-    schema: z.object({ executionId: z.string().describe("Tool execution id") }),
+      "RETRIEVE the full output of a tool execution whose response was archived, dropped, or later compacted in conversation history. When a tool response appears as 'ARCHIVED_TOOL_RESPONSE [executionId=xxx]', 'DROPPED_TOOL_RESPONSE [executionId=xxx]', or 'SUMMARIZED_TOOL_RESPONSE [...]', pass the referenced executionId to this tool to get the complete data. You can also pass the original tool_call_id from the tool call.",
+    schema: z.object({ executionId: z.string().describe("Tool execution id or original tool_call_id") }),
     func: async ({ executionId }) => {
       const matchesExecution = (t: any) => t?.executionId === executionId || t?.tool_call_id === executionId;
       let execution = stateRef.toolHistory?.find((t) => matchesExecution(t));
