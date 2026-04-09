@@ -29,6 +29,25 @@ function isSyntheticSummaryMessage(message: any): boolean {
   return false;
 }
 
+function getMessageText(message: any): string {
+  if (typeof message?.content === "string") return message.content;
+  if (Array.isArray(message?.content)) {
+    return message.content
+      .map((chunk: any) => (typeof chunk === "string" ? chunk : chunk?.text ?? chunk?.content ?? ""))
+      .join("");
+  }
+  return "";
+}
+
+function getLastAssistantMessage(messages: any[]): any | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      return messages[index];
+    }
+  }
+  return undefined;
+}
+
 export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
   const agentCore = createAgentCoreNode(opts);
@@ -400,8 +419,36 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             // Log structured output force-finalize error so callers can diagnose failures
             const errMsg = err instanceof Error ? err.message : String(err);
             emit?.({ type: "metadata", error: `Structured output force-finalize failed: ${errMsg}` });
+            throw err;
           }
         }
+      }
+    }
+
+    if ((state as any).ctx?.__needsSummarization && !(opts as any)?.summarization) {
+      throw new Error(
+        "Agent context exceeded the available budget before a final assistant response could be generated. Reduce tool response size or use createSmartAgent with summarization enabled."
+      );
+    }
+
+    // Safety: detect abnormal loop exit where the last message is a tool response
+    // but no valid exit condition is active (approval, cancellation, checkpoint,
+    // structured-output finalize, summarization signal).
+    // This catches edge cases like exhausted iteration budget or silent model errors
+    // that would otherwise leak raw tool output to the caller.
+    const lastAfterLoop = state.messages[state.messages.length - 1] as any;
+    if (lastAfterLoop?.role === 'tool' && !pausedStage) {
+      const isExpectedExit =
+        state.ctx?.__awaitingApproval ||
+        state.ctx?.__cancelled ||
+        state.ctx?.__finalizedDueToStructuredOutput ||
+        state.ctx?.__finalizedDueToToolLimit ||
+        state.ctx?.__needsSummarization;
+      if (!isExpectedExit) {
+        throw new Error(
+          "Agent loop terminated with a pending tool response but no subsequent model invocation. " +
+          "This usually indicates a model provider error or exhausted iteration budget."
+        );
       }
     }
 
@@ -474,10 +521,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       status: "success",
     });
 
-    const finalMsg = res.messages[res.messages.length - 1];
-    let content = "";
-    if (typeof finalMsg?.content === "string") content = finalMsg.content;
-    else if (Array.isArray(finalMsg?.content)) content = finalMsg.content.map((c: any) => (typeof c === "string" ? c : c?.text ?? c?.content ?? "")).join("");
+    const finalAssistantMsg = getLastAssistantMessage(res.messages);
+    const content = getMessageText(finalAssistantMsg);
 
     let parsed: TOutput | undefined = undefined;
     const schema = opts.outputSchema as ZodSchema<TOutput> | undefined;
@@ -500,7 +545,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       } catch {}
     }
 
-    emit({ type: "finalAnswer", content: typeof finalMsg?.content === 'string' ? finalMsg.content : content });
+    emit({ type: "finalAnswer", content });
     if (streamEnabled && content) {
       onStream?.({ text: content, isFinal: true });
       emit({ type: "stream", text: content, isFinal: true });

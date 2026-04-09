@@ -34,7 +34,8 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   const contextTools = createContextTools(stateRef, { planningEnabled, outputSchema: undefined });
   const mergedTools = [...((opts.tools as any) ?? []), ...contextTools];
 
-  // Compose base agent
+  // Compose base agent – pass summarization config so createAgent's token-budget
+  // guard and __needsSummarization throw know summarization is handled externally.
   const base = createAgent<TOutput>({ ...runtimeOpts, tools: mergedTools });
   base.__runtime.runtimeProfile = resolved.runtimeProfile;
   base.__runtime.smart = resolved;

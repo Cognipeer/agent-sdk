@@ -82,6 +82,58 @@ describe('createAgent Integration', () => {
   describe('tool execution', () => {
     it.todo('should execute tools when model requests them - requires deeper mock model investigation');
 
+    it('should not surface raw tool output as the final content when execution pauses after tools', async () => {
+      const listTasks = createTool({
+        name: 'list_tasks',
+        description: 'List tasks',
+        schema: z.object({}),
+        func: async () => ({
+          tasks: [
+            { id: 'task-1', title: 'Review roadmap' },
+            { id: 'task-2', title: 'Reply to design feedback' },
+          ],
+        }),
+      });
+
+      const mockModel = {
+        invoke: vi.fn(async () => ({
+          role: 'assistant',
+          content: 'Checking your current tasks.',
+          tool_calls: [
+            {
+              id: 'call_1',
+              name: 'list_tasks',
+              args: {},
+            },
+          ],
+        })),
+      };
+
+      const agent = createAgent({
+        name: 'CheckpointAgent',
+        model: mockModel as any,
+        tools: [listTasks],
+        toolResponses: {
+          defaultPolicy: 'keep_full',
+          largeResponsePolicy: 'keep_full',
+          fallbackPolicy: 'keep_full',
+          toolResponseRetentionByTool: {},
+          maxToolResponseChars: 1_000_000,
+          maxToolResponseTokens: 200_000,
+        },
+      } as AgentOptions & { toolResponses: unknown });
+
+      const result = await agent.invoke({
+        messages: [{ role: 'user', content: 'Bugunku islerimi ozetle' }],
+      } as SmartState, {
+        onStateChange: (state) => state.messages.some((message) => message.role === 'tool'),
+      });
+
+      expect(result.messages[result.messages.length - 1].role).toBe('tool');
+      expect(result.content).toBe('Checking your current tasks.');
+      expect(result.content).not.toContain('"tasks"');
+    });
+
     it.skip('should execute tools when model requests them', async () => {
       let toolCalledWith: any = null;
       
@@ -208,6 +260,86 @@ describe('createAgent Integration', () => {
 
       expect(result.messages.length).toBeGreaterThan(1);
     });
+
+    it('should throw when tool output exceeds the context budget without summarization support', async () => {
+      const hugeTaskBlob = 'x'.repeat(300_000);
+      const listTasks = createTool({
+        name: 'list_tasks',
+        description: 'List tasks',
+        schema: z.object({}),
+        func: async () => ({
+          tasks: [hugeTaskBlob],
+        }),
+      });
+
+      const mockModel = {
+        invoke: vi.fn(async () => ({
+          role: 'assistant',
+          content: 'Checking your current tasks.',
+          tool_calls: [
+            {
+              id: 'call_1',
+              name: 'list_tasks',
+              args: {},
+            },
+          ],
+        })),
+      };
+
+      const agent = createAgent({
+        name: 'BudgetAgent',
+        model: mockModel as any,
+        tools: [listTasks],
+        toolResponses: {
+          defaultPolicy: 'keep_full',
+          largeResponsePolicy: 'keep_full',
+          fallbackPolicy: 'keep_full',
+          toolResponseRetentionByTool: {},
+          maxToolResponseChars: 1_000_000,
+          maxToolResponseTokens: 200_000,
+        },
+      } as AgentOptions & { toolResponses: unknown });
+
+      await expect(agent.invoke({
+        messages: [{ role: 'user', content: 'Bugunku islerimi ozetle' }],
+      } as SmartState)).rejects.toThrow(/context exceeded the available budget/i);
+    });
+
+    it('should propagate model API errors that occur after tools have run', async () => {
+      const listTasks = createTool({
+        name: 'list_tasks',
+        description: 'List tasks',
+        schema: z.object({}),
+        func: async () => ({ tasks: [{ id: '1', title: 'Task A' }] }),
+      });
+
+      let callCount = 0;
+      const mockModel = {
+        invoke: vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            // First call: request tool
+            return {
+              role: 'assistant',
+              content: 'Let me check.',
+              tool_calls: [{ id: 'call_1', name: 'list_tasks', args: {} }],
+            };
+          }
+          // Second call: simulate API error (e.g. context length exceeded)
+          throw new Error('maximum context length exceeded');
+        }),
+      };
+
+      const agent = createAgent({
+        name: 'ApiErrorAgent',
+        model: mockModel as any,
+        tools: [listTasks],
+      });
+
+      await expect(agent.invoke({
+        messages: [{ role: 'user', content: 'Summarize my tasks' }],
+      } as SmartState)).rejects.toThrow('maximum context length exceeded');
+    });
   });
 
   describe('structured output', () => {
@@ -249,6 +381,33 @@ describe('createAgent Integration', () => {
       const output = result.output || (state.ctx as any)?.__structuredOutputParsed;
       // Just verify the agent completed - structured output extraction depends on tool execution
       expect(state.messages.length).toBeGreaterThan(0);
+    });
+
+    it('should rethrow structured output force-finalize failures', async () => {
+      const outputSchema = z.object({
+        answer: z.string(),
+      });
+
+      let callCount = 0;
+      const mockModel = createMockModel({
+        onInvoke: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return { content: 'I have enough information.' };
+          }
+          throw new Error('force finalize failed');
+        },
+      });
+
+      const agent = createAgent({
+        name: 'StructuredAgent',
+        model: mockModel as any,
+        outputSchema,
+      });
+
+      await expect(agent.invoke({
+        messages: [{ role: 'user', content: 'Return a structured answer' }],
+      } as SmartState)).rejects.toThrow('force finalize failed');
     });
   });
 
