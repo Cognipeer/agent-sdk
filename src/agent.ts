@@ -48,6 +48,34 @@ function getLastAssistantMessage(messages: any[]): any | undefined {
   return undefined;
 }
 
+function getActiveSummarizationThreshold(opts: AgentOptions): number | undefined {
+  const summarization = (opts as any).summarization;
+  if (!summarization || typeof summarization !== "object" || summarization.enable === false) {
+    return undefined;
+  }
+
+  return (
+    summarization.summaryTriggerTokens
+    || summarization.maxTokens
+    || opts.limits?.maxContextTokens
+    || 50000
+  );
+}
+
+function clearNeedsSummarization(state: AgentState): AgentState {
+  if (!(state.ctx as any)?.__needsSummarization) {
+    return state;
+  }
+
+  const nextCtx = { ...(state.ctx || {}) } as Record<string, unknown>;
+  delete nextCtx.__needsSummarization;
+
+  return {
+    ...state,
+    ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined,
+  } as AgentState;
+}
+
 export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSchema?: ZodSchema<TOutput> }): AgentInstance<TOutput> {
   const resolver = createResolverNode();
   const agentCore = createAgentCoreNode(opts);
@@ -110,6 +138,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     outputSchema: opts.outputSchema as any,
     tracing: opts.tracing,
   };
+  const summarizationThreshold = getActiveSummarizationThreshold(opts);
 
   async function runLoop(
     initial: AgentState,
@@ -132,6 +161,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
 
+    if (summarizationThreshold === undefined) {
+      state = clearNeedsSummarization(state);
+    }
     const mergedLimits = {
       ...(opts.limits || {}),
       ...((config?.limits || {}) as any),
@@ -256,15 +288,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         // Check if context is too large and needs summarization (signal to SmartAgent).
         // Use summaryTriggerTokens (the intended threshold) rather than maxTokens
         // (which controls summary output size) to avoid premature compaction.
-        let maxTok: number | undefined;
-        if ((opts as any).summarization && typeof (opts as any).summarization === 'object') {
-          maxTok = (opts as any).summarization.summaryTriggerTokens || (opts as any).summarization.maxTokens;
-        }
-        if (maxTok === undefined) {
-          maxTok = 50000; // Default if not found
-        }
-
-        if (maxTok) {
+        if (summarizationThreshold !== undefined) {
           // Exclude synthetic summary messages AND context overhead injected by SmartAgent's
           // buildModelMessages (context_summary, memory_context). These system messages are
           // added on top of the conversation and shouldn't trigger re-summarization.
@@ -274,7 +298,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             return true;
           });
           const tokenCount = countMessagesTokens(tokCountMessages);
-          if (tokenCount > maxTok) {
+          if (tokenCount > summarizationThreshold) {
             // Only signal summarization if tokens exceed the threshold by a meaningful margin
             // or if summarization hasn't just been performed (prevents infinite break loops
             // where summarized output + context overhead barely exceeds the limit).
@@ -283,7 +307,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
               && typeof m.content === 'string'
               && (m.content === 'SUMMARIZED' || m.content.startsWith('SUMMARIZED_TOOL_RESPONSE'))
             );
-            if (hasFreshSummary && tokenCount <= maxTok * 1.15) {
+            if (hasFreshSummary && tokenCount <= summarizationThreshold * 1.15) {
               // Summarization was recently performed and the overshoot is within 15%.
               // Proceed to agent call instead of re-triggering summarization.
             } else {

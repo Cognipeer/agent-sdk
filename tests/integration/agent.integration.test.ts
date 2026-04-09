@@ -261,7 +261,7 @@ describe('createAgent Integration', () => {
       expect(result.messages.length).toBeGreaterThan(1);
     });
 
-    it('should throw when tool output exceeds the context budget without summarization support', async () => {
+    it('should defer oversized context handling to the model when summarization is unavailable', async () => {
       const hugeTaskBlob = 'x'.repeat(300_000);
       const listTasks = createTool({
         name: 'list_tasks',
@@ -272,18 +272,26 @@ describe('createAgent Integration', () => {
         }),
       });
 
+      let callCount = 0;
       const mockModel = {
-        invoke: vi.fn(async () => ({
-          role: 'assistant',
-          content: 'Checking your current tasks.',
-          tool_calls: [
-            {
-              id: 'call_1',
-              name: 'list_tasks',
-              args: {},
-            },
-          ],
-        })),
+        invoke: vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              role: 'assistant',
+              content: 'Checking your current tasks.',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  name: 'list_tasks',
+                  args: {},
+                },
+              ],
+            };
+          }
+
+          throw new Error('maximum context length exceeded');
+        }),
       };
 
       const agent = createAgent({
@@ -302,7 +310,25 @@ describe('createAgent Integration', () => {
 
       await expect(agent.invoke({
         messages: [{ role: 'user', content: 'Bugunku islerimi ozetle' }],
-      } as SmartState)).rejects.toThrow(/context exceeded the available budget/i);
+      } as SmartState)).rejects.toThrow(/maximum context length exceeded/i);
+      expect(mockModel.invoke).toHaveBeenCalledTimes(2);
+    });
+
+    it('should ignore stale summarization flags when summarization is unsupported', async () => {
+      const mockModel = createSimpleMockModel(['Ready to continue.']);
+
+      const agent = createAgent({
+        name: 'NoSummarizationAgent',
+        model: mockModel as any,
+      });
+
+      const result = await agent.invoke({
+        messages: [{ role: 'user', content: 'Hello' }],
+        ctx: { __needsSummarization: true },
+      } as SmartState);
+
+      expect(result.content).toContain('Ready to continue.');
+      expect((result.state as SmartState).ctx?.__needsSummarization).toBeUndefined();
     });
 
     it('should propagate model API errors that occur after tools have run', async () => {

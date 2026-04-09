@@ -128,6 +128,61 @@ describe('SmartAgent Integration', () => {
       expect(agent).toBeDefined();
     });
 
+    it('should not surface the base summarization budget error when summarization is disabled', async () => {
+      const hugeTaskBlob = 'x'.repeat(300_000);
+      const listTasks = createTool({
+        name: 'list_tasks',
+        description: 'List tasks',
+        schema: z.object({}),
+        func: async () => ({
+          tasks: [hugeTaskBlob],
+        }),
+      });
+
+      let callCount = 0;
+      const mockModel = {
+        invoke: vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              role: 'assistant',
+              content: 'Checking your current tasks.',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  name: 'list_tasks',
+                  args: {},
+                },
+              ],
+            };
+          }
+
+          throw new Error('maximum context length exceeded');
+        }),
+      };
+
+      const agent = createSmartAgent({
+        name: 'NoSummarizeAgent',
+        model: mockModel as any,
+        systemPrompt: 'You are helpful.',
+        summarization: false,
+        tools: [listTasks],
+        toolResponses: {
+          defaultPolicy: 'keep_full',
+          largeResponsePolicy: 'keep_full',
+          fallbackPolicy: 'keep_full',
+          toolResponseRetentionByTool: {},
+          maxToolResponseChars: 1_000_000,
+          maxToolResponseTokens: 200_000,
+        },
+      } as SmartAgentOptions);
+
+      await expect(agent.invoke({
+        messages: [{ role: 'user', content: 'Bugunku islerimi ozetle' }],
+      } as SmartState)).rejects.toThrow(/maximum context length exceeded/i);
+      expect(mockModel.invoke).toHaveBeenCalledTimes(2);
+    });
+
     it('should respect summarization configuration', () => {
       const mockModel = createMockModel();
       const agent = createSmartAgent({
