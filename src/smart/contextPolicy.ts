@@ -100,17 +100,3 @@ export function buildModelMessages(state: SmartState, config: ResolvedSmartAgent
 
   return clampToBudget(assembled, config.limits.maxContextTokens);
 }
-
-export function estimateContextRotScore(state: SmartState): number {
-  const summaryCount = state.summaryRecords?.length || 0;
-  const archivedCount = state.toolHistoryArchived?.length || 0;
-  const messageCount = state.messages?.length || 0;
-  const summarizedMessages = state.messages?.filter((message) => (
-    message.role === "tool"
-    && typeof message.content === "string"
-    && (message.content === "SUMMARIZED" || message.content.startsWith("SUMMARIZED_TOOL_RESPONSE"))
-  )).length || 0;
-  const numerator = (summaryCount * 2) + archivedCount + summarizedMessages;
-  const denominator = Math.max(messageCount, 1);
-  return Number((numerator / denominator).toFixed(3));
-}

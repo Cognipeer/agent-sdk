@@ -11,7 +11,6 @@ Each built-in profile bundles tradeoffs across:
 - summarization thresholds
 - memory read/write policy
 - delegation depth
-- watchdog sensitivity
 
 That makes profiles operational presets, not just marketing labels.
 

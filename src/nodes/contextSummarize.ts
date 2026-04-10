@@ -348,9 +348,24 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     const onEvent = (state.ctx as any)?.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
     const traceSession = (state.ctx as any)?.__traceSession;
 
-    // Check if there are any tool messages that can be compressed
+    // Check if there are any tool messages that can be compressed.
+    // Exclude messages whose retentionPolicy is "keep_full" — these must not be summarized.
+    const toolResponsesConfigEarly = resolved.toolResponses;
     const compressableMessages = messages.filter(
-        (m) => m.role === 'tool' && !isSummarizedToolPlaceholder(m.content) && !isSyntheticSummaryToolMessage(m),
+        (m) => {
+            if (m.role !== 'tool') return false;
+            if (isSummarizedToolPlaceholder(m.content)) return false;
+            if (isSyntheticSummaryToolMessage(m)) return false;
+            // Check retentionPolicy from toolHistory
+            const histEntry = findToolHistoryEntry(state, m.tool_call_id, m.name);
+            if (histEntry?.retentionPolicy === 'keep_full') return false;
+            // Fall back to config-level policy
+            if (!histEntry?.retentionPolicy) {
+                const byTool = toolResponsesConfigEarly.toolResponseRetentionByTool?.[m.name || ''];
+                if ((byTool || toolResponsesConfigEarly.defaultPolicy) === 'keep_full') return false;
+            }
+            return true;
+        },
     );
     if (compressableMessages.length === 0) {
         // Nothing to compress. If we summarize, we only ADD tokens (summary).
@@ -388,6 +403,20 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         if (typeof m.content === "string") content = m.content;
         else if (Array.isArray(m.content)) {
             content = m.content.map((c: any) => c.text || JSON.stringify(c)).join(" ");
+        }
+
+        // If this is a tool message that was already summarized in a previous pass,
+        // try to recover the original output from toolHistory so the summarizer
+        // can produce a meaningful summary instead of summarizing placeholders.
+        if (m.role === 'tool' && isSummarizedToolPlaceholder(content)) {
+            const historyEntry = findToolHistoryEntry(state, m.tool_call_id, m.name);
+            if (historyEntry) {
+                const original = historyEntry.rawOutput ?? historyEntry.output;
+                content = typeof original === 'string' ? original : JSON.stringify(original);
+            } else {
+                // No history entry found — use the summary hint from the placeholder
+                // (already present in content), which is better than nothing.
+            }
         }
         
         // Truncate individual message content if it's too large (e.g., huge tool outputs)
@@ -568,9 +597,35 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         }
     });
 
+    // 2b. Identify tool_call_ids from the LAST assistant turn so we can protect
+    // their tool responses from being summarized. The agent needs to see its most
+    // recent tool outputs to reason correctly. We only apply this protection when
+    // there are OTHER older compressable messages — otherwise (e.g. first turn)
+    // we allow normal summarization to proceed.
+    const protectedToolCallIds = new Set<string>();
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            const thisToolCallIds = new Set(m.tool_calls.map((tc: any) => tc.id).filter(Boolean));
+            const otherCompressable = compressableMessages.filter(
+                (cm) => !thisToolCallIds.has(cm.tool_call_id)
+            );
+            if (otherCompressable.length > 0) {
+                for (const tc of m.tool_calls) {
+                    if (tc.id) protectedToolCallIds.add(tc.id);
+                }
+            }
+            break;
+        }
+    }
+
     // 3. Modify existing messages
     // Replace content of tool messages with a compact placeholder, but only if they have a matching assistant.
     // Filter out orphan tool messages that don't have a preceding assistant with tool_calls.
+    // IMPORTANT: Protect recent tool responses so the agent can still reason about them.
+    // IMPORTANT: Respect toolResponses retentionPolicy — tools configured as "keep_full"
+    // must NOT have their content replaced by summarization.
+    const toolResponsesConfig = resolved.toolResponses;
     const newMessages = messages.map((m) => {
         if (m.role === 'tool') {
             if (isSyntheticSummaryToolMessage(m)) {
@@ -586,6 +641,23 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
             
             // Check if it's already summarized to avoid double-processing
             if (isSummarizedToolPlaceholder(m.content)) return m;
+
+            // Protect recent tool responses from summarization
+            if (toolCallId && protectedToolCallIds.has(toolCallId)) return m;
+
+            // Respect toolResponses retentionPolicy: if this tool's policy is "keep_full",
+            // do NOT summarize. Check toolHistory entry first (has the actual resolved policy
+            // from when the tool was executed), then fall back to config-based resolution.
+            const toolName = m.name || '';
+            const historyEntry = findToolHistoryEntry(state, toolCallId, toolName);
+            const entryRetention = historyEntry?.retentionPolicy;
+            if (entryRetention === 'keep_full') return m;
+            // If no history entry, check the config-level policy for this tool
+            if (!entryRetention) {
+                const byTool = toolResponsesConfig.toolResponseRetentionByTool?.[toolName];
+                const configPolicy = byTool || toolResponsesConfig.defaultPolicy;
+                if (configPolicy === 'keep_full') return m;
+            }
             
             return { 
                 ...m, 
@@ -594,6 +666,20 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         }
         return m;
     }).filter((m): m is NonNullable<typeof m> => m !== null);
+
+    // 3b. Check if any messages were actually compressed (not just protected).
+    // If all compressable tool messages were protected, there's nothing to do.
+    const actuallyCompressed = newMessages.filter(
+        (m) => m.role === 'tool'
+            && typeof m.content === 'string'
+            && m.content.startsWith('SUMMARIZED_TOOL_RESPONSE')
+            && !messages.some((orig) => orig.tool_call_id === m.tool_call_id && isSummarizedToolPlaceholder(orig.content))
+    );
+    if (actuallyCompressed.length === 0) {
+        // All compressable messages were protected (recent). Skip summarization to avoid
+        // injecting a summary + synthetic messages without actually reducing context.
+        return {};
+    }
 
     // 4. Validate message sequence - ensure every tool message follows an assistant with matching tool_calls
     const validatedMessages = validateMessageSequence(newMessages);
@@ -688,11 +774,6 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         messages: finalMessages as any,
                 summaries,
                 summaryRecords,
-                watchdog: {
-                    ...(state.watchdog || {}),
-                    compactions: (state.watchdog?.compactions || 0) + 1,
-                    lastAction: "summarized",
-                },
     };
   };
 }

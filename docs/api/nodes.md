@@ -22,7 +22,7 @@ The smart wrapper composes around the base loop and decides when these phases sh
 - post-tool summarization
 - memory sync
 - plan synchronization
-- watchdog-triggered compaction
+- token-threshold-triggered compaction
 
 ## Why this structure matters
 

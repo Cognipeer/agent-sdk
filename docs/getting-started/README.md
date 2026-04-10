@@ -103,7 +103,6 @@ console.log(result.state?.plan?.steps);
 | Memory facts sync | No | Yes |
 | Canonical `state.plan` sync | No | Yes |
 | Runtime profiles | No | Yes |
-| Watchdog metrics like token drift and context rot | No | Yes |
 
 ## What to inspect after your first run
 
@@ -113,7 +112,6 @@ Check these surfaces before you move on:
 - `result.state.plan`: the durable plan, if planning was used.
 - `result.state.summaryRecords`: evidence that the runtime compacted prior context.
 - `result.state.memoryFacts`: facts reloaded from memory policy.
-- `result.state.watchdog`: runtime telemetry such as token drift or over-tooling rate.
 
 This is the minimum sanity check that tells you whether the runtime is behaving as an operational system instead of just returning text.
 

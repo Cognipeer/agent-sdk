@@ -92,7 +92,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       if (toolCallId) {
         ctx.__toolSchemaError = { toolName, toolCallId, message };
       }
-      if (resolved.watchdog.autoReplanOnFailure) {
+      if (resolved.planning.replanPolicy === "on_failure") {
         ctx.__planNeedsReplan = true;
       }
       state.ctx = ctx;

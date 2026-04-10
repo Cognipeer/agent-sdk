@@ -61,9 +61,8 @@ That means an autonomous agent can continue with compact context, then fetch raw
 
 - `state.summaryRecords`
 - `state.toolHistoryArchived`
-- `state.watchdog`
 
-These surfaces tell you not only that summarization happened, but also what kind of context pressure the runtime was managing.
+These surfaces tell you not only that summarization happened, but also which evidence remains available for later recovery.
 
 ## When autonomous agents benefit most
 

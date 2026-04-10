@@ -124,7 +124,6 @@ export type {
 	SmartAgentDelegationConfig,
 	SmartAgentMemoryConfig,
 	SmartAgentToolResponseConfig,
-	SmartAgentWatchdogConfig,
 	SmartAgentBudgetConfig,
 	MemoryProviderKind,
 	// Eval types

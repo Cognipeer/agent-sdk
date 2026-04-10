@@ -18,7 +18,7 @@ This section is meant to answer a practical question quickly: which public surfa
 | Export group | Why it exists |
 |---|---|
 | `createAgent(...)` | Minimal deterministic loop with tools, limits, approvals, and optional structured output. |
-| `createSmartAgent(...)` | Smart runtime for autonomous agents: profiles, planning, context compaction, memory, and watchdog telemetry. |
+| `createSmartAgent(...)` | Smart runtime for autonomous agents: profiles, planning, context compaction, and memory. |
 | `createTool(...)` | Typed tool construction with optional approval and execution controls. |
 | `fromLangchainModel(...)`, `fromLangchainTools(...)`, `withTools(...)` | Adapters for model and tool ecosystems. |
 | `buildSystemPrompt(...)` | Reuse the runtime prompt shape directly when needed. |

@@ -21,13 +21,6 @@ type SmartState = {
     adherenceScore?: number;
   } | null;
   planVersion?: number;
-  watchdog?: {
-    tokenDrift?: number;
-    contextRotScore?: number;
-    overToolingRate?: number;
-    compactions?: number;
-    lastAction?: string;
-  };
   ctx?: Record<string, any>;
 }
 ```

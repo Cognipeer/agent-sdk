@@ -241,4 +241,73 @@ describe('contextSummarize', () => {
     expect(summarizedToolMsg?.content).toContain('array(length=25) day/count rows for requested CRM log range');
     expect(summarizedToolMsg?.content).toContain('get_tool_response');
   });
+
+  it('should respect keep_full retention policy and not summarize protected tool messages', async () => {
+    const summarizer = createContextSummarizeNode({
+      summarization: true,
+      toolResponses: {
+        defaultPolicy: 'keep_full',
+        largeResponsePolicy: 'keep_full',
+        maxToolResponseChars: 100000,
+        maxToolResponseTokens: 50000,
+      },
+      model: {
+        async invoke() {
+          return {
+            role: 'assistant',
+            content: JSON.stringify({
+              stable_facts: [],
+              active_goals: [],
+              open_questions: [],
+              discarded_obsolete: [],
+              rawSummary: 'should not be generated',
+            }),
+          };
+        },
+      },
+    } as any);
+
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'Fetch all calendar events.' },
+        {
+          role: 'assistant',
+          content: 'calling tool',
+          tool_calls: [
+            {
+              id: 'call_cal_1',
+              type: 'function',
+              function: { name: 'list_calendar_events', arguments: '{"range":"week"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          name: 'list_calendar_events',
+          tool_call_id: 'call_cal_1',
+          content: JSON.stringify({ events: Array.from({ length: 50 }, (_, i) => ({ id: i, title: `Event ${i}` })) }),
+        },
+      ],
+      toolHistory: [
+        {
+          executionId: 'exec_cal_1',
+          toolName: 'list_calendar_events',
+          tool_call_id: 'call_cal_1',
+          retentionPolicy: 'keep_full',
+          output: { events: Array.from({ length: 50 }, (_, i) => ({ id: i, title: `Event ${i}` })) },
+          rawOutput: { events: Array.from({ length: 50 }, (_, i) => ({ id: i, title: `Event ${i}` })) },
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      toolHistoryArchived: [],
+      summaries: [],
+      summaryRecords: [],
+      ctx: {},
+    };
+
+    const delta = await summarizer(state);
+
+    // With keep_full, there should be nothing to compress — return empty delta
+    expect(delta).toEqual({});
+  });
 });

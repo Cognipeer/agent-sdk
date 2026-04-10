@@ -6,9 +6,8 @@ import { createContextSummarizeNode } from "../nodes/contextSummarize.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
 import { normalizeSmartAgentOptions } from "./runtimeConfig.js";
-import { buildModelMessages, estimateContextRotScore } from "./contextPolicy.js";
+import { buildModelMessages } from "./contextPolicy.js";
 import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "./memory.js";
-import { countApproxTokens } from "../utils/utilTokens.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -25,7 +24,6 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     delegation: resolved.delegation,
     memory: { ...resolved.memory, store: memoryStore },
     toolResponses: resolved.toolResponses,
-    watchdog: resolved.watchdog,
     useTodoList: planningEnabled,
   };
 
@@ -133,7 +131,6 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       let rawMessages = [...seedMessages];
       const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? resolved.limits.maxToolCalls ?? 10) as number;
       const iterationLimit = Math.max(effectiveMaxToolCalls * 3 + 5, 30);
-      let previousTokenCount = countApproxTokens(rawMessages.map((message: any) => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n'));
 
       for (let i = 0; i < iterationLimit; i++) {
         state = { ...state, messages: rawMessages } as SmartState;
@@ -177,31 +174,6 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         state = syncPlanState(await syncMemory(state));
         stateRef.toolHistory = state.toolHistory;
         stateRef.toolHistoryArchived = state.toolHistoryArchived;
-
-        const currentTokenCount = countApproxTokens(rawMessages.map((message: any) => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n'));
-        const tokenDrift = Math.max(0, currentTokenCount - previousTokenCount);
-        const toolMessagesThisTurn = appendedMessages.filter((message: any) => message.role === 'tool').length;
-        const overToolingRate = appendedMessages.length === 0 ? 0 : Number((toolMessagesThisTurn / appendedMessages.length).toFixed(2));
-        state = {
-          ...state,
-          watchdog: {
-            tokenDrift,
-            contextRotScore: estimateContextRotScore(state),
-            overToolingRate,
-            compactions: state.watchdog?.compactions || 0,
-            lastAction: appendedMessages.length > 0 ? 'agent_turn' : state.watchdog?.lastAction,
-          },
-        };
-        previousTokenCount = currentTokenCount;
-
-        if (resolved.watchdog.enabled && resolved.watchdog.autoCompaction) {
-          const shouldCompact = tokenDrift >= resolved.watchdog.tokenDriftThreshold
-            || (state.watchdog?.overToolingRate || 0) >= resolved.watchdog.overToolingSpikeThreshold
-            || (state.watchdog?.contextRotScore || 0) >= resolved.watchdog.contextRotThreshold;
-          if (shouldCompact) {
-            state = { ...state, ctx: { ...(state.ctx || {}), __needsSummarization: true } };
-          }
-        }
 
         // Check if base agent signaled that summarization is needed (context too large)
         if ((state as any).ctx?.__needsSummarization && summarizer) {
@@ -251,12 +223,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       // Ensure summaries are preserved in the final result
       if (state.summaries && state.summaries.length > 0) {
         if (lastResult.state) {
-          lastResult = { ...lastResult, state: { ...lastResult.state, summaries: state.summaries, summaryRecords: state.summaryRecords, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, watchdog: state.watchdog, messages: rawMessages } };
+          lastResult = { ...lastResult, state: { ...lastResult.state, summaries: state.summaries, summaryRecords: state.summaryRecords, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, messages: rawMessages } };
         } else {
-          lastResult = { ...lastResult, state: { ...state, summaries: state.summaries, summaryRecords: state.summaryRecords, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, watchdog: state.watchdog, messages: rawMessages } };
+          lastResult = { ...lastResult, state: { ...state, summaries: state.summaries, summaryRecords: state.summaryRecords, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, messages: rawMessages } };
         }
       } else if (lastResult.state) {
-        lastResult = { ...lastResult, state: { ...lastResult.state, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, watchdog: state.watchdog, messages: rawMessages } };
+        lastResult = { ...lastResult, state: { ...lastResult.state, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, messages: rawMessages } };
       }
 
       return lastResult as AgentInvokeResult<TOutput>;

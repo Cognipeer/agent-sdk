@@ -337,15 +337,6 @@ export type SmartAgentToolResponseConfig = {
   fallbackPolicy?: ToolResponseRetentionPolicy;
 };
 
-export type SmartAgentWatchdogConfig = {
-  enabled?: boolean;
-  tokenDriftThreshold?: number;
-  overToolingSpikeThreshold?: number;
-  contextRotThreshold?: number;
-  autoCompaction?: boolean;
-  autoReplanOnFailure?: boolean;
-};
-
 export type SmartAgentCustomProfileConfig = {
   extends?: BuiltInRuntimeProfile;
   limits?: AgentLimits;
@@ -355,7 +346,6 @@ export type SmartAgentCustomProfileConfig = {
   memory?: SmartAgentMemoryConfig;
   delegation?: SmartAgentDelegationConfig;
   toolResponses?: SmartAgentToolResponseConfig;
-  watchdog?: SmartAgentWatchdogConfig;
 };
 
 export type ProfileConfig = {
@@ -366,7 +356,6 @@ export type ProfileConfig = {
   memory: Required<Omit<SmartAgentMemoryConfig, "store">> & { store?: MemoryStore };
   delegation: Required<SmartAgentDelegationConfig>;
   toolResponses: Required<SmartAgentToolResponseConfig>;
-  watchdog: Required<SmartAgentWatchdogConfig>;
 };
 
 export type ResolvedSmartAgentConfig = ProfileConfig & {
@@ -396,7 +385,6 @@ export type SmartAgentOptions = {
   planning?: SmartAgentPlanningConfig;
   delegation?: SmartAgentDelegationConfig;
   toolResponses?: SmartAgentToolResponseConfig;
-  watchdog?: SmartAgentWatchdogConfig;
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults
   // Optional override for the built-in todo list planning instructions.
@@ -687,13 +675,6 @@ export type SmartState = AgentState & {
   }>;
   plan?: { version: number; steps: PlanStepRecord[]; lastUpdated?: string; adherenceScore?: number } | null;
   planVersion?: number;
-  watchdog?: {
-    tokenDrift?: number;
-    contextRotScore?: number;
-    overToolingRate?: number;
-    compactions?: number;
-    lastAction?: string;
-  };
 };
 
 // Event types for observability and future streaming support
@@ -909,6 +890,10 @@ export type CancellationTokenLike = {
   onCancellationRequested?: (listener: () => void) => { dispose(): void } | void;
 };
 
+export type AbortSignalLike = {
+  readonly aborted: boolean;
+};
+
 export type ProgressUpdate = {
   stage?: string;
   message?: string;
@@ -931,7 +916,7 @@ export type InvokeConfig = RunnableConfig & {
   // Enable streaming if supported by model
   stream?: boolean;
   // Cancellation control
-  cancellationToken?: CancellationTokenLike | AbortSignal;
+  cancellationToken?: CancellationTokenLike | AbortSignalLike;
   // Optional timeout for the full invoke (ms)
   timeoutMs?: number;
   // Optional per-call limits override

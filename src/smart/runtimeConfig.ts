@@ -67,14 +67,6 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
       retryOnSchemaError: true,
       fallbackPolicy: "keep_structured",
     },
-    watchdog: {
-      enabled: true,
-      tokenDriftThreshold: 1200,
-      overToolingSpikeThreshold: 0.7,
-      contextRotThreshold: 0.65,
-      autoCompaction: true,
-      autoReplanOnFailure: true,
-    },
   },
   balanced: {
     limits: { maxToolCalls: 8, maxParallelTools: 2, maxContextTokens: 24000 },
@@ -131,14 +123,6 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
       schemaValidation: "strict",
       retryOnSchemaError: true,
       fallbackPolicy: "keep_structured",
-    },
-    watchdog: {
-      enabled: true,
-      tokenDriftThreshold: 1800,
-      overToolingSpikeThreshold: 0.6,
-      contextRotThreshold: 0.55,
-      autoCompaction: true,
-      autoReplanOnFailure: true,
     },
   },
   deep: {
@@ -197,14 +181,6 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
       retryOnSchemaError: true,
       fallbackPolicy: "keep_structured",
     },
-    watchdog: {
-      enabled: true,
-      tokenDriftThreshold: 2200,
-      overToolingSpikeThreshold: 0.55,
-      contextRotThreshold: 0.5,
-      autoCompaction: true,
-      autoReplanOnFailure: true,
-    },
   },
   research: {
     limits: { maxToolCalls: 20, maxParallelTools: 4, maxContextTokens: 56000 },
@@ -261,14 +237,6 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
       schemaValidation: "strict",
       retryOnSchemaError: true,
       fallbackPolicy: "keep_structured",
-    },
-    watchdog: {
-      enabled: true,
-      tokenDriftThreshold: 2600,
-      overToolingSpikeThreshold: 0.5,
-      contextRotThreshold: 0.45,
-      autoCompaction: true,
-      autoReplanOnFailure: true,
     },
   },
 };
@@ -355,11 +323,6 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
         ...((opts.toolResponses?.toolResponseRetentionByTool || {})),
       },
       criticalTools: opts.toolResponses?.criticalTools ?? customProfile.toolResponses?.criticalTools ?? preset.toolResponses.criticalTools,
-    },
-    watchdog: {
-      ...preset.watchdog,
-      ...(customProfile.watchdog || {}),
-      ...(opts.watchdog || {}),
     },
   };
 }

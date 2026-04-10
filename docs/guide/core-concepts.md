@@ -15,7 +15,6 @@ Important fields include:
 - `memoryFacts`
 - `plan`
 - `planVersion`
-- `watchdog`
 
 The practical implication is simple: if your app only renders the last assistant message, you are ignoring most of the runtime.
 
@@ -60,7 +59,7 @@ This keeps the agent cheaper to run while preserving auditability for workflows 
 - built-in: `fast`, `balanced`, `deep`, `research`
 - custom: `runtimeProfile: "custom"` plus `customProfile.extends`
 
-Profiles are not marketing labels. They bundle tradeoffs around limits, summarization, memory, delegation, and watchdog behavior. A custom profile is useful only when you can name which part of a built-in preset is wrong for your workload.
+Profiles are not marketing labels. They bundle tradeoffs around limits, summarization, memory, and delegation behavior. A custom profile is useful only when you can name which part of a built-in preset is wrong for your workload.
 
 ## 6. Tool history and archived tool history are different surfaces
 
@@ -71,19 +70,7 @@ Profiles are not marketing labels. They bundle tradeoffs around limits, summariz
 
 This separation matters because not every tool result should stay live in the model-facing context.
 
-## 7. Watchdog metrics describe runtime health
-
-The smart runtime can maintain a `watchdog` object with signals such as:
-
-- `tokenDrift`
-- `contextRotScore`
-- `overToolingRate`
-- `compactions`
-- `lastAction`
-
-These are not user-facing features by themselves. They are operator-facing signals that help you decide whether the runtime is becoming noisy, bloated, or too tool-happy.
-
-## 8. Events are observability signals, not your data model
+## 7. Events are observability signals, not your data model
 
 The runtime can emit events such as `tool_call`, `plan`, `summarization`, `metadata`, `handoff`, and `finalAnswer`.
 

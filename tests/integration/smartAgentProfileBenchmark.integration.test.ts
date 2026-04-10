@@ -186,7 +186,7 @@ function buildScenarioReport(
     toolErrors,
     summaries: state?.summaries?.length || 0,
     archivedResponses: state?.toolHistoryArchived?.length || 0,
-    compactions: state?.watchdog?.compactions || 0,
+    compactions: state?.summaryRecords?.length || 0,
     planUsed: Boolean(state?.plan?.steps?.length),
     notes,
   };

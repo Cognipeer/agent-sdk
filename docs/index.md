@@ -15,7 +15,7 @@ hero:
 
 features:
   - title: Runtime Profiles For Different Agent Behaviors
-    details: Use fast, balanced, deep, or research as operational presets. They are real tradeoff bundles for context budget, delegation depth, memory policy, and watchdog behavior.
+    details: Use fast, balanced, deep, or research as operational presets. They are real tradeoff bundles for context budget, delegation depth, memory policy, and summarization behavior.
   - title: Planning That Fits Autonomous Work
     details: Smart planning is aimed at agents that own multi-step work. The durable plan lives on result.state.plan instead of being trapped in transient UI events.
   - title: Summarization With Recovery Paths

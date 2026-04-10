@@ -24,7 +24,6 @@ function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartA
 - `summarization`, `context`, `toolResponses`: context pressure handling
 - `memory`: fact read/write policy
 - `delegation`: child-agent behavior
-- `watchdog`: token drift and over-tooling response
 - `tracing`: execution telemetry
 - `outputSchema`: deterministic structured output
 
@@ -62,7 +61,6 @@ const agent = createSmartAgent({
 - summarization and archival
 - memory fact sync
 - canonical `state.plan` updates
-- watchdog telemetry such as token drift and context rot
 
 ## `createAgent(...)`
 
@@ -128,6 +126,5 @@ type AgentInvokeResult<TOutput = unknown> = {
 - `state.planVersion`
 - `state.summaryRecords`
 - `state.memoryFacts`
-- `state.watchdog`
 
 If you are using the smart runtime, prefer `state.plan` over any event-only or legacy todo mental model.

@@ -9,7 +9,7 @@ There are two architectural layers:
 | Layer | Responsibility |
 |---|---|
 | `createAgent` | Minimal agent loop: resolve, call model, execute tools, enforce limits, finalize. |
-| `createSmartAgent` | Wraps the base agent with profiles, planning tools, memory sync, context policy, summarization, and watchdog telemetry. |
+| `createSmartAgent` | Wraps the base agent with profiles, planning tools, memory sync, context policy, and summarization. |
 
 The smart runtime does not replace the base loop. It composes around it.
 
@@ -19,7 +19,7 @@ The smart runtime does not replace the base loop. It composes around it.
 2. Sync memory facts and seed the runtime system message when needed.
 3. Decide whether pre-agent context compaction is needed.
 4. Delegate a full turn to the base agent.
-5. Re-sync plan, summaries, memory, and watchdog metrics.
+5. Re-sync plan, summaries, and memory.
 6. If needed, compact again and continue.
 7. Exit when the model returns a final answer or structured output finalizes.
 
@@ -31,9 +31,7 @@ From an operator perspective, the smart loop does five important things around t
 2. Injects context tools like `manage_todo_list` and `get_tool_response`.
 3. Builds model-facing messages from raw conversation plus summaries and memory facts.
 4. Synchronizes mutable runtime state back onto `SmartState` after every delegated base-agent turn.
-5. Uses watchdog signals to trigger additional compaction when the conversation starts to degrade.
-
-That last point matters because the runtime is not only reactive to hard token limits. It can also react to unhealthy execution patterns such as context rot and over-tooling spikes.
+5. Re-enters the loop when token pressure requires additional summarization.
 
 ## 4. Base agent loop
 
@@ -55,7 +53,6 @@ This is why the package is easier to debug than graph-heavy alternatives. The co
 - Durable plan state is synchronized onto `state.plan`.
 - Raw messages remain separate from model-shaped messages.
 - Memory reads happen before turns; summary facts can be written back after compaction.
-- Watchdog telemetry can trigger extra compaction even before a hard failure.
 - Trace sessions can finish as `partial` when a sink degrades but the session still finalizes.
 
 ## 6. Core components
@@ -66,7 +63,7 @@ This is why the package is easier to debug than graph-heavy alternatives. The co
 | `smart/runtimeConfig.ts` | Resolves built-in presets and merges custom overrides into a concrete runtime config. |
 | `smart/contextPolicy.ts` | Shapes model-facing context from raw messages, summaries, budgets, and memory facts. |
 | `contextTools.ts` | Defines `manage_todo_list`, `get_tool_response`, and the rules around plan mutation. |
-| `nodes/contextSummarize.ts` | Performs compaction when token pressure or runtime health signals demand it. |
+| `nodes/contextSummarize.ts` | Performs compaction when token pressure demands it. |
 | `agent.ts` | Implements the minimal loop with resolver, guardrails, model invocation, tools, and finalize stages. |
 | `utils/tracing.ts` | Captures structured traces and finalizes sessions across file or remote sinks. |
 
