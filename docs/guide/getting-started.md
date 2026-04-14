@@ -20,7 +20,7 @@ Use this guide if you need to answer these questions quickly:
 npm install @cognipeer/agent-sdk zod
 ```
 
-Optional adapters:
+Optional (only if you use `fromLangchainModel`):
 
 ```sh
 npm install @langchain/core @langchain/openai
@@ -29,8 +29,18 @@ npm install @langchain/core @langchain/openai
 Requirements:
 
 - Node.js 18.17+
-- A model adapter compatible with the SDK's message interface
+- A model adapter or native provider config
 - A concrete decision about whether planning should be `off` or `todo` for your first integration
+
+## Choose your model integration path
+
+| Path | What you need | Best for |
+|---|---|---|
+| `createProvider` + `fromNativeProvider` | Just an API key | Zero-dependency production use |
+| `fromLangchainModel` | `@langchain/core` + provider binding | Teams already using LangChain |
+| Custom object | `invoke(messages[])` | Embedding into existing infra |
+
+The native provider path is recommended for new integrations — it handles auth, SSE streaming, and token usage normalization for all providers with no additional dependencies.
 
 ## Choose the right starting point
 
@@ -42,6 +52,37 @@ Requirements:
 | A debugging sandbox for provider behavior | `createAgent` | Fewer moving parts means fewer runtime heuristics to inspect. |
 
 ## First smart agent
+
+### With native provider (recommended)
+
+```ts
+import { createSmartAgent, createTool, createProvider, fromNativeProvider } from "@cognipeer/agent-sdk";
+import { z } from "zod";
+
+const lookup = createTool({
+	name: "lookup_owner",
+	description: "Return the owner for a project code",
+	schema: z.object({ code: z.enum(["ORBIT", "NOVA"]) }),
+	func: async ({ code }) => ({ owner: code === "ORBIT" ? "Ada Lovelace" : "Grace Hopper" }),
+});
+
+const model = fromNativeProvider(
+	createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! }),
+	{ model: "gpt-4o" },
+);
+
+const agent = createSmartAgent({
+	name: "Assistant",
+	model,
+	tools: [lookup],
+	runtimeProfile: "balanced",
+	planning: { mode: "todo" },
+	limits: { maxToolCalls: 6, maxContextTokens: 12000 },
+	tracing: { enabled: true },
+});
+```
+
+### With LangChain adapter
 
 ```ts
 import { createSmartAgent, createTool, fromLangchainModel } from "@cognipeer/agent-sdk";
@@ -132,6 +173,7 @@ That order matters. Teams often customize limits too early and lose the benefit 
 
 ## Next steps
 
+- [Native Providers](/guide/native-providers)
 - [Core Concepts](/guide/core-concepts)
 - [Architecture](/guide/architecture)
 - [Planning Guide](/guide/planning)

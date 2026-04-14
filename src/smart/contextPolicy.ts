@@ -13,15 +13,40 @@ function collectRecentTurns(messages: BaseMessage[], lastTurnsToKeep: number): B
   if (lastTurnsToKeep <= 0) return [];
   const systemPrefix = messages.filter((message, index) => index === 0 && message.role === "system");
   const body = systemPrefix.length > 0 ? messages.slice(1) : [...messages];
-  let userTurnCount = 0;
+
+  // Count total user turns to detect single-user-turn scenarios (e.g. worker agents).
+  const totalUserTurns = body.filter((m) => m.role === "user").length;
+
+  // When there are fewer user turns than lastTurnsToKeep (typical for worker agents
+  // that start with a single user message and then loop assistant→tool cycles),
+  // count assistant messages as interaction rounds instead. This prevents the hybrid
+  // policy from keeping ALL messages and forcing clampToBudget to do destructive
+  // truncation that breaks tool_call/tool_result adjacency.
+  const countAssistantTurns = totalUserTurns < lastTurnsToKeep;
+
+  let turnCount = 0;
   const collected: BaseMessage[] = [];
 
   for (let index = body.length - 1; index >= 0; index -= 1) {
     const message = body[index];
     collected.unshift(message);
-    if (message.role === "user") {
-      userTurnCount += 1;
-      if (userTurnCount >= lastTurnsToKeep) break;
+
+    const isTurnBoundary = countAssistantTurns
+      ? message.role === "assistant"
+      : message.role === "user";
+
+    if (isTurnBoundary) {
+      turnCount += 1;
+      if (turnCount >= lastTurnsToKeep) break;
+    }
+  }
+
+  // When counting assistant turns, ensure the first user message is always included
+  // so the agent retains its original task instruction.
+  if (countAssistantTurns && collected.length > 0 && collected[0].role !== "user") {
+    const firstUserMsg = body.find((m) => m.role === "user");
+    if (firstUserMsg && !collected.includes(firstUserMsg)) {
+      collected.unshift(firstUserMsg);
     }
   }
 
@@ -60,13 +85,63 @@ function renderMemoryBlock(facts: MemoryFact[] | undefined): string {
 
 function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseMessage[] {
   let working = [...messages];
+
   while (working.length > 2) {
     const tokenCount = countApproxTokens(working.map(messageText).join("\n"));
     if (tokenCount <= maxContextTokens) return working;
 
+    // Find the first non-system message to remove.
     const firstNonSystem = working.findIndex((message, index) => !(index === 0 && message.role === "system"));
     if (firstNonSystem < 0) break;
-    working.splice(firstNonSystem, 1);
+
+    const target = working[firstNonSystem];
+
+    // When removing an assistant message with tool_calls, also remove its
+    // corresponding tool result messages to preserve message adjacency.
+    // Orphan tool messages cause "tool must follow assistant with tool_calls" errors
+    // and confuse the model with placeholder messages.
+    if (target.role === "assistant" && Array.isArray(target.tool_calls) && target.tool_calls.length > 0) {
+      const toolCallIds = new Set(
+        target.tool_calls.map((tc: any) => tc.id).filter(Boolean)
+      );
+      // Remove assistant + its tool results as a group
+      working = working.filter((m, idx) => {
+        if (idx === firstNonSystem) return false;
+        if (m.role === "tool" && m.tool_call_id && toolCallIds.has(m.tool_call_id)) return false;
+        return true;
+      });
+    } else if (target.role === "tool") {
+      // If the target is a tool message, also remove its parent assistant message
+      // to avoid leaving an assistant with a dangling tool_call reference.
+      const toolCallId = target.tool_call_id;
+      let parentIdx = -1;
+      if (toolCallId) {
+        for (let i = firstNonSystem - 1; i >= 0; i--) {
+          const m = working[i];
+          if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.some((tc: any) => tc.id === toolCallId)) {
+            parentIdx = i;
+            break;
+          }
+        }
+      }
+      if (parentIdx >= 0) {
+        // Remove the entire assistant + all its tool results as a group
+        const parent = working[parentIdx];
+        const parentToolCallIds = new Set(
+          (parent.tool_calls || []).map((tc: any) => tc.id).filter(Boolean)
+        );
+        working = working.filter((m, idx) => {
+          if (idx === parentIdx) return false;
+          if (m.role === "tool" && m.tool_call_id && parentToolCallIds.has(m.tool_call_id)) return false;
+          return true;
+        });
+      } else {
+        // Orphan tool message — safe to remove alone
+        working.splice(firstNonSystem, 1);
+      }
+    } else {
+      working.splice(firstNonSystem, 1);
+    }
   }
   return working;
 }

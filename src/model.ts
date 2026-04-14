@@ -4,6 +4,8 @@
 // can be adapted without adding hard dependencies.
 
 import { toLangchainTools } from "./adapters/langchain.js";
+import type { ModelCapabilities } from "./structuredOutput/types.js";
+import { getModelCapabilities } from "./structuredOutput/resolver.js";
 
 export interface BaseChatMessagePart {
   type?: string; // e.g. 'text'
@@ -30,9 +32,11 @@ export interface BaseChatModel {
   // Optional streaming method that yields incremental chunks or messages
   stream?(messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): AsyncIterable<BaseChatMessage | BaseChatMessagePart | string>;
   // Optional tool binding hook. If not present the agent will emulate simple pass-through.
-  bindTools? (tools: any[]): BaseChatModel;
+  bindTools? (tools: any[], options?: { strict?: boolean; [key: string]: any }): BaseChatModel;
   // Optional metadata helpers
   modelName?: string;
+  // Provider capabilities (structured output support, streaming, etc.)
+  capabilities?: ModelCapabilities;
   [key: string]: any; // allow arbitrary extensions
 }
 
@@ -42,8 +46,8 @@ export function isSmartModel(m: any): m is SmartModel {
   return !!m && typeof m === 'object' && typeof m.invoke === 'function';
 }
 
-export function withTools(model: SmartModel, tools: any[]) {
-  if (model?.bindTools) return model.bindTools(tools);
+export function withTools(model: SmartModel, tools: any[], options?: { strict?: boolean; [key: string]: any }) {
+  if (model?.bindTools) return model.bindTools(tools, options);
   return model;
 }
 
@@ -99,7 +103,11 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
           role: (response as any).role || 'assistant',
             content,
             tool_calls: (response as any).tool_calls,
-            usage: (response as any).usage,
+            usage: (response as any).usage
+              ?? (response as any).usage_metadata
+              ?? (response as any).response_metadata?.token_usage
+              ?? (response as any).response_metadata?.tokenUsage,
+            usage_metadata: (response as any).usage_metadata,
             response_metadata: (response as any).response_metadata,
             ...response,
         } as BaseChatMessage;
@@ -115,14 +123,14 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
         yield chunk as any;
       }
     },
-    bindTools: (tools: any[]) => {
+    bindTools: (tools: any[], options?: { strict?: boolean; [key: string]: any }) => {
       const lcReady = toLangchainTools(tools);
       if (typeof lcModel.bindTools === 'function') {
-        const bound = lcModel.bindTools(lcReady);
+        const bound = lcModel.bindTools(lcReady, options);
         return fromLangchainModel(bound);
       }
       if (typeof lcModel.bind === 'function') {
-        const bound = lcModel.bind({ tools: lcReady });
+        const bound = lcModel.bind({ tools: lcReady, ...(options || {}) });
         return fromLangchainModel(bound);
       }
       return adapted;
@@ -130,6 +138,9 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
     modelName: lcModel.modelName || lcModel._modelId || lcModel._llmType || lcModel.name,
     _lc: lcModel,
   };
+
+  // Auto-detect capabilities from the LangChain model
+  adapted.capabilities = getModelCapabilities(adapted);
 
   return adapted;
 }

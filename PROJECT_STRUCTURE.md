@@ -14,14 +14,27 @@ agent-sdk/
 │   ├── prompts.ts                # Prompt templates
 │   ├── contextTools.ts           # Context management
 │   ├── types.ts                  # TypeScript type definitions
-│   ├── adapters/                 # Model adapters
-│   │   ├── openai.ts
-│   │   └── anthropic.ts
+│   ├── providers/                # Native LLM provider layer (no LangChain)
+│   │   ├── index.ts              # Factory (createProvider) & barrel exports
+│   │   ├── types.ts              # Unified request/response/token-usage types
+│   │   ├── base.ts               # Abstract BaseProvider class
+│   │   ├── adapter.ts            # fromNativeProvider() – wraps provider as BaseChatModel
+│   │   ├── openai.ts             # OpenAI Chat Completions API
+│   │   ├── anthropic.ts          # Anthropic Messages API
+│   │   ├── azure.ts              # Azure OpenAI (extends OpenAI)
+│   │   ├── openaiCompatible.ts   # Any OpenAI-compatible endpoint
+│   │   ├── bedrock.ts            # AWS Bedrock Converse API + SigV4 signing
+│   │   ├── vertex.ts             # Google Vertex AI (Gemini) + service account auth
+│   │   └── utils/
+│   │       ├── sse.ts            # SSE stream parser
+│   │       └── sigv4.ts          # AWS Signature V4 implementation
+│   ├── adapters/                 # LangChain model/tool adapters
+│   │   └── langchain.ts
 │   ├── graph/                    # Graph-based workflows
 │   ├── guardrails/               # Safety guardrails
 │   ├── nodes/                    # Agent nodes
 │   ├── smart/                    # Smart features
-│   ├── tools/                    # Built-in tools
+│   ├── structuredOutput/         # Structured output strategies
 │   ├── utils/                    # Utilities
 │   └── internal/                 # Internal utilities
 │
@@ -73,14 +86,16 @@ agent-sdk/
 
 ### Core SDK Features
 - ✅ Composable agent architecture
-- ✅ Pluggable model adapters (OpenAI, Anthropic, etc.)
+- ✅ Native LLM providers (OpenAI, Anthropic, Azure, Bedrock, Vertex, OpenAI-compatible) – no LangChain needed
+- ✅ Unified request/response schema with full token-usage tracking (input/output/cached/reasoning)
+- ✅ LangChain model & tool adapters (optional)
 - ✅ Tool/function calling support
 - ✅ Graph-based workflows
 - ✅ Safety guardrails
 - ✅ Context management
 - ✅ Structured output generation
 - ✅ Multi-agent orchestration
-- ✅ Vision capabilities
+- ✅ Vision capabilities (base64 & URL images)
 - ✅ Full TypeScript support
 - ✅ MCP (Model Context Protocol) integration
 

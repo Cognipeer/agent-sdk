@@ -20,8 +20,15 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     };
 
     const tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
+    const shouldUseStrictToolCalling = Boolean(
+      runtime.responseFormat
+      && (runtime.model as any)?.capabilities?.strictToolCalling
+    );
     const modelWithTools = (runtime.model)?.bindTools
-      ? (runtime.model).bindTools(tools)
+      ? (runtime.model).bindTools(
+          tools,
+          shouldUseStrictToolCalling ? { strict: true } : undefined,
+        )
       : runtime.model;
 
     const traceSession = (state.ctx as any)?.__traceSession;
@@ -131,6 +138,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
     const abortSignal = (state.ctx as any)?.__abortSignal as AbortSignal | undefined;
 
+    // Native structured output: pass response_format to model invocation if set
+    const responseFormat = (runtime as any).responseFormat as Record<string, any> | undefined;
+
     const extractText = (chunk: any) => {
       if (chunk == null) return "";
       if (typeof chunk === "string") return chunk;
@@ -150,7 +160,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
   if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
     let streamedText = "";
     let streamedMessage: any | undefined;
-    for await (const chunk of (modelWithTools as any).stream(normalizedMessages, { signal: abortSignal, cancellationToken })) {
+    const streamOptions = { signal: abortSignal, cancellationToken, ...responseFormat };
+    for await (const chunk of (modelWithTools as any).stream(normalizedMessages, streamOptions)) {
       if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
         break;
       }
@@ -173,7 +184,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       response = { role: "assistant", content: streamedText } as any;
     }
   } else {
-    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken });
+    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken, ...responseFormat });
   }
     } catch (err: any) {
       const durationMs = Date.now() - start;
@@ -197,10 +208,13 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     ];
 
     // Usage tracking (per-request, aggregated by model)
-    const rawUsage = (response as any)?.usage 
-      || (response as any)?.response_metadata?.token_usage 
+    const rawUsage = (response as any)?.usage
+      || (response as any)?.usage_metadata
+      || (response as any)?.response_metadata?.token_usage
       || (response as any)?.response_metadata?.tokenUsage  // LangChain camelCase
-      || (response as any)?.response_metadata?.usage;
+      || (response as any)?.response_metadata?.usage
+      || (response as any)?.response_metadata?.usage_metadata
+      || (response as any)?.response_metadata?.usageMetadata;
     const normalized = normalizeUsage(rawUsage);
     const modelName = getModelName((runtime as any).model || (opts as any).model) || "unknown_model";
     const durationMs = Date.now() - start;

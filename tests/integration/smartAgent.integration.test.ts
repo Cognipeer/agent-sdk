@@ -242,6 +242,91 @@ describe('SmartAgent Integration', () => {
       // Check that the agent completed without errors
       expect(state.messages.length).toBeGreaterThan(1);
     });
+
+    it('should retry when model initially refuses to call response tool', async () => {
+      const outputSchema = z.object({
+        summary: z.string(),
+        items: z.array(z.string()),
+      });
+
+      // Simulate a model that first produces text responses (ignoring response tool),
+      // then eventually calls response after SmartAgent retry nudges.
+      let callCount = 0;
+      const mockModel = createMockModel({
+        onInvoke: async (messages: Message[]) => {
+          callCount++;
+          // First 3 calls: model produces plain text (ignoring structured output hint)
+          if (callCount <= 3) {
+            return { content: `I found some information. Call ${callCount}.` };
+          }
+          // After enough nudges, model finally calls response
+          // Use LangChain-normalized format: top-level name/args (not nested function.name)
+          return {
+            content: '',
+            tool_calls: [
+              {
+                id: 'call_response_final',
+                name: 'response',
+                args: {
+                  summary: 'Final summary after retries',
+                  items: ['finding1', 'finding2'],
+                },
+              },
+            ],
+          } as any;
+        },
+      });
+
+      const agent = createSmartAgent({
+        name: 'RetryStructuredSmartAgent',
+        model: mockModel as any,
+        systemPrompt: 'You provide structured responses.',
+        outputSchema,
+      });
+
+      const result = await agent.invoke({
+        messages: [{ role: 'user', content: 'Summarize items' }],
+      } as SmartState);
+
+      // The model was called more than once (retries happened)
+      expect(callCount).toBeGreaterThan(1);
+      // Structured output should be present
+      expect(result.output).toBeDefined();
+      expect(result.output?.summary).toBe('Final summary after retries');
+      expect(result.output?.items).toEqual(['finding1', 'finding2']);
+    });
+
+    it('should fallback to JSON parsing from text when model never calls response', async () => {
+      const outputSchema = z.object({
+        summary: z.string(),
+        status: z.string(),
+      });
+
+      // Model never calls response tool but eventually writes JSON in text
+      const mockModel = createMockModel({
+        onInvoke: async () => {
+          return {
+            content: 'Here is the result: {"summary": "parsed from text", "status": "success"}',
+          };
+        },
+      });
+
+      const agent = createSmartAgent({
+        name: 'FallbackParseSmartAgent',
+        model: mockModel as any,
+        systemPrompt: 'You provide structured responses.',
+        outputSchema,
+      });
+
+      const result = await agent.invoke({
+        messages: [{ role: 'user', content: 'Give me a status' }],
+      } as SmartState);
+
+      // JSON fallback parser should have extracted the output
+      expect(result.output).toBeDefined();
+      expect(result.output?.summary).toBe('parsed from text');
+      expect(result.output?.status).toBe('success');
+    });
   });
 
   describe('tool execution with smart agent', () => {

@@ -414,6 +414,8 @@ export type AgentRuntimeConfig = {
   limits?: AgentLimits;
   useTodoList?: boolean;
   outputSchema?: ZodSchema<any>;
+  // When using native structured output (response_format), this is set by StructuredOutputManager
+  responseFormat?: Record<string, any>;
   tracing?: TracingConfig;
   runtimeProfile?: RuntimeProfile;
   smart?: ResolvedSmartAgentConfig;
@@ -968,6 +970,9 @@ export type AgentInvokeResult<TOutput = unknown> = {
   // If outputSchema is set, this will contain the parsed and validated output.
   // TOutput will be inferred from the provided Zod schema.
   output?: TOutput;
+  // If outputSchema is set and parsing/validation failed, this describes the error.
+  // When output is defined, outputError is undefined and vice versa.
+  outputError?: import("./structuredOutput/types.js").StructuredOutputError;
   metadata: { usage?: any };
   messages: Message[];
   state?: SmartState;

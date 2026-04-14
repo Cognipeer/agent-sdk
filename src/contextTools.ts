@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createTool } from "./tool.js";
+import { recordTraceEvent } from "./utils/tracing.js";
 // no message helpers needed here
 
 const todoStatusSchema = z.enum(["not-started", "in-progress", "completed", "blocked"]);
@@ -74,6 +75,16 @@ function calculateAdherenceScore(todoList: any[]) {
   return todoList.length === 0 ? 1 : Number((completedCount / todoList.length).toFixed(2));
 }
 
+function formatTodoListSummary(todoList: any[]) {
+  if (!Array.isArray(todoList) || todoList.length === 0) {
+    return "No plan items.";
+  }
+
+  return todoList
+    .map((item) => `${item.id}. ${item.title || item.step || item.description || `Step ${item.id}`} [${item.status}]`)
+    .join("\n");
+}
+
 // Create context tools like get_tool_response, manage_todo_list
 export function createContextTools(
   stateRef: { toolHistory?: any[]; toolHistoryArchived?: any[]; todoList?: any[]; planVersion?: number; adherenceScore?: number },
@@ -92,11 +103,45 @@ export function createContextTools(
         todoList: z.array(z.union([todoWriteItemSchema, todoUpdateItemSchema])).optional()
       }),
       func: async ({ operation, expectedVersion, todoList }) => {
-        const onEvent = (manageTodo as any)._stateRef?.__onEvent as undefined | ((e: any) => void);
+        const toolStateRef = (manageTodo as any)._stateRef as undefined | { __onEvent?: (e: any) => void; ctx?: { __traceSession?: any } };
+        const onEvent = toolStateRef?.__onEvent;
+        const emitPlanEvent = (list: any[]) => {
+          const version = stateRef.planVersion || 1;
+          const adherenceScore = stateRef.adherenceScore || 0;
+          const planData = {
+            source: "manage_todo_list",
+            operation,
+            version,
+            adherenceScore,
+            count: Array.isArray(list) ? list.length : 0,
+          };
+          onEvent?.({ type: "plan", todoList: list, ...planData });
+
+          const traceSession = toolStateRef?.ctx?.__traceSession;
+          recordTraceEvent(traceSession, {
+            type: "plan",
+            label: `Plan ${operation}`,
+            actor: { scope: "agent", name: "manage_todo_list", role: "planner" },
+            sections: [
+              {
+                kind: "summary",
+                label: "Todo List",
+                content: formatTodoListSummary(list),
+              },
+              {
+                kind: "metadata",
+                label: "Plan Metadata",
+                data: planData,
+              },
+            ],
+            debug: planData,
+          });
+        };
+
         const currentVersion = stateRef.planVersion || 0;
         if (operation === "read") {
           const list = stateRef.todoList || [];
-          onEvent?.({ type: "plan", source: "manage_todo_list", operation: "read", todoList: list, version: stateRef.planVersion || 1, adherenceScore: stateRef.adherenceScore || 0 });
+          emitPlanEvent(list);
           return list;
         }
 
@@ -165,9 +210,10 @@ export function createContextTools(
             } as const;
           }
 
-          const patchIds = new Set<number>();
+          const currentMap = new Map(currentList.map((item) => [item.id, item]));
+          const patchMap = new Map<number, (typeof parsed.data)[number]>();
           for (const item of parsed.data) {
-            if (patchIds.has(item.id)) {
+            if (patchMap.has(item.id)) {
               return {
                 status: "error",
                 operation,
@@ -176,11 +222,7 @@ export function createContextTools(
                 adherenceScore: stateRef.adherenceScore || 0,
               } as const;
             }
-            patchIds.add(item.id);
-          }
-
-          const currentMap = new Map(currentList.map((item) => [item.id, item]));
-          for (const item of parsed.data) {
+            patchMap.set(item.id, item);
             if (!currentMap.has(item.id)) {
               return {
                 status: "error",
@@ -193,7 +235,7 @@ export function createContextTools(
           }
 
           const mergedList = currentList.map((item) => {
-            const patch = parsed.data.find((candidate) => candidate.id === item.id);
+            const patch = patchMap.get(item.id);
             return patch ? normalizeTodoItem(patch, item) : item;
           });
           const validation = validatePlanInvariants(mergedList, false);
@@ -218,7 +260,7 @@ export function createContextTools(
           version: stateRef.planVersion || 1,
           adherenceScore: stateRef.adherenceScore || 0,
         } as const;
-        onEvent?.({ type: "plan", source: "manage_todo_list", operation, todoList: stateRef.todoList, version: stateRef.planVersion || 1, adherenceScore: stateRef.adherenceScore || 0 });
+        emitPlanEvent(stateRef.todoList || []);
         return payload;
       }
     });
@@ -248,26 +290,8 @@ export function createContextTools(
   (getTool as any)._stateRef = stateRef;
   tools.push(getTool);
 
-  // Structured output finalize tool (response) if outputSchema provided
-  if (opts?.outputSchema) {
-  const responseTool = createTool({
-      name: 'response',
-      description: 'Finalize the answer by returning the final structured JSON matching the required schema. Call exactly once when you are fully done, then stop.',
-      schema: opts.outputSchema.shape ? opts.outputSchema : z.any(),
-      func: async (data: any) => {
-        // Validate directly against provided schema
-        try {
-          const validated = opts.outputSchema.parse ? opts.outputSchema.parse(data) : data;
-          // store parsed result for toolsNode to pick up (toolsNode already looks for __finalStructuredOutput?)
-          return { __finalStructuredOutput: true, data: validated };
-        } catch (e: any) {
-          return { error: 'Schema validation failed', details: e?.message };
-        }
-      }
-    });
-    (responseTool as any)._stateRef = stateRef;
-    tools.push(responseTool);
-  }
+  // Note: Structured output response tool is now managed by StructuredOutputManager
+  // in the base agent (createAgent). No duplicate tool creation needed here.
 
   return tools;
 }

@@ -53,14 +53,59 @@ Highlights:
 Install the SDK and its (optional) LangChain peer dependency:
 
 ```sh
-npm install @cognipeer/agent-sdk @langchain/core zod
-# Optional: LangChain OpenAI bindings for quick starts
-npm install @langchain/openai
+npm install @cognipeer/agent-sdk zod
+# Optional: LangChain bindings (if you want to use fromLangchainModel)
+npm install @langchain/core @langchain/openai
 ```
+
+The SDK includes a built-in native provider layer that talks directly to OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API — no LangChain required.
 
 You can also bring your own model adapter as long as it exposes `invoke(messages[])` and (optionally) `bindTools()`.
 
 ## Quick start
+
+### Native provider (no LangChain)
+
+```ts
+import { createSmartAgent, createTool, createProvider, fromNativeProvider } from "@cognipeer/agent-sdk";
+import { z } from "zod";
+
+const echo = createTool({
+  name: "echo",
+  description: "Echo back user text",
+  schema: z.object({ text: z.string() }),
+  func: async ({ text }) => ({ echoed: text }),
+});
+
+// Pick any provider – OpenAI, Anthropic, Azure, Bedrock, Vertex, or OpenAI-compatible
+const model = fromNativeProvider(
+  createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! }),
+  { model: "gpt-4o" },
+);
+
+const agent = createSmartAgent({ model, tools: [echo], runtimeProfile: "balanced" });
+const result = await agent.invoke({ messages: [{ role: "user", content: "say hi" }] });
+console.log(result.content);
+```
+
+Switch providers by changing a single config line:
+
+```ts
+// Anthropic
+createProvider({ provider: "anthropic", apiKey: process.env.ANTHROPIC_API_KEY! })
+
+// Azure OpenAI
+createProvider({ provider: "azure", apiKey: "...", endpoint: "https://my-resource.openai.azure.com", deploymentName: "gpt-4o" })
+
+// AWS Bedrock
+createProvider({ provider: "bedrock", region: "us-east-1", accessKeyId: "...", secretAccessKey: "..." })
+
+// Google Vertex AI
+createProvider({ provider: "vertex", projectId: "my-project", accessToken: process.env.VERTEX_TOKEN })
+
+// Any OpenAI-compatible endpoint (Ollama, Groq, Together, vLLM, …)
+createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "https://custom.endpoint/v1" })
+```
 
 ### Smart agent (planning + summarization)
 
@@ -153,13 +198,14 @@ console.log(res.content);
 
 ## Key capabilities
 
+- **Native provider layer** – call OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API directly. No LangChain required. Unified `ChatCompletionRequest` / `ChatCompletionResponse` schema with per-provider wire format conversion.
+- **Full token tracking** – every response surfaces `inputTokens`, `outputTokens`, `cachedInputTokens`, `cachedWriteTokens`, and `reasoningTokens` for all six providers.
 - **Summarization pipeline** – automatic chunking keeps tool call history within `contextTokenLimit` / `summaryTokenLimit`, archiving originals so `get_tool_response` can fetch them later.
 - **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
-- **Usage normalization** – provider `usage` blobs are normalized into `{ prompt_tokens, completion_tokens, total_tokens }` with cached token tracking and totals grouped by model.
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
 - **MCP + LangChain tools** – any object satisfying the minimal tool interface works; LangChain’s `Tool` implementations plug in directly.
-- **Vision input** – message parts accept OpenAI-style `image_url` entries (see `examples/vision`).
+- **Vision input** – message parts accept base64 or URL images for multimodal requests.
 - **Observability hooks** – `config.onEvent` surfaces tool lifecycle, summarization, metadata, and final answer events for streaming UIs or CLIs.
 
 ## Examples
@@ -220,11 +266,23 @@ The loop stops when the assistant produces a message without tool calls, a struc
 
 Exported helpers (`agent-sdk/src/index.ts`):
 
+**Agent factories:**
 - `createSmartAgent(options)`
 - `createAgent(options)`
 - `createTool({ name, description?, schema, func, needsApproval?, approvalPrompt?, approvalDefaults?, maxExecutionsPerRun? })`
+
+**Native providers (no LangChain):**
+- `createProvider(config)` – factory for all six providers
+- `fromNativeProvider(provider, options?)` – wraps a provider as a `BaseChatModel`
+- `OpenAIProvider`, `AnthropicProvider`, `AzureProvider`, `OpenAICompatibleProvider`, `BedrockProvider`, `VertexProvider`
+- Types: `ChatCompletionRequest`, `ChatCompletionResponse`, `TokenUsage`, `ProviderConfig`
+
+**LangChain adapters (optional):**
 - `fromLangchainModel(model)`
 - `withTools(model, tools)`
+- `fromLangchainTools(tools)`
+
+**Utilities:**
 - `buildSystemPrompt(extra?, planning?, name?)`
 - Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
 

@@ -15,10 +15,44 @@ export * from "./smart/eval.js";
 export * from "./smart/memory.js";
 export * from "./smart/runtimeConfig.js";
 export * from "./guardrails/index.js";
+export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { fromLangchainTools } from "./adapters/langchain.js";
 export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp } from "./utils/tracing.js";
+// Native LLM Providers (no LangChain dependency)
+export {
+  createProvider,
+  fromNativeProvider,
+  BaseProvider,
+  OpenAIProvider,
+  AnthropicProvider,
+  AzureProvider,
+  OpenAICompatibleProvider,
+  BedrockProvider,
+  VertexProvider,
+  ProviderError,
+  emptyUsage,
+} from "./providers/index.js";
+export type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+  TokenUsage,
+  FinishReason,
+  UnifiedMessage,
+  ToolDefinition as ProviderToolDefinition,
+  ToolCall as ProviderToolCall,
+  ProviderConfig,
+  ProviderType,
+  OpenAIProviderConfig,
+  AnthropicProviderConfig,
+  AzureProviderConfig,
+  OpenAICompatibleProviderConfig,
+  BedrockProviderConfig,
+  VertexProviderConfig,
+  NativeModelOptions,
+} from "./providers/index.js";
 export { GuardrailPhase } from "./types.js";
 export type {
 	// Smart Agent types

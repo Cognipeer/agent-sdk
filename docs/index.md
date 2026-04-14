@@ -14,14 +14,14 @@ hero:
       link: /guide/architecture
 
 features:
+  - title: Native LLM Providers — No Framework Required
+    details: Call OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API directly with fetch. Unified schema, full token tracking (input/output/cached/reasoning), and streaming built-in.
   - title: Runtime Profiles For Different Agent Behaviors
     details: Use fast, balanced, deep, or research as operational presets. They are real tradeoff bundles for context budget, delegation depth, memory policy, and summarization behavior.
   - title: Planning That Fits Autonomous Work
     details: Smart planning is aimed at agents that own multi-step work. The durable plan lives on result.state.plan instead of being trapped in transient UI events.
   - title: Summarization With Recovery Paths
     details: Long-running agents can compact tool-heavy history without going blind. Archived outputs remain recoverable through get_tool_response when the agent needs raw evidence again.
-  - title: MCP And External Tool Systems
-    details: Bridge MCP-hosted tools through LangChain adapters and keep them inside the same typed, traceable runtime as local tools and approvals.
   - title: State, Resume, And Human Control
     details: Pause execution, snapshot state, restore later, and gate risky tools through approvals without losing the agent's working context.
   - title: Tracing, Debugging, And Evaluation
@@ -33,13 +33,14 @@ features:
 If you are integrating the SDK for the first time, read the docs in this order:
 
 1. [Getting Started](/guide/getting-started) to get a working agent into your app fast.
-2. [Core Concepts](/guide/core-concepts) to understand what actually lives in state, what is emitted as an event, and what gets summarized.
-3. [Architecture](/guide/architecture) to understand the smart wrapper, the base loop, and where runtime decisions are made.
+2. [Native Providers](/guide/native-providers) to connect to OpenAI, Anthropic, Azure, Bedrock, Vertex, or any compatible endpoint without additional dependencies.
+3. [Core Concepts](/guide/core-concepts) to understand what actually lives in state, what is emitted as an event, and what gets summarized.
+4. [Architecture](/guide/architecture) to understand the smart wrapper, the base loop, and where runtime decisions are made.
 
 ## Quick Start
 
 ```ts
-import { createSmartAgent, createTool } from "@cognipeer/agent-sdk";
+import { createSmartAgent, createTool, createProvider, fromNativeProvider } from "@cognipeer/agent-sdk";
 import { z } from "zod";
 
 const lookup = createTool({
@@ -49,6 +50,12 @@ const lookup = createTool({
   func: async ({ code }) => ({ owner: code === "ORBIT" ? "Ada Lovelace" : "Grace Hopper" }),
 });
 
+// OpenAI, Anthropic, Azure, Bedrock, Vertex, or any compatible endpoint
+const model = fromNativeProvider(
+  createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! }),
+  { model: "gpt-4o" },
+);
+
 const agent = createSmartAgent({
   model,
   tools: [lookup],
@@ -56,6 +63,11 @@ const agent = createSmartAgent({
   planning: { mode: "todo" },
   limits: { maxToolCalls: 6, maxContextTokens: 12000 },
 });
+
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "Compare ORBIT and NOVA." }],
+});
+console.log(result.content);
 ```
 
 ## What This Site Optimizes For

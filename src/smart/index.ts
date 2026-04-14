@@ -8,6 +8,8 @@ import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decision
 import { normalizeSmartAgentOptions } from "./runtimeConfig.js";
 import { buildModelMessages } from "./contextPolicy.js";
 import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "./memory.js";
+import { StructuredOutputManager } from "../structuredOutput/manager.js";
+import { resolveStrategy } from "../structuredOutput/resolver.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -29,7 +31,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
   // Prepare context tools (todo + get_tool_response). Avoid duplicating response tool; base agent will add it if schema provided.
   const stateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
-  const contextTools = createContextTools(stateRef, { planningEnabled, outputSchema: undefined });
+  const contextTools = createContextTools(stateRef, { planningEnabled });
   const mergedTools = [...((opts.tools as any) ?? []), ...contextTools];
 
   // Compose base agent – pass summarization config so createAgent's token-budget
@@ -43,13 +45,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   const decideBefore = resolverDecisionFactory(runtimeOpts, summarizationEnabled);
   const decideAfter = toolsDecisionFactory(runtimeOpts, summarizationEnabled);
 
-  const structuredOutputHint = opts.outputSchema
-    ? [
-      'A structured output schema is active.',
-      'Do NOT output the final JSON directly as an assistant message.',
-      'When completely finished, call tool `response` passing the final JSON matching the schema as its arguments (direct object).',
-      'Call it exactly once then STOP producing further assistant messages.'
-    ].join('\n')
+  // Structured output: use the manager from the base agent's strategy resolution
+  const soManager = opts.outputSchema
+    ? new StructuredOutputManager<TOutput>(opts.outputSchema, resolveStrategy(opts.model))
+    : undefined;
+
+  const structuredOutputHint = soManager
+    ? soManager.buildSystemPromptHint()
     : '';
 
   const runtimeHint = [
@@ -140,10 +142,17 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const delta = await summarizer(state);
           // Prevent infinite loop if summarizer returns no changes (e.g. error or nothing to summarize)
           if (!delta || Object.keys(delta).length === 0) {
-             // Summarization failed to produce a change. Proceed to agent to avoid stall, 
-             // though it might hit token limits.
+             // Summarization could not compress anything (e.g. all tool responses use
+             // keep_full retention policy). Signal to the base agent that it should
+             // proceed despite exceeding summaryTriggerTokens — otherwise it would
+             // break immediately and create a deadlock.
+             const ctx = { ...(state.ctx || {}), __summarizationExhausted: true };
+             state = { ...state, ctx } as SmartState;
           } else {
-             state = await persistLatestSummary(syncPlanState({ ...state, ...delta } as SmartState));
+             // Summarization succeeded — clear exhaustion flag since context was reduced.
+             const ctx = { ...(state.ctx || {}) };
+             delete ctx.__summarizationExhausted;
+             state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx } as SmartState));
              rawMessages = [...(state.messages || rawMessages)];
              continue; // run decision again before calling base
           }
@@ -184,17 +193,31 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           // Run summarization
           const delta = await summarizer(state);
           // If delta is valid, apply and loop back to retry the agent pass after compaction.
-          // If delta is empty, summarization had nothing to compress — fall through to
-          // the normal break logic so the loop can terminate.
+          // If delta is empty, summarization had nothing to compress — mark exhausted
+          // so the base agent skips the threshold break on the next invocation.
           if (delta && Object.keys(delta).length > 0) {
-             state = await persistLatestSummary(syncPlanState({ ...state, ...delta } as SmartState));
+             // Summarization succeeded — clear exhaustion flag.
+             const successCtx = { ...(state.ctx || {}) };
+             delete successCtx.__summarizationExhausted;
+             state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx: successCtx } as SmartState));
              rawMessages = [...(state.messages || rawMessages)];
              continue; // Loop will attempt another agent pass after summarization
+          } else {
+             // Nothing could be compressed. Tell base agent to proceed anyway.
+             const exhaustedCtx = { ...(state.ctx || {}), __summarizationExhausted: true };
+             state = { ...state, ctx: exhaustedCtx } as SmartState;
+             // Continue the loop — the base agent will now skip the threshold break
+             // and proceed with the available context.
+             continue;
           }
         }
 
         // If structured output finalize triggered, base already stopped with parsed output
         if ((state as any).ctx?.__finalizedDueToStructuredOutput) break;
+
+        // If the base agent also parsed structured output via JSON-from-text fallback,
+        // accept it and stop (the `output` field will be populated even without the flag).
+        if (opts.outputSchema && lastResult?.output != null) break;
 
         // Post-tools summarization decision
         if (summarizationEnabled) {
@@ -202,13 +225,24 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           if (after === 'contextSummarize' && summarizer) {
             const delta = await summarizer(state);
              if (delta && Object.keys(delta).length > 0) {
-                state = await persistLatestSummary(syncPlanState({ ...state, ...delta } as SmartState));
+                const successCtx = { ...(state.ctx || {}) };
+                delete successCtx.__summarizationExhausted;
+                state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx: successCtx } as SmartState));
                 rawMessages = [...(state.messages || rawMessages)];
                 // Loop will attempt another agent pass
                 continue;
+             } else {
+                // Nothing to compress — mark exhausted so base agent proceeds.
+                const exhaustedCtx = { ...(state.ctx || {}), __summarizationExhausted: true };
+                state = { ...state, ctx: exhaustedCtx } as SmartState;
              }
           }
         }
+
+        // If outputSchema is active but the base agent stopped without calling `response`,
+        // the base agent's StructuredOutputManager handles retries internally.
+        // No additional SmartAgent-level retries needed — the centralized manager
+        // already exhausted its maxRetries with proper nudge/correction prompts.
 
         // If base produced an assistant message without tool calls (its normal stop), we're done.
         break;

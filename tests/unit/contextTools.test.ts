@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createContextTools } from '../../src/contextTools.js';
+import { createTraceSession, customSink } from '../../src/utils/tracing.js';
 
 describe('createContextTools manage_todo_list', () => {
   it('should write a full plan and then patch it with update', async () => {
@@ -70,5 +71,60 @@ describe('createContextTools manage_todo_list', () => {
     expect(result).toEqual(expect.objectContaining({ status: 'error', operation: 'write' }));
     expect(result.error).toContain('Only one todo item may be in-progress');
     expect(stateRef.todoList).toBeUndefined();
+  });
+
+  it('should emit separate plan events for runtime and tracing', async () => {
+    const runtimeEvents: any[] = [];
+    const traceEvents: any[] = [];
+    const stateRef: any = { todoList: undefined, planVersion: 0, adherenceScore: 0 };
+    const tools = createContextTools(stateRef, { planningEnabled: true });
+    const manageTodo = tools.find((tool: any) => tool.name === 'manage_todo_list');
+
+    stateRef.__onEvent = (event: any) => runtimeEvents.push(event);
+    stateRef.ctx = {
+      __traceSession: createTraceSession({
+        model: { id: 'test-model', provider: 'test-provider' },
+        tracing: {
+          enabled: true,
+          sink: customSink((event) => {
+            traceEvents.push(event);
+          }),
+        },
+      } as any),
+    };
+
+    await manageTodo.invoke({
+      operation: 'write',
+      todoList: [
+        { id: 1, title: 'Inspect code', status: 'in-progress' },
+        { id: 2, title: 'Run tests', status: 'not-started' },
+      ],
+    });
+
+    expect(runtimeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'plan',
+          source: 'manage_todo_list',
+          operation: 'write',
+          version: 1,
+        }),
+      ]),
+    );
+
+    expect(traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'plan',
+        }),
+      ]),
+    );
+    expect(traceEvents[0].label).toContain('Plan write');
+    expect(traceEvents[0].data.sections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'summary', label: 'Todo List' }),
+        expect.objectContaining({ kind: 'metadata', label: 'Plan Metadata' }),
+      ]),
+    );
   });
 });

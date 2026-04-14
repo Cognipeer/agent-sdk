@@ -12,6 +12,9 @@ import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
 import { countMessagesTokens } from "./utils/utilTokens.js";
+import { StructuredOutputManager } from "./structuredOutput/manager.js";
+import { resolveStrategy, getModelCapabilities } from "./structuredOutput/resolver.js";
+import type { StructuredOutputError } from "./structuredOutput/types.js";
 
 function isSyntheticSummaryMessage(message: any): boolean {
   if (!message) return false;
@@ -81,14 +84,19 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   const agentCore = createAgentCoreNode(opts);
   // Prepare tools list: base tools + structured output finalize if schema provided
   const toolsBase = [...((opts.tools as any) ?? [])];
-  if (opts.outputSchema) {
-  const responseTool = createTool({
-      name: 'response',
-      description: 'Finalize the answer by returning the final structured JSON matching the required schema. Call exactly once when you are fully done, then stop.',
-      schema: opts.outputSchema as any,
-      func: async (data: any) => ({ __finalStructuredOutput: true, data }),
-    });
-    toolsBase.push(responseTool);
+
+  // Structured output manager: resolves strategy (native vs tool-based) based on model capabilities
+  const soManager = opts.outputSchema
+    ? new StructuredOutputManager<TOutput>(opts.outputSchema, resolveStrategy(opts.model))
+    : undefined;
+
+  if (soManager) {
+    const modelCapabilities = getModelCapabilities(opts.model);
+    const responseTool = soManager.getResponseTool();
+    // Hard guard: when model supports native structured output, never attach the fallback response tool.
+    if (responseTool && modelCapabilities.structuredOutput !== "native") {
+      toolsBase.push(responseTool);
+    }
   }
   const toolsNode = createToolsNode(toolsBase, opts);
   const finalizeNode = createToolLimitFinalizeNode(opts);
@@ -136,6 +144,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     limits: opts.limits,
     useTodoList: undefined,
     outputSchema: opts.outputSchema as any,
+    responseFormat: soManager?.getResponseFormat(),
     tracing: opts.tracing,
   };
   const summarizationThreshold = getActiveSummarizationThreshold(opts);
@@ -299,6 +308,14 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           });
           const tokenCount = countMessagesTokens(tokCountMessages);
           if (tokenCount > summarizationThreshold) {
+            // If SmartAgent already attempted summarization and it could not compress
+            // anything (e.g. all tool responses use keep_full retention), breaking here
+            // would create a deadlock: SmartAgent would re-invoke base, base would break
+            // again, and no progress would ever be made.
+            // When __summarizationExhausted is set, skip the break and let the agent
+            // proceed with the available (clamped) context up to maxContextTokens.
+            const summarizationExhausted = !!(state.ctx as any)?.__summarizationExhausted;
+
             // Only signal summarization if tokens exceed the threshold by a meaningful margin
             // or if summarization hasn't just been performed (prevents infinite break loops
             // where summarized output + context overhead barely exceeds the limit).
@@ -310,6 +327,10 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             if (hasFreshSummary && tokenCount <= summarizationThreshold * 1.15) {
               // Summarization was recently performed and the overshoot is within 15%.
               // Proceed to agent call instead of re-triggering summarization.
+            } else if (summarizationExhausted) {
+              // Summarization was already attempted by SmartAgent but nothing could be
+              // compressed (all tool responses are keep_full or no compressable messages).
+              // Proceed with the current context instead of deadlocking.
             } else {
               const ctx = { ...(state.ctx || {}), __needsSummarization: true };
               state = { ...state, ctx } as AgentState;
@@ -396,7 +417,23 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         continue;
       }
 
-      if (toolCalls.length === 0) break;
+      if (toolCalls.length === 0) {
+        // If a structured output schema is active but the model produced a text response
+        // instead of calling `response`, inject a one-time nudge and let the loop continue.
+        // This keeps the full loop infrastructure (tool limits, summarization, etc.) available
+        // for subsequent rounds instead of the fragile post-loop one-shot approach.
+        if (
+          soManager &&
+          !(state as any).ctx?.__finalizedDueToStructuredOutput &&
+          !(state as any).ctx?.__structuredOutputForceFinalize
+        ) {
+          const nudge = soManager.buildNudgeMessage(false);
+          const ctx = { ...(state.ctx || {}), __structuredOutputForceFinalize: true };
+          state = { ...state, messages: [...state.messages, nudge as any], ctx } as AgentState;
+          continue;
+        }
+        break;
+      }
 
       // Run tools
       onProgress?.({ stage: "tools", message: "Running tools" });
@@ -408,43 +445,34 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
     }
 
-    // Best-effort: if a structured output schema is active but the model never called `response`,
-    // append a force-finalize instruction and allow one more agent turn (without tools ideally).
-    // This helps avoid "completed but no response generated" situations.
-    if (opts.outputSchema && !(state as any).ctx?.__finalizedDueToStructuredOutput) {
-      const last: any = state.messages[state.messages.length - 1];
-      const lastHasToolCalls = Array.isArray(last?.tool_calls) && last.tool_calls.length > 0;
+    // Best-effort: if the loop exited with outputSchema active but the model stubbornly
+    // never called `response` (even after the in-loop nudge), try a small retry loop.
+    // Uses the StructuredOutputManager's centralized retry limit instead of scattered constants.
+    if (soManager && !(state as any).ctx?.__finalizedDueToStructuredOutput) {
+      const maxPostLoopRetries = soManager.maxRetries;
+      for (let postRetry = 0; postRetry < maxPostLoopRetries; postRetry++) {
+        if ((state as any).ctx?.__finalizedDueToStructuredOutput) break;
 
-      // Only nudge if we appear to be done (no pending tool calls) but still no structured finalize.
-      if (!lastHasToolCalls) {
-        const forceMsg = {
-          role: "system",
-          content: [
-            "A structured output schema is active.",
-            "You MUST now call tool `response` with the final JSON object that matches the schema.",
-            "Do not write the JSON in the assistant message.",
-            "Call `response` exactly once, then stop.",
-          ].join("\n"),
-        } as any;
+        const last: any = state.messages[state.messages.length - 1];
+        const lastHasToolCalls = Array.isArray(last?.tool_calls) && last.tool_calls.length > 0;
 
-        // Avoid spamming the same instruction
-        const alreadyForced = Boolean((state as any).ctx?.__structuredOutputForceFinalize);
-        if (!alreadyForced) {
-          const ctx = { ...(state.ctx || {}), __structuredOutputForceFinalize: true };
-          state = { ...state, messages: [...state.messages, forceMsg], ctx } as AgentState;
-          try {
-            state = { ...state, ...(await agentCore(state)) } as AgentState;
-            const lastAfter: any = state.messages[state.messages.length - 1];
-            const toolCallsAfter: any[] = Array.isArray(lastAfter?.tool_calls) ? lastAfter.tool_calls : [];
-            if (toolCallsAfter.length > 0) {
-              state = { ...state, ...(await toolsNode(state)) } as AgentState;
-            }
-          } catch (err: unknown) {
-            // Log structured output force-finalize error so callers can diagnose failures
-            const errMsg = err instanceof Error ? err.message : String(err);
-            emit?.({ type: "metadata", error: `Structured output force-finalize failed: ${errMsg}` });
-            throw err;
+        if (!lastHasToolCalls) {
+          const isLastAttempt = postRetry === maxPostLoopRetries - 1;
+          const nudge = soManager.buildNudgeMessage(isLastAttempt);
+          state = { ...state, messages: [...state.messages, nudge as any] } as AgentState;
+        }
+
+        try {
+          state = { ...state, ...(await agentCore(state)) } as AgentState;
+          const lastAfter: any = state.messages[state.messages.length - 1];
+          const toolCallsAfter: any[] = Array.isArray(lastAfter?.tool_calls) ? lastAfter.tool_calls : [];
+          if (toolCallsAfter.length > 0) {
+            state = { ...state, ...(await toolsNode(state)) } as AgentState;
           }
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          emit?.({ type: "metadata", error: `Structured output force-finalize failed: ${errMsg}` });
+          throw err;
         }
       }
     }
@@ -549,24 +577,27 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const content = getMessageText(finalAssistantMsg);
 
     let parsed: TOutput | undefined = undefined;
-    const schema = opts.outputSchema as ZodSchema<TOutput> | undefined;
-    if (schema && (res as any).ctx?.__structuredOutputParsed) {
-      parsed = (res as any).ctx.__structuredOutputParsed as TOutput;
-    } else if (schema && content) {
-      // Fallback: try to parse JSON from assistant message
-      let jsonText: string | null = null;
-      const fenced = content.match(/```(?:json)?\n([\s\S]*?)```/i);
-      if (fenced && fenced[1]) jsonText = fenced[1].trim();
-      else {
-        const braceIdx = content.indexOf("{");
-        const bracketIdx = content.indexOf("[");
-        const start = [braceIdx, bracketIdx].filter(i => i >= 0).sort((a, b) => a - b)[0];
-        if (start !== undefined) jsonText = content.slice(start).trim();
+    let outputError: StructuredOutputError | undefined = undefined;
+
+    if (soManager) {
+      if ((res as any).ctx?.__structuredOutputParsed) {
+        // Primary path: tool-based finalization succeeded
+        parsed = (res as any).ctx.__structuredOutputParsed as TOutput;
+      } else if (content) {
+        // Fallback: try to parse structured output from assistant message content
+        const fallbackResult = soManager.parseFromContent(content);
+        if (fallbackResult.success) {
+          parsed = fallbackResult.data;
+        } else {
+          outputError = fallbackResult.error;
+        }
+      } else {
+        // No content at all — report no_output error
+        const noResult = soManager.noOutputResult(1);
+        if (!noResult.success) {
+          outputError = noResult.error;
+        }
       }
-      try {
-        const raw = JSON.parse(jsonText ?? content);
-        parsed = schema.parse(raw) as TOutput;
-      } catch {}
     }
 
     emit({ type: "finalAnswer", content });
@@ -578,6 +609,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     return {
       content,
       output: parsed as TOutput | undefined,
+      outputError,
       metadata: { usage: (res as any).usage },
       messages: res.messages,
       state: res as AgentState,

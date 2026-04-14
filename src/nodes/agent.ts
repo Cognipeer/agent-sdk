@@ -76,7 +76,13 @@ export function createAgentNode(opts: SmartAgentOptions) {
     ];
 
     // ---- Usage tracking (per-request) ----
-    const rawUsage = (response as any)?.usage || (response as any)?.response_metadata?.token_usage || (response as any)?.response_metadata?.usage;
+    const rawUsage = (response as any)?.usage
+      || (response as any)?.usage_metadata
+      || (response as any)?.response_metadata?.token_usage
+      || (response as any)?.response_metadata?.tokenUsage
+      || (response as any)?.response_metadata?.usage
+      || (response as any)?.response_metadata?.usage_metadata
+      || (response as any)?.response_metadata?.usageMetadata;
     const normalized = normalizeUsage(rawUsage);
     const modelName = getModelName((runtime as any).model || (opts as any).model) || "unknown_model";
     const providerName = getProviderName((runtime as any).model || (opts as any).model);

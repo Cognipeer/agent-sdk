@@ -38,28 +38,47 @@ export function normalizeUsage(raw: any | undefined | null): NormalizedUsage | u
   // Details: attempt to pull from common nested spots else zeros
   // OpenAI format: prompt_tokens_details / completion_tokens_details
   // LangChain format: input_token_details / output_token_details
-  const promptDetailsSrc = raw.prompt_tokens_details || raw.promptTokensDetails 
-    || raw.input_token_details || raw.inputTokenDetails || {};
+  const promptDetailsSrc = raw.prompt_tokens_details || raw.promptTokensDetails
+    || raw.input_token_details || raw.inputTokenDetails
+    || raw.input_tokens_details || raw.inputTokensDetails
+    || {};
   const completionDetailsSrc = raw.completion_tokens_details || raw.completionTokensDetails
-    || raw.output_token_details || raw.outputTokenDetails || {};
+    || raw.output_token_details || raw.outputTokenDetails
+    || raw.output_tokens_details || raw.outputTokensDetails
+    || {};
+
+  const cachedTokens = num(
+    promptDetailsSrc.cached_tokens,
+    promptDetailsSrc.cachedTokens,
+    promptDetailsSrc.cached,
+    promptDetailsSrc.cache_read,
+    promptDetailsSrc.cacheRead,
+    promptDetailsSrc.cache_read_tokens,
+    raw.cached_input_tokens,
+    raw.cachedInputTokens,
+    raw.cached_prompt_tokens,
+    raw.cachedPromptTokens,
+    raw.cache_read_input_tokens,
+    raw.cacheReadInputTokens
+  );
 
   const normalized: NormalizedUsage = {
     prompt_tokens: safe(prompt),
     completion_tokens: safe(completion),
     total_tokens: safe(total || (prompt || 0) + (completion || 0)),
     prompt_tokens_details: {
-      cached_tokens: safe(
-        promptDetailsSrc.cached_tokens || promptDetailsSrc.cached || promptDetailsSrc.cache_read
-        || raw.cached_input_tokens || raw.cached_prompt_tokens
-        || raw.cache_read_input_tokens
-      ),
-      audio_tokens: safe(promptDetailsSrc.audio_tokens || promptDetailsSrc.audio),
+      cached_tokens: safe(cachedTokens),
+      audio_tokens: safe(num(promptDetailsSrc.audio_tokens, promptDetailsSrc.audioTokens, promptDetailsSrc.audio)),
     },
     completion_tokens_details: {
-      reasoning_tokens: safe(completionDetailsSrc.reasoning_tokens),
-      audio_tokens: safe(completionDetailsSrc.audio_tokens),
-      accepted_prediction_tokens: safe(completionDetailsSrc.accepted_prediction_tokens),
-      rejected_prediction_tokens: safe(completionDetailsSrc.rejected_prediction_tokens),
+      reasoning_tokens: safe(num(completionDetailsSrc.reasoning_tokens, completionDetailsSrc.reasoningTokens)),
+      audio_tokens: safe(num(completionDetailsSrc.audio_tokens, completionDetailsSrc.audioTokens)),
+      accepted_prediction_tokens: safe(
+        num(completionDetailsSrc.accepted_prediction_tokens, completionDetailsSrc.acceptedPredictionTokens)
+      ),
+      rejected_prediction_tokens: safe(
+        num(completionDetailsSrc.rejected_prediction_tokens, completionDetailsSrc.rejectedPredictionTokens)
+      ),
     },
     raw,
   };

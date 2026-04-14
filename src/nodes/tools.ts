@@ -25,6 +25,19 @@ function countSuccessfulToolExecutions(toolHistory: SmartState["toolHistory"], t
   return toolHistory.filter((entry) => entry?.toolName === toolName && (entry?.status === "success" || entry?.status === "handoff")).length;
 }
 
+function normalizeToolCall(call: any): { id?: string; name: string; args: any } | null {
+  if (!call || typeof call !== "object") return null;
+
+  const name = call.name ?? call.tool ?? call.function?.name ?? call.function_call?.name;
+  if (typeof name !== "string" || name.length === 0) return null;
+
+  return {
+    id: call.id,
+    name,
+    args: call.args ?? call.arguments ?? call.input ?? call.function?.arguments ?? call.function_call?.arguments,
+  };
+}
+
 export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>>, opts?: SmartAgentOptions) {
   return async (state: SmartState): Promise<any> => {
     const runtime = state.agent || {
@@ -63,13 +76,19 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       if (anyTool._stateRef && typeof anyTool._stateRef === "object") {
         anyTool._stateRef.toolHistory = state.toolHistory;
         anyTool._stateRef.toolHistoryArchived = state.toolHistoryArchived;
+        anyTool._stateRef.pendingApprovals = pendingApprovals;
+        anyTool._stateRef.ctx = state.ctx || (state.ctx = {});
         anyTool._stateRef.__onEvent = onEvent;
       }
     }
 
     const last = state.messages[state.messages.length - 1] as any;
     let toolCount = state.toolCallCount || 0;
-    const toolCalls: Array<{ id?: string; name: string; args: any }> = Array.isArray(last?.tool_calls) ? last.tool_calls : [];
+    const toolCalls: Array<{ id?: string; name: string; args: any }> = Array.isArray(last?.tool_calls)
+      ? last.tool_calls
+          .map((toolCall: any) => normalizeToolCall(toolCall))
+          .filter((toolCall: { id?: string; name: string; args: any } | null): toolCall is { id?: string; name: string; args: any } => toolCall !== null)
+      : [];
     const toolHistory = state.toolHistory || [];
     const toolHistoryArchived = state.toolHistoryArchived || [];
     const remaining = Math.max(0, limits.maxToolCalls - toolCount);
@@ -136,6 +155,17 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
 
       const toolName = (tool as any).name || tc.name;
+      const toolStateRef = (tool as any)._stateRef && typeof (tool as any)._stateRef === "object"
+        ? (tool as any)._stateRef as Record<string, any>
+        : null;
+
+      if (toolStateRef) {
+        toolStateRef.pendingApprovals = pendingApprovals;
+        toolStateRef.ctx = state.ctx || (state.ctx = {});
+        toolStateRef.__currentToolCallId = toolCallId;
+        delete toolStateRef.__awaitingApproval;
+      }
+
       const maxExecutionsPerRun = normalizeMaxExecutionsPerRun((tool as any).maxExecutionsPerRun);
       if (maxExecutionsPerRun !== null) {
         const currentExecutions = countSuccessfulToolExecutions(toolHistory, toolName);
@@ -257,6 +287,26 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           }
           toolCount += 1;
           return { status: "success", approval: approvalEntry };
+        }
+
+        if (output && typeof output === "object" && (output as any).__awaitingToolApproval) {
+          if (toolStateRef?.ctx && typeof toolStateRef.ctx === "object") {
+            state.ctx = toolStateRef.ctx;
+          }
+
+          const pendingApproval = pendingApprovals.find((entry) =>
+            entry.toolCallId === (output as any).toolCallId || entry.id === (output as any).approvalId
+          );
+
+          if (!pendingApproval) {
+            throw new Error(`Tool ${toolName} requested approval but no pending approval entry was recorded.`);
+          }
+
+          awaitingApproval = true;
+          return {
+            status: "awaiting_approval",
+            approval: pendingApproval
+          };
         }
 
         if (output && typeof output === "object" && output.__finalStructuredOutput) {
