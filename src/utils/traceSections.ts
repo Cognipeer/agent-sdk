@@ -1,4 +1,5 @@
 import { sanitizeTracePayload } from "./tracing.js";
+import { safeStringify } from "./content.js";
 import type {
   TraceDataSection,
   TraceMessageSection,
@@ -12,16 +13,6 @@ import type {
 function truncate(text: string, max = 500): string {
   if (!text) return "";
   return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-function toPlainString(value: any): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 function parseJsonLike(value: any): any {
@@ -59,7 +50,7 @@ export function summarizeToolOutput(output: any): string {
   if (Array.isArray(output)) {
     const preview = output
       .slice(0, 3)
-      .map((item, index) => `${index + 1}. ${truncate(toPlainString(item))}`)
+      .map((item, index) => `${index + 1}. ${truncate(safeStringify(item))}`)
       .join("\n");
     const suffix = output.length > 3 ? `\n… (+${output.length - 3} more)` : "";
     return `${preview}${suffix}`.trim();
@@ -68,7 +59,7 @@ export function summarizeToolOutput(output: any): string {
     if (Array.isArray((output as any).items)) {
       return summarizeToolOutput((output as any).items);
     }
-    return truncate(toPlainString(output));
+    return truncate(safeStringify(output));
   }
   return truncate(String(output));
 }
@@ -82,10 +73,10 @@ export function extractToolItems(output: any): TraceToolResultItem[] | undefined
       return {
         title: typeof (item as any).title === "string" ? (item as any).title : undefined,
         url: typeof (item as any).url === "string" ? (item as any).url : undefined,
-        snippet: truncate(toPlainString(snippetSource)),
+        snippet: truncate(safeStringify(snippetSource)),
       } as TraceToolResultItem;
     }
-    return { snippet: truncate(toPlainString(item)) } as TraceToolResultItem;
+    return { snippet: truncate(safeStringify(item)) } as TraceToolResultItem;
   });
 }
 

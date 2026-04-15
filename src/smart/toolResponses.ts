@@ -6,16 +6,7 @@ import type {
   ToolResponseRetentionPolicy,
 } from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
-
-function safeStringify(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    const serialized = JSON.stringify(value);
-    return typeof serialized === "string" ? serialized : String(value);
-  } catch {
-    return String(value);
-  }
-}
+import { safeStringify } from "../utils/content.js";
 
 function summarizeObject(value: any): string {
   if (value == null) return "null";

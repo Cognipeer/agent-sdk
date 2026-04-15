@@ -10,6 +10,7 @@ import { buildModelMessages } from "./contextPolicy.js";
 import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "./memory.js";
 import { StructuredOutputManager } from "../structuredOutput/manager.js";
 import { resolveStrategy } from "../structuredOutput/resolver.js";
+import { extractMessageText } from "../utils/content.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -66,12 +67,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
   function latestUserPrompt(messages: any[]): string {
     const latest = [...messages].reverse().find((message) => message.role === 'user');
-    if (!latest) return '';
-    return typeof latest.content === 'string'
-      ? latest.content
-      : Array.isArray(latest.content)
-      ? latest.content.map((part: any) => (typeof part === 'string' ? part : part?.text ?? part?.content ?? '')).join(' ')
-      : '';
+    return latest ? extractMessageText(latest) : '';
   }
 
   async function syncMemory(state: SmartState): Promise<SmartState> {
@@ -116,6 +112,23 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     return { role: 'system', content: sys } as any;
   }
 
+  /** Runs the summarizer and applies the result to state. Returns updated state and whether summarization succeeded. */
+  async function trySummarize(
+    currentState: SmartState,
+    currentRawMessages: any[],
+  ): Promise<{ state: SmartState; rawMessages: any[]; compressed: boolean }> {
+    if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
+    const delta = await summarizer(currentState);
+    if (!delta || Object.keys(delta).length === 0) {
+      const ctx = { ...(currentState.ctx || {}), __summarizationExhausted: true };
+      return { state: { ...currentState, ctx } as SmartState, rawMessages: currentRawMessages, compressed: false };
+    }
+    const ctx = { ...(currentState.ctx || {}) };
+    delete ctx.__summarizationExhausted;
+    const updated = await persistLatestSummary(syncPlanState({ ...currentState, ...delta, ctx } as SmartState));
+    return { state: updated, rawMessages: [...(updated.messages || currentRawMessages)], compressed: true };
+  }
+
   const instance: SmartAgentInstance<TOutput> = {
     invoke: async (input: SmartState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
       // wire stateRef for context tools
@@ -139,23 +152,10 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // Pre-agent summarization decision
         const next = summarizationEnabled ? decideBefore(state) : 'agent';
         if (next === 'contextSummarize' && summarizer) {
-          const delta = await summarizer(state);
-          // Prevent infinite loop if summarizer returns no changes (e.g. error or nothing to summarize)
-          if (!delta || Object.keys(delta).length === 0) {
-             // Summarization could not compress anything (e.g. all tool responses use
-             // keep_full retention policy). Signal to the base agent that it should
-             // proceed despite exceeding summaryTriggerTokens — otherwise it would
-             // break immediately and create a deadlock.
-             const ctx = { ...(state.ctx || {}), __summarizationExhausted: true };
-             state = { ...state, ctx } as SmartState;
-          } else {
-             // Summarization succeeded — clear exhaustion flag since context was reduced.
-             const ctx = { ...(state.ctx || {}) };
-             delete ctx.__summarizationExhausted;
-             state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx } as SmartState));
-             rawMessages = [...(state.messages || rawMessages)];
-             continue; // run decision again before calling base
-          }
+          const result = await trySummarize(state, rawMessages);
+          state = result.state;
+          rawMessages = result.rawMessages;
+          if (result.compressed) continue;
         }
 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
@@ -186,30 +186,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
         // Check if base agent signaled that summarization is needed (context too large)
         if ((state as any).ctx?.__needsSummarization && summarizer) {
-          // Clear the flag
           const ctx = { ...(state.ctx || {}) };
           delete ctx.__needsSummarization;
           state = { ...state, ctx } as SmartState;
-          // Run summarization
-          const delta = await summarizer(state);
-          // If delta is valid, apply and loop back to retry the agent pass after compaction.
-          // If delta is empty, summarization had nothing to compress — mark exhausted
-          // so the base agent skips the threshold break on the next invocation.
-          if (delta && Object.keys(delta).length > 0) {
-             // Summarization succeeded — clear exhaustion flag.
-             const successCtx = { ...(state.ctx || {}) };
-             delete successCtx.__summarizationExhausted;
-             state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx: successCtx } as SmartState));
-             rawMessages = [...(state.messages || rawMessages)];
-             continue; // Loop will attempt another agent pass after summarization
-          } else {
-             // Nothing could be compressed. Tell base agent to proceed anyway.
-             const exhaustedCtx = { ...(state.ctx || {}), __summarizationExhausted: true };
-             state = { ...state, ctx: exhaustedCtx } as SmartState;
-             // Continue the loop — the base agent will now skip the threshold break
-             // and proceed with the available context.
-             continue;
-          }
+          const result = await trySummarize(state, rawMessages);
+          state = result.state;
+          rawMessages = result.rawMessages;
+          continue;
         }
 
         // If structured output finalize triggered, base already stopped with parsed output
@@ -223,19 +206,10 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         if (summarizationEnabled) {
           const after = decideAfter(state);
           if (after === 'contextSummarize' && summarizer) {
-            const delta = await summarizer(state);
-             if (delta && Object.keys(delta).length > 0) {
-                const successCtx = { ...(state.ctx || {}) };
-                delete successCtx.__summarizationExhausted;
-                state = await persistLatestSummary(syncPlanState({ ...state, ...delta, ctx: successCtx } as SmartState));
-                rawMessages = [...(state.messages || rawMessages)];
-                // Loop will attempt another agent pass
-                continue;
-             } else {
-                // Nothing to compress — mark exhausted so base agent proceeds.
-                const exhaustedCtx = { ...(state.ctx || {}), __summarizationExhausted: true };
-                state = { ...state, ctx: exhaustedCtx } as SmartState;
-             }
+            const result = await trySummarize(state, rawMessages);
+            state = result.state;
+            rawMessages = result.rawMessages;
+            if (result.compressed) continue;
           }
         }
 

@@ -7,7 +7,6 @@ export * from "./nodes/tools.js";
 export * from "./nodes/resolver.js";
 export * from "./nodes/toolLimitFinalize.js";
 export * from "./nodes/contextSummarize.js";
-export * from "./utils/tokenManager.js";
 export * from "./utils/utilTokens.js";
 export * from "./contextTools.js";
 export * from "./smart/index.js";

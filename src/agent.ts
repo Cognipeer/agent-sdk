@@ -12,35 +12,11 @@ import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
 import { countMessagesTokens } from "./utils/utilTokens.js";
+import { isSyntheticSummaryMessage } from "./utils/syntheticMessages.js";
+import { extractMessageText } from "./utils/content.js";
 import { StructuredOutputManager } from "./structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "./structuredOutput/resolver.js";
 import type { StructuredOutputError } from "./structuredOutput/types.js";
-
-function isSyntheticSummaryMessage(message: any): boolean {
-  if (!message) return false;
-  if (message.role === 'tool' && message.name === 'summarize_context') {
-    return true;
-  }
-
-  if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-    return message.tool_calls.some((toolCall: any) => {
-      const toolName = toolCall?.function?.name || toolCall?.name;
-      return toolName === 'summarize_context';
-    });
-  }
-
-  return false;
-}
-
-function getMessageText(message: any): string {
-  if (typeof message?.content === "string") return message.content;
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((chunk: any) => (typeof chunk === "string" ? chunk : chunk?.text ?? chunk?.content ?? ""))
-      .join("");
-  }
-  return "";
-}
 
 function getLastAssistantMessage(messages: any[]): any | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -574,7 +550,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     });
 
     const finalAssistantMsg = getLastAssistantMessage(res.messages);
-    const content = getMessageText(finalAssistantMsg);
+    const content = extractMessageText(finalAssistantMsg);
 
     let parsed: TOutput | undefined = undefined;
     let outputError: StructuredOutputError | undefined = undefined;

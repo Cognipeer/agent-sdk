@@ -152,11 +152,3 @@ export async function writeSummaryFactsToMemory(
 
   return store.get(config.memory.scope, { limit: config.context.lastTurnsToKeep + summary.stable_facts.length });
 }
-
-export function renderMemoryFacts(facts: MemoryFact[]): string {
-  if (facts.length === 0) return "";
-  return [
-    "Memory facts:",
-    ...facts.map((fact) => `- ${fact.key}: ${fact.value} (confidence ${fact.confidence.toFixed(2)})`),
-  ].join("\n");
-}

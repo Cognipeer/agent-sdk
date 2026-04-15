@@ -32,3 +32,27 @@ export function contentToString(content: string | ContentPart[] | any): string {
 export function mergeContentsToString(contents: Array<string | ContentPart[] | any>): string {
   return contents.map((c) => contentToString(c)).join("\n");
 }
+
+// Safely convert any value to string via JSON.stringify, with fallback.
+export function safeStringify(value: unknown, pretty = false): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, pretty ? 2 : undefined) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// Extract text from a message object (handles string content, ContentPart arrays, etc.)
+export function extractMessageText(message: any): string {
+  if (!message) return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => (typeof part === "string" ? part : part?.text ?? part?.content ?? ""))
+      .join("");
+  }
+  return "";
+}

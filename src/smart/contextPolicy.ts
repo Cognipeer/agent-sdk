@@ -1,13 +1,6 @@
 import type { BaseMessage, MemoryFact, ResolvedSmartAgentConfig, SmartState, StructuredSummary } from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
-
-function messageText(message: BaseMessage): string {
-  if (typeof message.content === "string") return message.content;
-  if (Array.isArray(message.content)) {
-    return message.content.map((part: any) => (typeof part === "string" ? part : part?.text ?? part?.content ?? JSON.stringify(part))).join(" ");
-  }
-  return "";
-}
+import { extractMessageText } from "../utils/content.js";
 
 function collectRecentTurns(messages: BaseMessage[], lastTurnsToKeep: number): BaseMessage[] {
   if (lastTurnsToKeep <= 0) return [];
@@ -68,10 +61,8 @@ export function renderStructuredSummary(summary: StructuredSummary | undefined):
     lines.push("Open questions:");
     lines.push(...summary.open_questions.map((question) => `- ${question}`));
   }
-  if (summary.discarded_obsolete.length > 0) {
-    lines.push("Discarded obsolete:");
-    lines.push(...summary.discarded_obsolete.map((item) => `- ${item}`));
-  }
+  // discarded_obsolete items are intentionally NOT rendered back into the context.
+  // They are already obsolete and including them wastes tokens.
   return lines.join("\n");
 }
 
@@ -87,7 +78,7 @@ function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseM
   let working = [...messages];
 
   while (working.length > 2) {
-    const tokenCount = countApproxTokens(working.map(messageText).join("\n"));
+    const tokenCount = countApproxTokens(working.map(extractMessageText).join("\n"));
     if (tokenCount <= maxContextTokens) return working;
 
     // Find the first non-system message to remove.

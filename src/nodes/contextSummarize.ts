@@ -8,7 +8,8 @@ import type {
     SummarizationEvent,
     SummaryIntegrityCheck,
 } from "../types.js";
-import { countApproxTokens } from "../utils/utilTokens.js";
+import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
+import { isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -17,21 +18,6 @@ import { renderStructuredSummary } from "../smart/contextPolicy.js";
 // Helper for lightweight message construction
 const systemMessage = (content: string) => ({ role: 'system', content });
 const humanMessage = (content: string) => ({ role: 'user', content });
-
-function isSyntheticSummaryToolMessage(message: BaseMessage): boolean {
-    return message.role === 'tool' && message.name === 'summarize_context';
-}
-
-function isSyntheticSummaryAssistantMessage(message: BaseMessage): boolean {
-    if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) {
-        return false;
-    }
-
-    return message.tool_calls.some((toolCall: any) => {
-        const toolName = toolCall?.function?.name || toolCall?.name;
-        return toolName === 'summarize_context';
-    });
-}
 
 /**
  * Validates message sequence to ensure OpenAI API compatibility.
@@ -71,9 +57,7 @@ function validateMessageSequence(messages: BaseMessage[]): BaseMessage[] {
     return validated;
 }
 
-/**
- * Gets the summarization configuration normalized
- */
+/** Extracts a JSON object from text, handling markdown code fences or raw JSON. */
 function extractJsonObject(text: string): string | null {
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenced?.[1]) return fenced[1].trim();
@@ -355,7 +339,7 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         (m) => {
             if (m.role !== 'tool') return false;
             if (isSummarizedToolPlaceholder(m.content)) return false;
-            if (isSyntheticSummaryToolMessage(m)) return false;
+            if (isSyntheticSummaryMessage(m)) return false;
             // Check retentionPolicy from toolHistory
             const histEntry = findToolHistoryEntry(state, m.tool_call_id, m.name);
             if (histEntry?.retentionPolicy === 'keep_full') return false;
@@ -374,10 +358,7 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     }
 
     // Calculate token count before summarization
-    const allTextBefore = messages
-      .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
-      .join("\n");
-    const tokenCountBefore = countApproxTokens(allTextBefore);
+    const tokenCountBefore = countMessagesTokens(messages);
 
     // 1. Generate Summary
     // We convert current messages to a simple text format for the model to summarize.
@@ -396,7 +377,7 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     // Process messages from end to start (most recent first)
     for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
-        if (isSyntheticSummaryToolMessage(m) || isSyntheticSummaryAssistantMessage(m)) {
+        if (isSyntheticSummaryMessage(m) || isSyntheticSummaryMessage(m)) {
             continue;
         }
         let content = "";
@@ -628,7 +609,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     const toolResponsesConfig = resolved.toolResponses;
     const newMessages = messages.map((m) => {
         if (m.role === 'tool') {
-            if (isSyntheticSummaryToolMessage(m)) {
+            if (isSyntheticSummaryMessage(m)) {
                 return m;
             }
             const toolCallId = m.tool_call_id;
@@ -719,10 +700,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
 
     // Calculate token count after summarization
     const finalMessages = [...validatedMessages, assistantSummaryCall, toolSummaryResponse];
-    const allTextAfter = finalMessages
-      .map((m: any) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? c?.content ?? '')).join('') : '')
-      .join("\n");
-    const tokenCountAfter = countApproxTokens(allTextAfter);
+    const tokenCountAfter = countMessagesTokens(finalMessages);
 
     // Emit successful summarization event (use actual values from model response if available, fallback to estimates)
     const summarizationEvent: SummarizationEvent = {
