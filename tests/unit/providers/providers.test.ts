@@ -884,6 +884,46 @@ describe("fromNativeProvider adapter", () => {
     expect(typeof limitSchema.exclusiveMinimum).toBe("number");
   });
 
+  it("should strip unsupported format keywords from OpenAI strict tool schemas", async () => {
+    const provider = new OpenAIProvider({
+      provider: "openai",
+      apiKey: "test-key",
+    });
+
+    globalThis.fetch = mockFetch({
+      id: "chatcmpl-strict-tool-url",
+      model: "gpt-4o",
+      choices: [
+        { message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+
+    const model = fromNativeProvider(provider, { model: "gpt-4o" }).bindTools!(
+      [
+        {
+          name: "local_browser_fetch",
+          description: "Fetch a browser URL",
+          schema: z.object({
+            url: z.string().url(),
+          }),
+          invoke: vi.fn(),
+        },
+      ],
+      { strict: true },
+    );
+
+    await model.invoke([{ role: "user", content: "Fetch https://example.com" }]);
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+    const urlSchema = body.tools[0].function.parameters.properties.url;
+
+    expect(body.tools[0].function.strict).toBe(true);
+    expect(urlSchema.type).toBe("string");
+    expect(urlSchema.format).toBeUndefined();
+  });
+
   it("should execute native adapter tool calls and emit trace events", async () => {
     const provider = new OpenAIProvider({
       provider: "openai",

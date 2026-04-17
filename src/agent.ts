@@ -394,15 +394,37 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
 
       if (toolCalls.length === 0) {
-        // If a structured output schema is active but the model produced a text response
-        // instead of calling `response`, inject a one-time nudge and let the loop continue.
-        // This keeps the full loop infrastructure (tool limits, summarization, etc.) available
-        // for subsequent rounds instead of the fragile post-loop one-shot approach.
         if (
           soManager &&
           !(state as any).ctx?.__finalizedDueToStructuredOutput &&
           !(state as any).ctx?.__structuredOutputForceFinalize
         ) {
+          // Native strategy: the provider API (e.g. OpenAI `response_format:
+          // json_schema` with strict=true) guarantees the text content is valid
+          // JSON matching the schema. Parse and finalize in a single call — no
+          // nudges, no retries. If parsing fails we surface the error to the
+          // caller rather than burning extra round-trips trying to "fix" it.
+          if (soManager.strategy.kind === "native") {
+            const assistantText = extractMessageText(lastMsg);
+            if (assistantText) {
+              const parsed = soManager.parseFromContent(assistantText);
+              if (parsed.success) {
+                const ctx = {
+                  ...(state.ctx || {}),
+                  __finalizedDueToStructuredOutput: true,
+                  __structuredOutputParsed: parsed.data,
+                };
+                state = { ...state, ctx } as AgentState;
+              }
+            }
+            // Exit unconditionally for native: either we finalized or the
+            // caller will receive the parse error via result.outputError.
+            break;
+          }
+
+          // Tool-based strategy: model skipped calling `response` and emitted
+          // plain text instead. Inject a one-time nudge so the loop can re-ask
+          // it to call the tool.
           const nudge = soManager.buildNudgeMessage(false);
           const ctx = { ...(state.ctx || {}), __structuredOutputForceFinalize: true };
           state = { ...state, messages: [...state.messages, nudge as any], ctx } as AgentState;
@@ -421,10 +443,34 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
     }
 
-    // Best-effort: if the loop exited with outputSchema active but the model stubbornly
-    // never called `response` (even after the in-loop nudge), try a small retry loop.
-    // Uses the StructuredOutputManager's centralized retry limit instead of scattered constants.
+    // Best-effort structured-output finalization when the loop exited without
+    // a parsed output. For native strategy we only attempt a one-shot parse of
+    // the last assistant message — no extra model calls. Retries are reserved
+    // for the tool-based strategy, where the model can stubbornly skip calling
+    // `response` and we need to nudge it.
     if (soManager && !(state as any).ctx?.__finalizedDueToStructuredOutput) {
+      const lastForParse: any = state.messages[state.messages.length - 1];
+      if (lastForParse?.role === "assistant") {
+        const assistantText = extractMessageText(lastForParse);
+        if (assistantText) {
+          const parsed = soManager.parseFromContent(assistantText);
+          if (parsed.success) {
+            const ctx = {
+              ...(state.ctx || {}),
+              __finalizedDueToStructuredOutput: true,
+              __structuredOutputParsed: parsed.data,
+            };
+            state = { ...state, ctx } as AgentState;
+          }
+        }
+      }
+    }
+
+    if (
+      soManager &&
+      soManager.strategy.kind === "tool_based" &&
+      !(state as any).ctx?.__finalizedDueToStructuredOutput
+    ) {
       const maxPostLoopRetries = soManager.maxRetries;
       for (let postRetry = 0; postRetry < maxPostLoopRetries; postRetry++) {
         if ((state as any).ctx?.__finalizedDueToStructuredOutput) break;

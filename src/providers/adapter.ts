@@ -255,6 +255,10 @@ function normalizeStrictSchema(schema: Record<string, any>): Record<string, any>
   if (!schema || typeof schema !== "object") return schema;
   const clone = { ...schema };
 
+  if (typeof clone.format === "string") {
+    delete clone.format;
+  }
+
   if (clone.type === "object" || clone.properties) {
     if (!clone.type) clone.type = "object";
     if (clone.properties && typeof clone.properties === "object") {
