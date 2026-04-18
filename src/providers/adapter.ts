@@ -221,6 +221,74 @@ function isZodSchema(obj: any): boolean {
   return obj != null && typeof obj === "object" && typeof obj.safeParse === "function" && "_def" in obj;
 }
 
+function hasStrictUnsafeShape(node: any, inProperty = false): boolean {
+  if (!node || typeof node !== "object") return false;
+
+  if (Array.isArray(node)) {
+    return node.some((item) => hasStrictUnsafeShape(item, inProperty));
+  }
+
+  if (typeof node.$ref === "string") {
+    return true;
+  }
+
+  const hasType = typeof node.type === "string" || (Array.isArray(node.type) && node.type.length > 0);
+  const hasProperties = !!node.properties && typeof node.properties === "object" && !Array.isArray(node.properties);
+  const hasItems = node.items !== undefined;
+  const hasComposite = ["anyOf", "oneOf", "allOf"].some((key) => Array.isArray(node[key]) && node[key].length > 0);
+
+  if (inProperty && !hasType && !hasProperties && !hasItems) {
+    return true;
+  }
+
+  if (inProperty && hasComposite && !hasType) {
+    return true;
+  }
+
+  if (hasProperties) {
+    for (const value of Object.values(node.properties as Record<string, unknown>)) {
+      if (hasStrictUnsafeShape(value, true)) {
+        return true;
+      }
+    }
+  }
+
+  if (node.items && hasStrictUnsafeShape(node.items, false)) {
+    return true;
+  }
+
+  for (const key of ["anyOf", "oneOf", "allOf"]) {
+    if (Array.isArray(node[key]) && hasStrictUnsafeShape(node[key], false)) {
+      return true;
+    }
+  }
+
+  for (const key of ["definitions", "$defs"]) {
+    const defs = node[key];
+    if (defs && typeof defs === "object") {
+      for (const value of Object.values(defs as Record<string, unknown>)) {
+        if (hasStrictUnsafeShape(value, false)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function canUseStrictToolSchema(schema: any): boolean {
+  if (!schema || typeof schema !== "object") {
+    return true;
+  }
+
+  if (isZodSchema(schema)) {
+    return true;
+  }
+
+  return !hasStrictUnsafeShape(schema);
+}
+
 /**
  * Convert a potentially-Zod schema to a plain JSON Schema object.
  * If it's already a JSON Schema (plain object with `type`), pass through.
@@ -239,11 +307,13 @@ function convertToJsonSchema(schema: any, strict = false): Record<string, any> {
     if (!converted.type) converted.type = "object";
     return converted;
   }
+  const converted = { ...schema };
+  delete converted["$schema"];
   // Already JSON Schema — ensure type is present
-  if (!schema.type && schema.properties) {
-    return { type: "object", ...schema };
+  if (!converted.type && converted.properties) {
+    return { type: "object", ...converted };
   }
-  return schema;
+  return converted;
 }
 
 /**
@@ -302,24 +372,31 @@ function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
   let name: string;
   let description: string;
   let parameters: Record<string, any>;
+  let rawSchema: any;
+  let useStrict = strict ?? false;
 
   if (tool.type === "function" && tool.function) {
     // OpenAI function format — parameters are already JSON Schema
     name = tool.function.name;
     description = tool.function.description ?? "";
-    parameters = tool.function.parameters ?? { type: "object", properties: {}, additionalProperties: false };
+    rawSchema = tool.function.parameters ?? { type: "object", properties: {}, additionalProperties: false };
   } else {
     name = tool.name ?? "unknown";
     description = tool.description ?? "";
-    const rawSchema = tool.schema ?? tool.parameters;
-    parameters = convertToJsonSchema(rawSchema, strict);
+    rawSchema = tool.schema ?? tool.parameters;
   }
 
-  if (strict) {
+  if (useStrict && !canUseStrictToolSchema(rawSchema)) {
+    useStrict = false;
+  }
+
+  parameters = convertToJsonSchema(rawSchema, useStrict);
+
+  if (useStrict) {
     parameters = normalizeStrictSchema(parameters);
   }
 
-  return { name, description, parameters, ...(strict ? { strict: true } : {}) };
+  return { name, description, parameters, ...(useStrict ? { strict: true } : {}) };
 }
 
 function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {

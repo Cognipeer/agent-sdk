@@ -924,6 +924,56 @@ describe("fromNativeProvider adapter", () => {
     expect(urlSchema.format).toBeUndefined();
   });
 
+  it("should keep native structured output tool binding but skip strict for MCP-style raw JSON Schemas", async () => {
+    const provider = new OpenAIProvider({
+      provider: "openai",
+      apiKey: "test-key",
+    });
+
+    globalThis.fetch = mockFetch({
+      id: "chatcmpl-mcp-raw-schema",
+      model: "gpt-4o",
+      choices: [
+        { message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+
+    const model = fromNativeProvider(provider, { model: "gpt-4o" }).bindTools!(
+      [
+        {
+          name: "kogniser_crm_create_deal",
+          description: "Create a CRM deal",
+          schema: {
+            type: "object",
+            properties: {
+              contactId: { $ref: "#/$defs/contactId" },
+              title: { type: "string" },
+            },
+            required: ["contactId", "title"],
+            additionalProperties: false,
+            $defs: {
+              contactId: {
+                type: "string",
+                description: "Existing contact id",
+              },
+            },
+          },
+          invoke: vi.fn(),
+        },
+      ],
+      { strict: true },
+    );
+
+    await model.invoke([{ role: "user", content: "Create the deal" }]);
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+
+    expect(body.tools[0].function.strict).toBeUndefined();
+    expect(body.tools[0].function.parameters.properties.contactId.$ref).toBe("#/$defs/contactId");
+  });
+
   it("should execute native adapter tool calls and emit trace events", async () => {
     const provider = new OpenAIProvider({
       provider: "openai",
