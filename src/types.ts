@@ -192,10 +192,63 @@ export type AgentOptions = {
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  /**
+   * Unified reasoning configuration. Controls both:
+   * - Provider-native reasoning (OpenAI reasoning_effort, Anthropic thinking, Gemini thinkingConfig)
+   * - Post-turn reflection (a short textual insight from the model after each tool turn)
+   *
+   * When omitted or `enabled=false` the agent behaves exactly as before.
+   */
+  reasoning?: ReasoningConfig;
+};
+
+// ─── Reasoning + Reflection ──────────────────────────────────────────────────
+// Unified naming:
+//  - `reasoning.native`     → provider-native reasoning pass-through
+//  - `reasoning.reflection` → post-turn textual reflection step
+//
+// Top-level `enabled`/`level` act as a preset; explicit sub-keys always win.
+
+export type ReasoningLevel = "low" | "medium" | "high";
+
+export type ReflectionCadence = "off" | "every_turn" | "after_tool" | "on_branch";
+
+export type ReflectionConfig = {
+  enabled?: boolean;
+  cadence?: ReflectionCadence;
+  /**
+   * - "piggyback" (default) — appends a short user-style "reflect now" message to the existing
+   *   transcript, reusing provider prompt cache. No tools. Returned text becomes a reflection record.
+   * - "separate" — dedicated tool-free call with a compact prompt (cheaper, smaller cache hit).
+   */
+  mode?: "piggyback" | "separate";
+  maxTokens?: number;
+  maxChars?: number;
+  keepLast?: number;
+  /** When true reflection messages are compressible by the summarizer. Default false. */
+  summarize?: boolean;
+  promptTemplate?: string;
+  /** When true emits `reflection` SmartAgent events. Default true. */
+  emitEvents?: boolean;
+};
+
+export type NativeReasoningConfig = {
+  effort?: "minimal" | "low" | "medium" | "high";
+  budgetTokens?: number;
+  includeThoughts?: boolean;
+  providerExtras?: Record<string, any>;
+};
+
+export type ReasoningConfig = {
+  enabled?: boolean;
+  level?: ReasoningLevel;
+  /** Pass `false` to disable provider-native reasoning while keeping reflection. */
+  native?: NativeReasoningConfig | false;
+  /** Pass `false` to fully disable reflection. */
+  reflection?: ReflectionConfig | false;
 };
 
 export type BuiltInRuntimeProfile = "fast" | "balanced" | "deep" | "research";
-
 export type RuntimeProfile = BuiltInRuntimeProfile | "custom";
 
 export type SummarizationMode = "incremental" | "full_rewrite";
@@ -415,6 +468,10 @@ export type SmartAgentOptions = {
   // with full TypeScript inference.
   outputSchema?: ZodSchema<any>;
   tracing?: TracingConfig;
+  /**
+   * Unified reasoning configuration. Same shape as on `AgentOptions`. See `ReasoningConfig`.
+   */
+  reasoning?: ReasoningConfig;
 };
 
 // Runtime representation of an agent (used inside state.agent)
@@ -692,6 +749,35 @@ export type SmartState = AgentState & {
   }>;
   plan?: { version: number; steps: PlanStepRecord[]; lastUpdated?: string; adherenceScore?: number } | null;
   planVersion?: number;
+  /**
+   * Post-turn reflection records produced by the reflection node. The SDK keeps the full
+   * history here (even when only `keepLast` are re-injected into the prompt) so callers
+   * can render them in a task/run timeline.
+   */
+  reflections?: ReflectionRecord[];
+};
+
+export type ReflectionRecord = {
+  id: string;
+  turn: number;
+  /** Plain-text reflection produced by the model. */
+  text: string;
+  createdAt: string;
+  durationMs?: number;
+  /** Index of the last message present when this reflection was taken. */
+  anchorMessageIndex?: number;
+  /** Trigger cadence that fired this reflection. */
+  trigger?: ReflectionCadence;
+  /** Token usage for this specific reflection call. */
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    totalTokens?: number;
+    reasoningTokens?: number;
+  };
+  /** Optional tool call ids / names the reflection commented on (for UI linking). */
+  toolCallIds?: string[];
 };
 
 // Event types for observability and future streaming support
@@ -900,7 +986,25 @@ export type SmartAgentEvent =
   | GuardrailEvent
   | ProgressEvent
   | StreamEvent
-  | CancelledEvent;
+  | CancelledEvent
+  | ReflectionEvent;
+
+export type ReflectionEvent = {
+  type: "reflection";
+  id: string;
+  turn: number;
+  text: string;
+  trigger?: ReflectionCadence;
+  durationMs?: number;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    totalTokens?: number;
+    reasoningTokens?: number;
+  };
+  toolCallIds?: string[];
+};
 
 export type CancellationTokenLike = {
   readonly isCancellationRequested: boolean;

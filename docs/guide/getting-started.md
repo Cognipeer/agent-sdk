@@ -31,6 +31,7 @@ Requirements:
 - Node.js 18.17+
 - A model adapter or native provider config
 - A concrete decision about whether planning should be `off` or `todo` for your first integration
+- If you want provider-native reasoning, a model/endpoint that actually supports it
 
 ## Choose your model integration path
 
@@ -120,13 +121,61 @@ console.log(result.content);
 console.log(result.state?.plan?.steps);
 ```
 
+## Optional: enable reasoning and reflection
+
+Reasoning is available on both `createAgent(...)` and `createSmartAgent(...)`. Use it when the workload genuinely benefits from extra inference budget or operator-visible working notes.
+
+```ts
+const model = fromNativeProvider(
+	createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! }),
+	{ model: "gpt-5" },
+);
+
+const agent = createSmartAgent({
+	name: "ResearchAssistant",
+	model,
+	tools: [lookup],
+	runtimeProfile: "balanced",
+	reasoning: {
+		enabled: true,
+		level: "medium",
+		native: { effort: "medium" },
+		reflection: {
+			cadence: "after_tool",
+			mode: "piggyback",
+			keepLast: 3,
+			summarize: false,
+		},
+	},
+});
+
+const result = await agent.invoke({
+	messages: [{ role: "user", content: "Inspect ORBIT and tell me the next best step." }],
+}, {
+	onEvent(event) {
+		if (event.type === "reflection") {
+			console.log("Reflection:", event.text);
+		}
+	},
+});
+
+console.log(result.state?.reflections?.at(-1)?.text);
+```
+
+The practical split is:
+
+- `reasoning.native` forwards provider-specific reasoning controls.
+- `reasoning.reflection` stores plain-text notes on `state.reflections` without turning them into normal assistant messages.
+- Only the last `keepLast` reflections are re-injected into the next prompt as synthetic system context.
+
 ## What this example actually proves
 
 1. The runtime can bind typed tools and still keep the transcript message-first.
 2. Planning is available, but still adaptive. The runtime does not force a todo list for every prompt.
 3. If a plan is created or updated, the durable representation ends up on `result.state.plan`.
 4. If context pressure builds, the smart wrapper can summarize while preserving recovery paths for raw tool output.
-5. With tracing enabled, you can inspect the run without instrumenting the whole loop yourself.
+5. If reasoning/reflection is enabled, working notes end up on `result.state.reflections` instead of polluting the assistant transcript.
+6. With tracing enabled, you can inspect the run without instrumenting the whole loop yourself.
 
 ## What the smart runtime adds on top of the base loop
 
@@ -146,6 +195,7 @@ Check these surfaces before you move on:
 - `result.content`: the final assistant answer.
 - `result.state.plan`: the durable plan, if planning was used.
 - `result.state.summaryRecords`: evidence that the runtime compacted prior context.
+- `result.state.reflections`: post-tool notes, if reflection was enabled.
 - `result.state.memoryFacts`: facts reloaded from memory policy.
 
 This is the minimum sanity check that tells you whether the runtime is behaving as an operational system instead of just returning text.

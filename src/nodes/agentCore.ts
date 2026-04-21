@@ -141,6 +141,12 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // Native structured output: pass response_format to model invocation if set
     const responseFormat = (runtime as any).responseFormat as Record<string, any> | undefined;
 
+    // Unified reasoning pass-through: when the loop resolved a ReasoningConfig we
+    // place the native shape on ctx.__reasoning. We forward it into invoke options
+    // so native providers (OpenAI/Anthropic/Vertex) can map it to their own body.
+    const reasoningForCall = (state.ctx as any)?.__reasoning;
+    const reasoningInvokeOpts = reasoningForCall ? { reasoning: reasoningForCall } : undefined;
+
     const extractText = (chunk: any) => {
       if (chunk == null) return "";
       if (typeof chunk === "string") return chunk;
@@ -160,7 +166,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
   if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
     let streamedText = "";
     let streamedMessage: any | undefined;
-    const streamOptions = { signal: abortSignal, cancellationToken, ...responseFormat };
+    const streamOptions = { signal: abortSignal, cancellationToken, ...responseFormat, ...reasoningInvokeOpts };
     for await (const chunk of (modelWithTools as any).stream(normalizedMessages, streamOptions)) {
       if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
         break;
@@ -184,7 +190,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       response = { role: "assistant", content: streamedText } as any;
     }
   } else {
-    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken, ...responseFormat });
+    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken, ...responseFormat, ...reasoningInvokeOpts });
   }
     } catch (err: any) {
       const durationMs = Date.now() - start;

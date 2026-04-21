@@ -8,7 +8,7 @@ There are two architectural layers:
 
 | Layer | Responsibility |
 |---|---|
-| `createAgent` | Minimal agent loop: resolve, call model, execute tools, enforce limits, finalize. |
+| `createAgent` | Minimal agent loop: resolve, call model, execute tools, optionally reflect, enforce limits, finalize. |
 | `createSmartAgent` | Wraps the base agent with profiles, planning tools, memory sync, context policy, and summarization. |
 
 The smart runtime does not replace the base loop. It composes around it.
@@ -41,7 +41,8 @@ Inside the base loop, the flow is still intentionally small:
 2. Run request guardrails if configured.
 3. Invoke the model.
 4. Execute approved tool calls.
-5. Re-enter until a final assistant answer or structured finalize condition is reached.
+5. Optionally append a post-tool reflection note.
+6. Re-enter until a final assistant answer or structured finalize condition is reached.
 
 This is why the package is easier to debug than graph-heavy alternatives. The core path is compact enough to inspect with traces and state snapshots.
 
@@ -50,6 +51,8 @@ This is why the package is easier to debug than graph-heavy alternatives. The co
 - Runtime profiles resolve first.
 - Custom profiles layer on top of a built-in base profile.
 - Planning is adaptive rather than mandatory.
+- Provider-native reasoning is injected at model-call time when configured.
+- Reflection notes persist on `state.reflections` without becoming normal assistant turns.
 - Durable plan state is synchronized onto `state.plan`.
 - Raw messages remain separate from model-shaped messages.
 - Memory reads happen before turns; summary facts can be written back after compaction.
@@ -60,10 +63,12 @@ This is why the package is easier to debug than graph-heavy alternatives. The co
 | Component | Responsibility |
 |---|---|
 | `smart/index.ts` | Orchestrates the smart wrapper around the base agent, including memory sync, summarization decisions, and plan synchronization. |
+| `smart/reasoning.ts` | Resolves high-level reasoning presets into concrete native-provider and reflection settings. |
 | `smart/runtimeConfig.ts` | Resolves built-in presets and merges custom overrides into a concrete runtime config. |
 | `smart/contextPolicy.ts` | Shapes model-facing context from raw messages, summaries, budgets, and memory facts. |
 | `contextTools.ts` | Defines `manage_todo_list`, `get_tool_response`, and the rules around plan mutation. |
 | `nodes/contextSummarize.ts` | Performs compaction when token pressure demands it. |
+| `nodes/reflect.ts` | Runs the post-tool reflection node and persists notes onto `state.reflections`. |
 | `agent.ts` | Implements the minimal loop with resolver, guardrails, model invocation, tools, and finalize stages. |
 | `utils/tracing.ts` | Captures structured traces and finalizes sessions across file or remote sinks. |
 

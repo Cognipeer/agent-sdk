@@ -6,6 +6,8 @@ import { createResolverNode } from "./nodes/resolver.js";
 import { createAgentCoreNode } from "./nodes/agentCore.js";
 import { createToolsNode } from "./nodes/tools.js";
 import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
+import { createReflectionNode, shouldRunReflection } from "./nodes/reflect.js";
+import { resolveReasoning } from "./smart/reasoning.js";
 import { createTool } from "./tool.js";
 import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent } from "./utils/tracing.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
@@ -76,6 +78,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   }
   const toolsNode = createToolsNode(toolsBase, opts);
   const finalizeNode = createToolLimitFinalizeNode(opts);
+
+  // Resolve unified reasoning config (provider-native + reflection). When omitted,
+  // the loop behaves exactly as before: no reflection node and no reasoning extras.
+  const resolvedReasoning = resolveReasoning((opts as any).reasoning);
+  const reflectNode = resolvedReasoning?.reflection.enabled
+    ? createReflectionNode(opts as any, resolvedReasoning.reflection)
+    : undefined;
 
   type GuardrailStore = { lastRequestLength: number; lastResponseLength: number };
 
@@ -148,6 +157,16 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     if (summarizationThreshold === undefined) {
       state = clearNeedsSummarization(state);
+    }
+
+    // Forward resolved native reasoning into ctx so agentCore picks it up and
+    // adapters map it to provider-specific body fields.
+    if (resolvedReasoning?.native) {
+      const ctx: any = { ...(state.ctx || {}) };
+      if (!ctx.__reasoning) {
+        ctx.__reasoning = resolvedReasoning.native;
+        state = { ...state, ctx } as AgentState;
+      }
     }
     const mergedLimits = {
       ...(opts.limits || {}),
@@ -441,6 +460,23 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (state.ctx?.__awaitingApproval) break;
       if (checkpointIfRequested("after_tools")) break;
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
+
+      // Post-tool reflection (piggyback). Runs only when reasoning.reflection is
+      // enabled and cadence matches. Errors are swallowed inside the node so the
+      // main loop is never disturbed.
+      if (reflectNode && resolvedReasoning?.reflection.enabled) {
+        const cadence = resolvedReasoning.reflection.cadence;
+        if (shouldRunReflection(cadence, state as any, true)) {
+          try {
+            const patch = await reflectNode(state as any, cadence);
+            if (patch && Object.keys(patch).length > 0) {
+              state = { ...state, ...patch } as AgentState;
+            }
+          } catch {
+            // never fail the run due to reflection errors
+          }
+        }
+      }
     }
 
     // Best-effort structured-output finalization when the loop exited without

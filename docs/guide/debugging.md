@@ -1,6 +1,6 @@
 # Tracing & observability
 
-The SDK ships with a structured tracing pipeline that records every agent invocation as JSON. Traces capture model/tool calls, timing, token usage, and (optionally) full payloads so you can drive dashboards, analytics, or remote monitoring.
+The SDK ships with a structured tracing pipeline that records every agent invocation as JSON. Traces capture model/tool calls, reflection events, timing, token usage, and (optionally) full payloads so you can drive dashboards, analytics, or remote monitoring.
 
 ## Quick start
 
@@ -52,7 +52,7 @@ const agent = createSmartAgent({
 - **Session metadata** – `sessionId`, start/end timestamps, duration, and resolved tracing config (logData flag plus a sanitized sink summary).
 - **Agent runtime** – name, version, model, and provider (when available).
 - **Summary** – aggregated token counts, byte totals, and per-event classifications.
-- **Events** – ordered list of model/tool/summarization events. Each record carries a stable `eventId`, a human-friendly `label`, status (`success`, `error`, `retry`, `skipped`), flattened metrics (`durationMs`, `inputTokens`, `outputTokens`, `requestBytes`, etc.), and optional tool identifiers.
+- **Events** – ordered list of model/tool/summarization/reflection events. Each record carries a stable `eventId`, a human-friendly `label`, status (`success`, `error`, `retry`, `skipped`), flattened metrics (`durationMs`, `inputTokens`, `outputTokens`, `requestBytes`, etc.), and optional tool identifiers.
 - **Errors** – flattened list of noteworthy errors (either per-event or session-level) for quick surfacing.
 
 When `logData` is `true`, payload sections expose sanitized snapshots under a `data.sections` array. Each section is one of a handful of kinds (`message`, `tool_call`, `tool_result`, `summary`, `metadata`) with concise, user-facing labels. Circular references, functions, and bigints are handled automatically. Prefer `customSink({ onEvent })` if you want a realtime feed of recorded events.
@@ -68,7 +68,7 @@ When `logData` is `true`, payload sections expose sanitized snapshots under a `d
 	"durationMs": 5289,
 	"agent": { "name": "SupportAgent", "version": "2025.09", "model": "gpt-4.1-mini", "provider": "openai" },
 	"config": { "enabled": true, "logData": true, "sink": { "type": "file", "path": ".../logs" } },
-	"summary": { "totalDurationMs": 3120, "totalInputTokens": 812, "totalOutputTokens": 431, "totalCachedInputTokens": 48, "totalBytesIn": 18240, "totalBytesOut": 9211, "eventCounts": { "ai_call": 2, "tool_call": 1 } },
+	"summary": { "totalDurationMs": 3120, "totalInputTokens": 812, "totalOutputTokens": 431, "totalCachedInputTokens": 48, "totalBytesIn": 18240, "totalBytesOut": 9211, "eventCounts": { "ai_call": 2, "tool_call": 1, "reflection": 1 } },
 	"events": [
 		{
 			"id": "evt_0001_abcd",

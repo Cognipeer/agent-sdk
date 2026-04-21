@@ -161,10 +161,48 @@ type ChatCompletionRequest = {
     schema?: Record<string, any>;
     name?: string;
   };
+  reasoning?: {
+    effort?: "minimal" | "low" | "medium" | "high";
+    budgetTokens?: number;
+    includeThoughts?: boolean;
+    providerExtras?: Record<string, any>;
+  };
   stream?: boolean;
   extra?: Record<string, any>;   // provider-specific extras
 };
 ```
+
+## Native reasoning pass-through
+
+The native provider layer accepts one unified reasoning shape and maps it to each provider's wire format.
+
+```ts
+const provider = createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! });
+
+const response = await provider.complete({
+  model: "gpt-5",
+  messages: [{ role: "user", content: "Compare these designs and justify the next step." }],
+  reasoning: { effort: "high" },
+});
+```
+
+Provider mapping:
+
+| Provider | Mapping |
+|---|---|
+| OpenAI | `body.reasoning_effort = effort` |
+| Azure OpenAI | Same as OpenAI (`AzureProvider` extends `OpenAIProvider`) |
+| OpenAI-compatible | Same as OpenAI when the endpoint understands the field |
+| Anthropic | `body.thinking = { type: "enabled", budget_tokens }` |
+| Vertex / Gemini | `generationConfig.thinkingConfig = { thinkingBudget, includeThoughts }` |
+| Bedrock | Currently ignored (no-op) |
+
+Notes:
+
+- If `budgetTokens` is omitted, Anthropic and Vertex derive a default from `effort`.
+- `includeThoughts` currently affects Gemini/Vertex thought summaries.
+- `providerExtras` is merged into the provider-specific reasoning object/body.
+- Unsupported models/endpoints usually return a provider error instead of silently degrading.
 
 ### Messages
 
@@ -209,6 +247,8 @@ type TokenUsage = {
 };
 ```
 
+`reasoningTokens` is especially useful when you enable native reasoning, because it shows how much inference budget the provider attributed to the thinking/reasoning path.
+
 Provider-specific field mapping:
 
 | Provider | `cachedInputTokens` source | `cachedWriteTokens` source | `reasoningTokens` source |
@@ -248,6 +288,7 @@ const model = fromNativeProvider(
     model: "claude-sonnet-4-20250514",
     temperature: 0.3,
     maxTokens: 8192,
+    reasoning: { effort: "medium" },
   },
 );
 
@@ -259,6 +300,15 @@ const agent = createSmartAgent({
 ```
 
 The adapter automatically configures `model.capabilities` so the smart runtime can pick the correct structured output strategy (`native` vs `tool_based`) without manual configuration.
+
+`fromNativeProvider(...)` also supports per-call overrides. The adapter default can be changed for one invocation only:
+
+```ts
+await model.invoke(messages, {
+  reasoning: { effort: "low" },
+  tool_choice: "none",
+});
+```
 
 ## Direct provider usage (without agent)
 

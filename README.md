@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@cognipeer/agent-sdk?color=success)](https://npmjs.com/package/@cognipeer/agent-sdk) [Docs Website](https://cognipeer.github.io/agent-sdk/) 
 
-Lightweight, message-first agent runtime that keeps tool calls transparent, automatically summarizes long histories, and ships with planning, multi-agent handoffs, and structured tracing.
+Lightweight, message-first agent runtime that keeps tool calls transparent, supports provider-native reasoning plus post-tool reflection, automatically summarizes long histories, and ships with planning, multi-agent handoffs, and structured tracing.
 
 - SDK source: `src/`
 - Examples: `examples/`
@@ -15,6 +15,7 @@ Lightweight, message-first agent runtime that keeps tool calls transparent, auto
 - [Install](#install)
 - [Quick start](#quick-start)
   - [Smart agent (planning + summarization)](#smart-agent-planning--summarization)
+  - [Reasoning & reflection](#reasoning--reflection)
   - [Base agent (minimal loop)](#base-agent-minimal-loop)
 - [Key capabilities](#key-capabilities)
 - [Examples](#examples)
@@ -33,9 +34,10 @@ Highlights:
 - **Message-first design** – assistant tool calls and tool responses stay in the transcript.
 - **Token-aware summarization** – chunked rewriting archives oversized tool outputs while exposing `get_tool_response` for lossless retrieval.
 - **Planning mode** – adaptive system prompt + TODO tool supports full plan writes and version-safe partial updates.
+- **Unified reasoning surface** – one `reasoning` config controls provider-native reasoning and post-tool plain-text reflections.
 - **Structured output** – provide a Zod schema and the agent injects a finalize tool to capture JSON deterministically.
 - **Multi-agent and handoffs** – wrap agents as tools or transfer control mid-run with `asTool` / `asHandoff`.
-- **Usage + events** – normalize provider usage, surface `tool_call`, `plan`, `summarization`, `metadata`, and `handoff` events.
+- **Usage + events** – normalize provider usage, surface `tool_call`, `plan`, `summarization`, `reflection`, `metadata`, and `handoff` events.
 - **Structured tracing** – optional per-invoke JSON traces with metadata, payload capture, and pluggable sinks (file, HTTP, Cognipeer, custom).
 
 ## What’s inside
@@ -181,6 +183,52 @@ const agent = createSmartAgent({
 });
 ```
 
+### Reasoning & reflection
+
+Both `createAgent(...)` and `createSmartAgent(...)` accept a unified `reasoning` config:
+
+```ts
+const agent = createSmartAgent({
+  model: fromNativeProvider(
+    createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! }),
+    { model: "gpt-5" },
+  ),
+  tools: [echo],
+  reasoning: {
+    enabled: true,
+    level: "high",
+    native: { effort: "high" },
+    reflection: {
+      cadence: "after_tool",
+      mode: "piggyback",
+      maxTokens: 450,
+      keepLast: 4,
+      summarize: false,
+    },
+  },
+});
+
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "Research the repo and propose the next implementation step." }],
+}, {
+  onEvent(event) {
+    if (event.type === "reflection") {
+      console.log("reflection:", event.text);
+    }
+  },
+});
+
+console.log(result.state?.reflections?.at(-1)?.text);
+```
+
+What this does:
+
+- `reasoning.native` passes provider-specific reasoning knobs through the native provider layer.
+- `reasoning.reflection` adds a short plain-text reflection after qualifying turns without committing that note as a normal assistant message.
+- Reflection notes are persisted on `result.state.reflections`; only the last `keepLast` are re-injected into the next prompt as synthetic system context.
+
+Use this only with models/endpoints that actually support provider-native reasoning. Unsupported models usually return a provider error rather than silently degrading.
+
 ### Base agent (minimal loop)
 
 Prefer a tiny core without system prompt or summarization? Use `createAgent`:
@@ -213,6 +261,7 @@ console.log(res.content);
 
 - **Native provider layer** – call OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API directly. No LangChain required. Unified `ChatCompletionRequest` / `ChatCompletionResponse` schema with per-provider wire format conversion.
 - **Full token tracking** – every response surfaces `inputTokens`, `outputTokens`, `cachedInputTokens`, `cachedWriteTokens`, and `reasoningTokens` for all six providers.
+- **Unified reasoning controls** – enable provider-native reasoning (`reasoning.native`) and post-tool reflection (`reasoning.reflection`) from one config surface.
 - **Summarization pipeline** – automatic chunking keeps tool call history within `contextTokenLimit` / `summaryTokenLimit`, archiving originals so `get_tool_response` can fetch them later.
 - **Retention controls** – tool outputs can be kept full, reduced to structured previews, archived, or dropped based on size tiers, critical-tool fallback, per-tool overrides, and recent-response pinning.
 - **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
@@ -220,7 +269,7 @@ console.log(res.content);
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
 - **MCP + LangChain tools** – any object satisfying the minimal tool interface works; LangChain’s `Tool` implementations plug in directly.
 - **Vision input** – message parts accept base64 or URL images for multimodal requests.
-- **Observability hooks** – `config.onEvent` surfaces tool lifecycle, summarization, metadata, and final answer events for streaming UIs or CLIs.
+- **Observability hooks** – `config.onEvent` surfaces tool lifecycle, summarization, reflection, metadata, and final answer events for streaming UIs or CLIs.
 
 ## Examples
 
@@ -269,10 +318,11 @@ OPENAI_API_KEY=... npx tsx basic/basic.ts
 The agent is a deterministic while-loop – no external graph runtime. Each turn flows through:
 
 1. **resolver** – normalize state (messages, counters, limits).
-2. **contextSummarize** (optional) – when token estimates exceed `limits.maxToken`, archive heavy tool outputs.
+2. **contextSummarize** (optional) – when token estimates exceed the active summarization threshold, archive heavy tool outputs.
 3. **agent** – invoke the model (binding tools when supported).
 4. **tools** – execute proposed tool calls with configurable parallelism.
-5. **toolLimitFinalize** – if tool-call cap is hit, inject a system notice so the next assistant turn must answer directly.
+5. **reflect** (optional) – append a plain-text reflection after tool turns when `reasoning.reflection` is enabled.
+6. **toolLimitFinalize** – if tool-call cap is hit, inject a system notice so the next assistant turn must answer directly.
 
 The loop stops when the assistant produces a message without tool calls, a structured output finalize signal is observed, or a handoff transfers control. See `docs/architecture/README.md` for diagrams and heuristics.
 
@@ -289,7 +339,7 @@ Exported helpers (`agent-sdk/src/index.ts`):
 - `createProvider(config)` – factory for all six providers
 - `fromNativeProvider(provider, options?)` – wraps a provider as a `BaseChatModel`
 - `OpenAIProvider`, `AnthropicProvider`, `AzureProvider`, `OpenAICompatibleProvider`, `BedrockProvider`, `VertexProvider`
-- Types: `ChatCompletionRequest`, `ChatCompletionResponse`, `TokenUsage`, `ProviderConfig`
+- Types: `ChatCompletionRequest`, `ChatCompletionResponse`, `TokenUsage`, `ProviderConfig`, `ReasoningConfig`, `ReflectionRecord`, `ReflectionEvent`
 
 **LangChain adapters (optional):**
 - `fromLangchainModel(model)`
@@ -300,7 +350,7 @@ Exported helpers (`agent-sdk/src/index.ts`):
 - `buildSystemPrompt(extra?, planning?, name?)`
 - Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
 
-`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
+`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `reasoning`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
 
 Tools can also declare `maxExecutionsPerRun` to cap successful executions for that tool within a single agent run. Leave it unset or set it to `null` for unlimited usage. This is separate from global limits such as `limits.maxToolCalls` and `limits.maxParallelTools`.
 
@@ -309,7 +359,7 @@ Tools can also declare `maxExecutionsPerRun` to cap successful executions for th
 Enable tracing by passing `tracing: { enabled: true }`. Each invocation writes `trace.session.json` into `logs/<SESSION_ID>/` detailing:
 
 - Model/provider, agent name/version, limits, and timing metadata
-- Structured events for model calls, tool executions, summaries, and errors
+- Structured events for model calls, tool executions, summaries, reflections, and errors
 - Optional payload captures (request/response/tool bodies) when `logData` is `true`
 - Aggregated token usage, byte counts, and error summaries for dashboards
 

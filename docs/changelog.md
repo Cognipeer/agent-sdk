@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Unified `reasoning` configuration on `createAgent(...)` / `createSmartAgent(...)` for provider-native reasoning plus post-tool reflection.
+- Reflection persistence on `state.reflections` plus `reflection` events for streaming UIs and task timelines.
+- Native provider reasoning mappings for OpenAI/Azure/OpenAI-compatible, Anthropic, and Vertex/Gemini through the built-in provider layer.
+
+### Changed
+- Getting-started, native-provider, state-management, tracing, and type docs were refreshed to describe reasoning/reflection behavior.
+
 ## [0.4.0] - 2026-03-16
 
 ### Added

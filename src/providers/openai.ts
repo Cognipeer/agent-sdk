@@ -3,6 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
+import { applyOpenAIReasoning } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -161,6 +162,8 @@ export class OpenAIProvider extends BaseProvider {
     if (request.extra) {
       Object.assign(body, request.extra);
     }
+
+    applyOpenAIReasoning(body, request.reasoning, "legacy_effort");
 
     return body;
   }

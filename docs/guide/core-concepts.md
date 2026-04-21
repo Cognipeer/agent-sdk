@@ -15,6 +15,7 @@ Important fields include:
 - `memoryFacts`
 - `plan`
 - `planVersion`
+- `reflections`
 
 The practical implication is simple: if your app only renders the last assistant message, you are ignoring most of the runtime.
 
@@ -54,14 +55,24 @@ The important conceptual model is:
 
 This keeps the agent cheaper to run while preserving auditability for workflows that need the original output later.
 
-## 5. Profiles are layered operating modes
+## 5. Reflection is working state, not assistant output
+
+When reflection is enabled, the runtime stores short plain-text notes on `state.reflections`.
+
+- They are not normal assistant turns.
+- They are not meant to be shown to end users by default.
+- Only the last few reflections are re-injected into the next prompt as synthetic system context.
+
+This matters because it gives the model a compact working-memory surface without breaking tool-call pairing or polluting the visible transcript.
+
+## 6. Profiles are layered operating modes
 
 - built-in: `fast`, `balanced`, `deep`, `research`
 - custom: `runtimeProfile: "custom"` plus `customProfile.extends`
 
 Profiles are not marketing labels. They bundle tradeoffs around limits, summarization, memory, and delegation behavior. A custom profile is useful only when you can name which part of a built-in preset is wrong for your workload.
 
-## 6. Tool history and archived tool history are different surfaces
+## 7. Tool history and archived tool history are different surfaces
 
 | Surface | What it holds | When to read it |
 |---|---|---|
@@ -70,9 +81,9 @@ Profiles are not marketing labels. They bundle tradeoffs around limits, summariz
 
 This separation matters because not every tool result should stay live in the model-facing context.
 
-## 7. Events are observability signals, not your data model
+## 8. Events are observability signals, not your data model
 
-The runtime can emit events such as `tool_call`, `plan`, `summarization`, `metadata`, `handoff`, and `finalAnswer`.
+The runtime can emit events such as `tool_call`, `plan`, `summarization`, `reflection`, `metadata`, `handoff`, and `finalAnswer`.
 
 Use them for:
 

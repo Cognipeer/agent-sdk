@@ -3,6 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
+import { applyAnthropicReasoning } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -194,6 +195,8 @@ export class AnthropicProvider extends BaseProvider {
     if (request.extra) {
       Object.assign(body, request.extra);
     }
+
+    applyAnthropicReasoning(body, request.reasoning);
 
     return body;
   }

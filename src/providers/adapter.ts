@@ -13,6 +13,7 @@ import type {
   ContentPart,
   TokenUsage,
   ProviderType,
+  ReasoningRequestConfig,
 } from "./types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
@@ -25,6 +26,8 @@ export type NativeModelOptions = {
   maxTokens?: number;
   /** Provider-specific extras passed on every request */
   extra?: Record<string, any>;
+  /** Unified native reasoning config applied by default (per-call overrides supported). */
+  reasoning?: ReasoningRequestConfig;
 };
 
 /**
@@ -132,6 +135,17 @@ export function fromNativeProvider(
     if (opts?.maxTokens != null) req.maxTokens = opts.maxTokens;
     if (tools?.length) req.tools = tools;
     if (opts?.extra) req.extra = opts.extra;
+
+    // Reasoning config: per-call invokeOptions.reasoning overrides the adapter default
+    const reasoningOverride = (invokeOptions as any)?.reasoning as ReasoningRequestConfig | undefined;
+    const reasoningCfg = reasoningOverride ?? opts?.reasoning;
+    if (reasoningCfg) req.reasoning = reasoningCfg;
+
+    // Per-call tool choice override (used by reflection node to disable tools temporarily)
+    const tc = (invokeOptions as any)?.tool_choice ?? (invokeOptions as any)?.toolChoice;
+    if (tc) {
+      req.toolChoice = tc;
+    }
 
     // Propagate response_format from invoke options (set by StructuredOutputManager via agentCore)
     const rf = invokeOptions?.response_format;

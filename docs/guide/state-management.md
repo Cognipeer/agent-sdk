@@ -10,9 +10,17 @@ A single invocation flows through multiple stages (planning, guardrails, model c
 - `messages` collect the conversation and tool responses.
 - `toolCallCount` tracks total tool executions to enforce limits.
 - `ctx` stores system metadata such as pause markers, approval flags, and tracing sessions.
-- `plan`, `summaries`, and `usage` capture planning rules, summarized transcripts, and provider-normalized token data.
+- `plan`, `summaries`, `reflections`, and `usage` capture planning rules, summarized transcripts, post-tool notes, and provider-normalized token data.
 
 Understanding these fields lets you build dashboards, checkpoints, or handoffs without guessing at internal implementation details.
+
+## Reflection state
+
+If `reasoning.reflection` is enabled, the runtime appends plain-text records to `state.reflections`.
+
+- Each record includes `turn`, `text`, timestamps, optional usage, and optional tool-call ids.
+- These notes are durable state for operators, debuggers, or task timelines.
+- They are not committed as normal assistant messages, so persisting `state` is the correct way to keep them.
 
 ## Listening with `onStateChange`
 

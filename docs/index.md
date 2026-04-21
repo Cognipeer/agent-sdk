@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Agent SDK
   text: Build Reliable Agent Workflows
-  tagline: A smart runtime for autonomous agents that need typed tools, explicit planning, resilient context handling, and inspectable execution.
+  tagline: A smart runtime for autonomous agents that need typed tools, explicit planning, configurable reasoning, resilient context handling, and inspectable execution.
   actions:
     - theme: brand
       text: Get Started
@@ -16,6 +16,8 @@ hero:
 features:
   - title: Native LLM Providers — No Framework Required
     details: Call OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API directly with fetch. Unified schema, full token tracking (input/output/cached/reasoning), and streaming built-in.
+  - title: Reasoning And Reflection
+    details: Use one `reasoning` config to enable provider-native reasoning plus post-tool plain-text reflections. Reflection notes persist on `state.reflections` and stream through `reflection` events.
   - title: Runtime Profiles For Different Agent Behaviors
     details: Use fast, balanced, deep, or research as operational presets. They are real tradeoff bundles for context budget, delegation depth, memory policy, and summarization behavior.
   - title: Planning That Fits Autonomous Work
@@ -74,5 +76,6 @@ console.log(result.content);
 
 - Fast product onboarding without hand-wavy architecture claims.
 - Clear separation between the minimal loop and the smart runtime wrapper.
+- Practical guidance for provider-native reasoning, reflection, and stateful execution surfaces.
 - Production-oriented guidance for autonomous agents, especially around planning, context pressure, and tracing.
 - A product-led docs surface with platform attribution kept in the footer instead of the header.

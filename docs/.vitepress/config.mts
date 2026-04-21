@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress';
 
 export default defineConfig({
   title: 'Agent SDK',
-  description: 'A composable agent runtime for deterministic tool use, adaptive planning, context compaction, and multi-agent orchestration.',
+  description: 'A composable agent runtime for deterministic tool use, adaptive planning, configurable reasoning, context compaction, and multi-agent orchestration.',
   base: '/agent-sdk/',
   ignoreDeadLinks: true,
   appearance: false,
@@ -15,7 +15,7 @@ export default defineConfig({
       { text: 'API Reference', link: '/api/agent' },
       { text: 'Examples', link: '/examples/' },
       {
-        text: 'v0.4.0',
+        text: 'v0.6.1',
         items: [
           { text: 'Changelog', link: '/changelog' },
           { text: 'Contributing', link: '/contributing' },
@@ -28,6 +28,7 @@ export default defineConfig({
           text: 'Introduction',
           items: [
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Native Providers', link: '/guide/native-providers' },
             { text: 'Core Concepts', link: '/guide/core-concepts' },
             { text: 'Architecture', link: '/guide/architecture' },
           ],

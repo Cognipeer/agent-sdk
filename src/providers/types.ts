@@ -57,8 +57,32 @@ export type ChatCompletionRequest = {
     name?: string;
   };
   stream?: boolean;
-  // Provider-specific extras (e.g. thinking, reasoning effort)
+  // Provider-specific extras passed raw into the body (escape hatch)
   extra?: Record<string, any>;
+  /**
+   * Unified native-reasoning request config. Each provider maps this to its
+   * own shape:
+   *  - OpenAI o-series:   body.reasoning_effort = effort
+   *  - OpenAI Responses:  body.reasoning = { effort }
+   *  - Anthropic:         body.thinking  = { type: "enabled", budget_tokens }
+   *  - Google / Vertex:   body.generationConfig.thinkingConfig = { thinkingBudget, includeThoughts }
+   *
+   * Providers silently ignore unsupported fields.
+   */
+  reasoning?: ReasoningRequestConfig;
+};
+
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+export type ReasoningRequestConfig = {
+  /** Qualitative effort hint (mapped per-provider). */
+  effort?: ReasoningEffort;
+  /** Explicit per-call token budget for reasoning/thinking. */
+  budgetTokens?: number;
+  /** Whether the provider should expose its reasoning/thought summary to the caller. Default false. */
+  includeThoughts?: boolean;
+  /** Provider-specific passthrough merged on top of the mapped shape. */
+  providerExtras?: Record<string, any>;
 };
 
 // ─── Token Usage ─────────────────────────────────────────────────────────────

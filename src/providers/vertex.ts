@@ -3,6 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
+import { applyGeminiReasoning } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -159,9 +160,9 @@ export class VertexProvider extends BaseProvider {
       }
     }
 
-    if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
+    applyGeminiReasoning(generationConfig, request.reasoning);
 
-    // Tools
+    if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
     if (request.tools?.length) {
       body.tools = [
         {
