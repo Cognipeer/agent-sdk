@@ -10,7 +10,7 @@ import type {
 import { nanoid } from "nanoid";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
-import { resolveToolResponsePolicy, validateToolArgs } from "../smart/toolResponses.js";
+import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolResponses.js";
 
 function normalizeMaxExecutionsPerRun(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -315,53 +315,27 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           state.ctx.__finalizedDueToStructuredOutput = true;
         }
 
-        const responsePolicy = resolveToolResponsePolicy(toolName, output, resolved);
+        const responsePolicy = applyToolResponseHardCap(toolName, output, executionId, resolved);
         const timestamp = new Date().toISOString();
-        const storedOutput = responsePolicy.retentionPolicy === "keep_full" ? output : responsePolicy.summary;
 
         toolHistory.push({
           executionId,
           toolName,
           args,
-          output: storedOutput,
+          output,
           rawOutput: output,
           timestamp,
           tool_call_id: tc.id,
-          summarized: responsePolicy.retentionPolicy !== "keep_full",
+          summarized: false,
           originalTokenCount: responsePolicy.tokenCount,
           classification: responsePolicy.classification,
-          retentionPolicy: responsePolicy.retentionPolicy,
-          summary: responsePolicy.summary,
-          archiveId: responsePolicy.retentionPolicy === "summarize_archive" || responsePolicy.retentionPolicy === "drop" ? executionId : undefined,
+          retentionPolicy: "keep_full",
+          summary: undefined,
+          archiveId: undefined,
           status: "success",
         });
 
-        if (resolved.context.archiveLargeToolResponses && (responsePolicy.retentionPolicy === "summarize_archive" || responsePolicy.retentionPolicy === "drop")) {
-          toolHistoryArchived.push({
-            executionId,
-            toolName,
-            args,
-            output,
-            rawOutput: output,
-            timestamp,
-            tool_call_id: tc.id,
-            summarized: true,
-            originalTokenCount: responsePolicy.tokenCount,
-            classification: responsePolicy.classification,
-            retentionPolicy: responsePolicy.retentionPolicy,
-            summary: responsePolicy.summary,
-            archiveId: executionId,
-            status: "success",
-          });
-        }
-
-        let toolMessageContent = responsePolicy.content;
-        if (responsePolicy.retentionPolicy === "summarize_archive") {
-          toolMessageContent = `ARCHIVED_TOOL_RESPONSE [executionId=${executionId}]: ${responsePolicy.summary}\nUse get_tool_response with executionId "${executionId}" to retrieve the full output.`;
-        } else if (responsePolicy.retentionPolicy === "drop") {
-          toolMessageContent = `DROPPED_TOOL_RESPONSE [executionId=${executionId}]: ${responsePolicy.summary}\nUse get_tool_response with executionId "${executionId}" to retrieve the full output.`;
-        }
-        appended.push({ role: "tool", content: toolMessageContent, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        appended.push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
@@ -407,8 +381,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           messageList,
           debug: {
             classification: responsePolicy.classification,
-            retentionPolicy: responsePolicy.retentionPolicy,
+            retentionPolicy: "keep_full",
             originalTokenCount: responsePolicy.tokenCount,
+            truncated: responsePolicy.truncated,
           },
         });
         toolCount += 1;

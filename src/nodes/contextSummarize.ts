@@ -14,6 +14,7 @@ import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { renderStructuredSummary } from "../smart/contextPolicy.js";
+import { renderRetainedToolMessage, resolveSummarizationRetention, summarizeObject } from "../smart/toolResponses.js";
 
 // Helper for lightweight message construction
 const systemMessage = (content: string) => ({ role: 'system', content });
@@ -164,32 +165,15 @@ function extractCanonicalFacts(messages: BaseMessage[]): StructuredSummary["stab
     return [...facts.values()];
 }
 
-function flattenToolMessageContent(message: BaseMessage): string {
-    if (typeof message.content === "string") {
-        return message.content;
-    }
-
-    if (Array.isArray(message.content)) {
-        return message.content
-            .map((part: any) => (typeof part === "string" ? part : part?.text ?? part?.content ?? String(part ?? "")))
-            .join(" ");
-    }
-
-    return "";
-}
-
 function isSummarizedToolPlaceholder(content: BaseMessage["content"]): boolean {
     return typeof content === "string"
-        && (content === "SUMMARIZED" || content.startsWith("SUMMARIZED_TOOL_RESPONSE"));
-}
-
-function summarizeToolMessagePreview(message: BaseMessage): string {
-    const preview = flattenToolMessageContent(message).trim();
-    if (!preview) {
-        return "No summary available.";
-    }
-
-    return preview.length > 240 ? `${preview.slice(0, 240)}...` : preview;
+        && (
+            content === "SUMMARIZED"
+            || content.startsWith("SUMMARIZED_TOOL_RESPONSE")
+            || content.startsWith("ARCHIVED_TOOL_RESPONSE")
+            || content.startsWith("STRUCTURED_TOOL_RESPONSE")
+            || content.startsWith("DROPPED_TOOL_RESPONSE")
+        );
 }
 
 function findToolHistoryEntry(state: SmartState, toolCallId?: string, toolName?: string) {
@@ -219,32 +203,6 @@ function findToolHistoryEntry(state: SmartState, toolCallId?: string, toolName?:
     }
 
     return undefined;
-}
-
-function buildSummarizedToolMessage(message: BaseMessage, state: SmartState): string {
-    const toolName = message.name || "unknown_tool";
-    const toolCallId = message.tool_call_id;
-    const historyEntry = findToolHistoryEntry(state, toolCallId, toolName);
-    const executionId = historyEntry?.executionId;
-    const summary = historyEntry?.summary || summarizeToolMessagePreview(message);
-    const references = [
-        `toolName=${toolName}`,
-        toolCallId ? `toolCallId=${toolCallId}` : null,
-        executionId ? `executionId=${executionId}` : null,
-    ].filter(Boolean).join("; ");
-
-    let retrievalHint = "Use get_tool_response if exact details are still needed.";
-    if (executionId && toolCallId) {
-        retrievalHint = `Use get_tool_response with executionId "${executionId}" or tool call id "${toolCallId}" if exact details are still needed.`;
-    } else if (executionId || toolCallId) {
-        retrievalHint = `Use get_tool_response with executionId "${executionId || toolCallId}" if exact details are still needed.`;
-    }
-
-    return [
-        `SUMMARIZED_TOOL_RESPONSE [${references}]`,
-        `Summary: ${summary}`,
-        retrievalHint,
-    ].join("\n");
 }
 
 function mergeStableFacts(
@@ -333,21 +291,14 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
     const traceSession = (state.ctx as any)?.__traceSession;
 
     // Check if there are any tool messages that can be compressed.
-    // Exclude messages whose retentionPolicy is "keep_full" — these must not be summarized.
-    const toolResponsesConfigEarly = resolved.toolResponses;
+    // Critical tools and per-tool overrides set to keep_full are skipped.
     const compressableMessages = messages.filter(
         (m) => {
             if (m.role !== 'tool') return false;
             if (isSummarizedToolPlaceholder(m.content)) return false;
             if (isSyntheticSummaryMessage(m)) return false;
-            // Check retentionPolicy from toolHistory
-            const histEntry = findToolHistoryEntry(state, m.tool_call_id, m.name);
-            if (histEntry?.retentionPolicy === 'keep_full') return false;
-            // Fall back to config-level policy
-            if (!histEntry?.retentionPolicy) {
-                const byTool = toolResponsesConfigEarly.toolResponseRetentionByTool?.[m.name || ''];
-                if ((byTool || toolResponsesConfigEarly.defaultPolicy) === 'keep_full') return false;
-            }
+            const policy = resolveSummarizationRetention(m.name || '', resolved);
+            if (policy === 'keep_full') return false;
             return true;
         },
     );
@@ -600,60 +551,65 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         }
     }
 
-    // 3. Modify existing messages
-    // Replace content of tool messages with a compact placeholder, but only if they have a matching assistant.
-    // Filter out orphan tool messages that don't have a preceding assistant with tool_calls.
-    // IMPORTANT: Protect recent tool responses so the agent can still reason about them.
-    // IMPORTANT: Respect toolResponses retentionPolicy — tools configured as "keep_full"
-    // must NOT have their content replaced by summarization.
-    const toolResponsesConfig = resolved.toolResponses;
+    // 3. Rewrite tool messages per resolved retention policy.
+    // Orphan tool messages (no matching assistant tool_call) are removed.
+    // The last assistant turn's tool responses are always protected so the agent
+    // can reason about its latest tool outputs.
+    const archivedExecutions: SmartState["toolHistoryArchived"] = [...(state.toolHistoryArchived || [])];
+    const archivedIds = new Set(archivedExecutions.map((entry) => entry?.executionId).filter(Boolean));
     const newMessages = messages.map((m) => {
         if (m.role === 'tool') {
             if (isSyntheticSummaryMessage(m)) {
                 return m;
             }
             const toolCallId = m.tool_call_id;
-            
-            // Check if this tool message has a matching assistant with tool_calls
+
             if (!toolCallId || !toolCallIdToAssistantIdx.has(toolCallId)) {
-                // Orphan tool message - mark for removal
                 return null;
             }
-            
-            // Check if it's already summarized to avoid double-processing
-            if (isSummarizedToolPlaceholder(m.content)) return m;
 
-            // Protect recent tool responses from summarization
+            if (isSummarizedToolPlaceholder(m.content)) return m;
             if (toolCallId && protectedToolCallIds.has(toolCallId)) return m;
 
-            // Respect toolResponses retentionPolicy: if this tool's policy is "keep_full",
-            // do NOT summarize. Check toolHistory entry first (has the actual resolved policy
-            // from when the tool was executed), then fall back to config-based resolution.
             const toolName = m.name || '';
+            const policy = resolveSummarizationRetention(toolName, resolved);
+            if (policy === 'keep_full') return m;
+
             const historyEntry = findToolHistoryEntry(state, toolCallId, toolName);
-            const entryRetention = historyEntry?.retentionPolicy;
-            if (entryRetention === 'keep_full') return m;
-            // If no history entry, check the config-level policy for this tool
-            if (!entryRetention) {
-                const byTool = toolResponsesConfig.toolResponseRetentionByTool?.[toolName];
-                const configPolicy = byTool || toolResponsesConfig.defaultPolicy;
-                if (configPolicy === 'keep_full') return m;
+            const rawOutput = historyEntry?.rawOutput ?? historyEntry?.output ?? m.content;
+            const executionId = historyEntry?.executionId;
+            const prebuiltSummary = historyEntry?.summary || summarizeObject(rawOutput);
+
+            if ((policy === 'summarize_archive' || policy === 'drop') && historyEntry && executionId && !archivedIds.has(executionId)) {
+                archivedExecutions.push({
+                    ...historyEntry,
+                    summarized: true,
+                    retentionPolicy: policy,
+                    archiveId: executionId,
+                    summary: prebuiltSummary,
+                });
+                archivedIds.add(executionId);
             }
-            
-            return { 
-                ...m, 
-                content: buildSummarizedToolMessage(m, state)
+
+            return {
+                ...m,
+                content: renderRetainedToolMessage({
+                    policy,
+                    rawOutput,
+                    toolName,
+                    toolCallId,
+                    executionId,
+                    prebuiltSummary,
+                }),
             };
         }
         return m;
     }).filter((m): m is NonNullable<typeof m> => m !== null);
 
     // 3b. Check if any messages were actually compressed (not just protected).
-    // If all compressable tool messages were protected, there's nothing to do.
     const actuallyCompressed = newMessages.filter(
         (m) => m.role === 'tool'
-            && typeof m.content === 'string'
-            && m.content.startsWith('SUMMARIZED_TOOL_RESPONSE')
+            && isSummarizedToolPlaceholder(m.content)
             && !messages.some((orig) => orig.tool_call_id === m.tool_call_id && isSummarizedToolPlaceholder(orig.content))
     );
     if (actuallyCompressed.length === 0) {
@@ -752,6 +708,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         messages: finalMessages as any,
                 summaries,
                 summaryRecords,
+                toolHistoryArchived: archivedExecutions,
     };
   };
 }

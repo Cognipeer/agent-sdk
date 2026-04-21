@@ -136,7 +136,12 @@ const agent = createSmartAgent({
   memory: { provider: "inMemory", scope: "session", writePolicy: "auto_important" },
   summarization: { summaryTriggerTokens: 8000, summaryMode: "incremental" },
   context: { policy: "hybrid", lastTurnsToKeep: 8 },
-  toolResponses: { maxToolResponseChars: 4000, maxToolResponseTokens: 1200 },
+  toolResponses: {
+    defaultPolicy: "summarize_archive",
+    toolResponseRetentionByTool: { read_skills: "keep_full" },
+    maxToolResponseChars: 4000,
+    maxToolResponseTokens: 1200,
+  },
   limits: { maxToolCalls: 5, maxContextTokens: 12000 },
   tracing: { enabled: true },
 });
@@ -148,6 +153,14 @@ const result = await agent.invoke({
 
 console.log(result.content);
 ```
+
+Tool-response retention is lazy and summarizer-driven:
+
+- Tool outputs are stored at full fidelity in `state.toolHistory` and are never reduced at tool-call time.
+- When the summarizer runs (context limits reached), old tool messages are rewritten in place according to `defaultPolicy` (default: `summarize_archive`). The full payload is still recoverable via `get_tool_response` using the execution id embedded in the placeholder.
+- `toolResponseRetentionByTool` lets you opt specific tools out of reduction (e.g. `read_skills: "keep_full"`).
+- `criticalTools` are never reduced. The built-in list covers `response`, `manage_todo_list`, and `get_tool_response`.
+- `maxToolResponseChars` / `maxToolResponseTokens` only drive an eager hard-cap truncation when a single tool output is big enough to blow up the very next model call. The truncated head always points at `get_tool_response` for recovery.
 
 The smart wrapper now supports runtime presets (`fast`, `balanced`, `deep`, `research`), custom profiles layered on top of a base preset, structured summarization, hybrid context compaction, configurable tool-response retention, in-memory fact storage, delegation limits, and an eval harness via `runSmartAgentEvalHarness(...)`.
 
@@ -201,6 +214,7 @@ console.log(res.content);
 - **Native provider layer** – call OpenAI, Anthropic, Azure, Bedrock, Vertex, and any OpenAI-compatible API directly. No LangChain required. Unified `ChatCompletionRequest` / `ChatCompletionResponse` schema with per-provider wire format conversion.
 - **Full token tracking** – every response surfaces `inputTokens`, `outputTokens`, `cachedInputTokens`, `cachedWriteTokens`, and `reasoningTokens` for all six providers.
 - **Summarization pipeline** – automatic chunking keeps tool call history within `contextTokenLimit` / `summaryTokenLimit`, archiving originals so `get_tool_response` can fetch them later.
+- **Retention controls** – tool outputs can be kept full, reduced to structured previews, archived, or dropped based on size tiers, critical-tool fallback, per-tool overrides, and recent-response pinning.
 - **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.

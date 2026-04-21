@@ -204,7 +204,7 @@ describe('Summarization with deterministic mock models', () => {
     expect(toolPhases.filter((phase) => phase === 'success')).toHaveLength(2);
     expect(summarizationEvents.length).toBeGreaterThanOrEqual(2);
     expect(state.summaries?.length).toBeGreaterThanOrEqual(2);
-    expect(state.messages.some((message) => message.role === 'tool' && typeof message.content === 'string' && (message.content === 'SUMMARIZED' || message.content.startsWith('SUMMARIZED_TOOL_RESPONSE')))).toBe(true);
+    expect(state.messages.some((message) => message.role === 'tool' && typeof message.content === 'string' && /^(SUMMARIZED|SUMMARIZED_TOOL_RESPONSE|ARCHIVED_TOOL_RESPONSE|STRUCTURED_TOOL_RESPONSE|DROPPED_TOOL_RESPONSE)/.test(message.content))).toBe(true);
     expect(summarizationEvents.every((event) => typeof event.tokenCountBefore === 'number' && typeof event.tokenCountAfter === 'number')).toBe(true);
     // Verify that summarization events report meaningful token counts.
     // Note: tokenCountAfter may not always be less than tokenCountBefore because
@@ -241,7 +241,7 @@ describe('Summarization with deterministic mock models', () => {
 
     expect(recoveryTool).toBeDefined();
     expect(orbitExecution).toBeDefined();
-    expect(state.messages.some((message) => message.role === 'tool' && typeof message.content === 'string' && (message.content === 'SUMMARIZED' || message.content.startsWith('SUMMARIZED_TOOL_RESPONSE')))).toBe(true);
+    expect(state.messages.some((message) => message.role === 'tool' && typeof message.content === 'string' && /^(SUMMARIZED|SUMMARIZED_TOOL_RESPONSE|ARCHIVED_TOOL_RESPONSE|STRUCTURED_TOOL_RESPONSE|DROPPED_TOOL_RESPONSE)/.test(message.content))).toBe(true);
 
     const recovered = await recoveryTool.func({ executionId: orbitExecution!.executionId });
 

@@ -169,8 +169,6 @@ describe('SmartAgent Integration', () => {
         tools: [listTasks],
         toolResponses: {
           defaultPolicy: 'keep_full',
-          largeResponsePolicy: 'keep_full',
-          fallbackPolicy: 'keep_full',
           toolResponseRetentionByTool: {},
           maxToolResponseChars: 1_000_000,
           maxToolResponseTokens: 200_000,

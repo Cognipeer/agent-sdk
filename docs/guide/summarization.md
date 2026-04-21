@@ -49,7 +49,8 @@ Important fields:
 - `summarization.summaryTriggerTokens`
 - `summarization.summaryMode`
 - `context.toolResponsePolicy`
-- `toolResponses.largeResponsePolicy`
+- `toolResponses.defaultPolicy` (applied to non-critical tool messages when the summarizer runs)
+- `toolResponses.toolResponseRetentionByTool` (per-tool override, highest priority)
 
 ## Recovery after compaction
 

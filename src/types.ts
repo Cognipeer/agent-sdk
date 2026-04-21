@@ -204,7 +204,7 @@ export type ContextPolicy = "raw" | "summary_only" | "hybrid";
 
 export type ToolResponseRetentionPolicy = "keep_full" | "keep_structured" | "summarize_archive" | "drop";
 
-export type ToolResponseClassification = "critical" | "informative" | "verbose" | "redundant";
+export type ToolResponseClassification = "critical" | "informative" | "verbose";
 
 export type PlanningMode = "off" | "todo" | "planner_executor" | "reasoning_then_tools";
 
@@ -326,15 +326,30 @@ export type SmartAgentMemoryConfig = {
 };
 
 export type SmartAgentToolResponseConfig = {
+  /**
+   * Hard cap (in characters) applied at tool execution time to a single response.
+   * Anything larger is truncated immediately with a get_tool_response retrieval hint
+   * so a single oversized payload cannot blow up the next model call. Critical
+   * tools are exempt from this cap.
+   */
   maxToolResponseChars?: number;
+  /** Hard cap (approx. tokens) for the same eager truncation rule. */
   maxToolResponseTokens?: number;
+  /**
+   * Retention policy applied to all non-critical tool responses by the summarizer
+   * when it fires (context limit reached). Has no effect at execution time.
+   * Defaults to "summarize_archive".
+   */
   defaultPolicy?: ToolResponseRetentionPolicy;
-  largeResponsePolicy?: ToolResponseRetentionPolicy;
+  /**
+   * Per-tool override of the summarizer retention policy. Wins over `defaultPolicy`.
+   * Critical tools cannot be reduced regardless of override.
+   */
   toolResponseRetentionByTool?: Record<string, ToolResponseRetentionPolicy>;
+  /** Tool names whose responses are never reduced by the summarizer or hard cap. */
   criticalTools?: string[];
   schemaValidation?: "strict" | "warn";
   retryOnSchemaError?: boolean;
-  fallbackPolicy?: ToolResponseRetentionPolicy;
 };
 
 export type SmartAgentCustomProfileConfig = {

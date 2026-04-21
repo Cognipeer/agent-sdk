@@ -57,15 +57,13 @@ const BASE_DEFAULTS: ProfileConfig = {
     requireJsonOutputContract: true,
   },
   toolResponses: {
-    maxToolResponseChars: 3600,
-    maxToolResponseTokens: 1200,
-    defaultPolicy: "keep_structured",
-    largeResponsePolicy: "summarize_archive",
+    maxToolResponseChars: 12_000,
+    maxToolResponseTokens: 3_000,
+    defaultPolicy: "summarize_archive",
     toolResponseRetentionByTool: {},
     criticalTools: [...DEFAULT_CRITICAL_TOOLS],
     schemaValidation: "strict",
     retryOnSchemaError: true,
-    fallbackPolicy: "keep_structured",
   },
 };
 
@@ -114,7 +112,7 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     },
     memory: { readPolicy: "recent_only" },
     delegation: { mode: "off", maxDelegationDepth: 1, maxChildCalls: 2, maxParallelChild: 1, childContextPolicy: "minimal" },
-    toolResponses: { maxToolResponseChars: 2400, maxToolResponseTokens: 800 },
+    toolResponses: { maxToolResponseChars: 8_000, maxToolResponseTokens: 2_000 },
   }),
 
   balanced: buildProfile({}),
@@ -133,7 +131,7 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     },
     memory: { scope: "workspace" },
     delegation: { maxDelegationDepth: 3, maxChildCalls: 6 },
-    toolResponses: { maxToolResponseChars: 5400, maxToolResponseTokens: 1800 },
+    toolResponses: { maxToolResponseChars: 16_000, maxToolResponseTokens: 4_000 },
   }),
 
   research: buildProfile({
@@ -150,7 +148,7 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     },
     memory: { scope: "workspace" },
     delegation: { mode: "automatic", maxDelegationDepth: 4, maxChildCalls: 8, maxParallelChild: 3, childContextPolicy: "full" },
-    toolResponses: { maxToolResponseChars: 7200, maxToolResponseTokens: 2200 },
+    toolResponses: { maxToolResponseChars: 24_000, maxToolResponseTokens: 6_000 },
   }),
 };
 

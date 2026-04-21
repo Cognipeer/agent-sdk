@@ -235,7 +235,7 @@ describe('contextSummarize', () => {
     const summarizedToolMsg = delta.messages?.find((message: any) => message.role === 'tool' && message.name === 'crm_list_logs');
 
     expect(typeof summarizedToolMsg?.content).toBe('string');
-    expect(summarizedToolMsg?.content).toContain('SUMMARIZED_TOOL_RESPONSE');
+    expect(summarizedToolMsg?.content).toContain('ARCHIVED_TOOL_RESPONSE');
     expect(summarizedToolMsg?.content).toContain('toolCallId=call_crm_1');
     expect(summarizedToolMsg?.content).toContain('executionId=exec_crm_1');
     expect(summarizedToolMsg?.content).toContain('array(length=25) day/count rows for requested CRM log range');
@@ -247,7 +247,6 @@ describe('contextSummarize', () => {
       summarization: true,
       toolResponses: {
         defaultPolicy: 'keep_full',
-        largeResponsePolicy: 'keep_full',
         maxToolResponseChars: 100000,
         maxToolResponseTokens: 50000,
       },
