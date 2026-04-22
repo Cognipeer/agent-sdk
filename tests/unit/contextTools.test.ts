@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createContextTools } from '../../src/contextTools.js';
+import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from '../../src/contextTools.js';
 import { createTraceSession, customSink } from '../../src/utils/tracing.js';
 
 describe('createContextTools manage_todo_list', () => {
@@ -126,5 +126,31 @@ describe('createContextTools manage_todo_list', () => {
         expect.objectContaining({ kind: 'metadata', label: 'Plan Metadata' }),
       ]),
     );
+  });
+});
+
+describe('get_tool_response gating', () => {
+  it('should detect visible reduced tool-response markers', () => {
+    expect(hasToolResponseRecoveryReference([
+      { content: 'ARCHIVED_TOOL_RESPONSE [toolName=search; executionId=exec-123]\nSummary: ...' },
+    ])).toBe(true);
+
+    expect(hasToolResponseRecoveryReference([
+      { content: '{"results":[1,2,3]}' },
+    ])).toBe(false);
+  });
+
+  it('should only return a tool response when the transcript references a reduced marker for that execution', async () => {
+    const stateRef: any = {
+      toolHistory: [{ executionId: 'exec-123', rawOutput: { ok: true, rows: [1, 2, 3] } }],
+      toolHistoryArchived: [],
+      messages: [{ role: 'tool', content: 'ARCHIVED_TOOL_RESPONSE [toolName=search_workspace_knowledge; executionId=exec-123]\nSummary: results available.' }],
+    };
+
+    const getTool = createGetToolResponseTool(stateRef);
+    await expect(getTool.invoke({ executionId: 'exec-123' })).resolves.toEqual({ ok: true, rows: [1, 2, 3] });
+
+    stateRef.messages = [{ role: 'tool', content: '{"results":[1,2,3]}' }];
+    await expect(getTool.invoke({ executionId: 'exec-123' })).resolves.toContain('not recoverable');
   });
 });

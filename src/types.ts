@@ -350,8 +350,6 @@ export type SmartAgentContextConfig = {
   policy?: ContextPolicy;
   lastTurnsToKeep?: number;
   toolResponsePolicy?: ToolResponseRetentionPolicy;
-  archiveLargeToolResponses?: boolean;
-  retrieveArchivedToolResponseOnDemand?: boolean;
   budget?: SmartAgentBudgetConfig;
 };
 
@@ -401,8 +399,8 @@ export type SmartAgentToolResponseConfig = {
   toolResponseRetentionByTool?: Record<string, ToolResponseRetentionPolicy>;
   /** Tool names whose responses are never reduced by the summarizer or hard cap. */
   criticalTools?: string[];
+  /** Controls whether Zod-backed tool schemas fail fast or warn on invalid args. */
   schemaValidation?: "strict" | "warn";
-  retryOnSchemaError?: boolean;
 };
 
 export type SmartAgentCustomProfileConfig = {

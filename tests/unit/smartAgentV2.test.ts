@@ -93,6 +93,33 @@ describe('Smart Agent V2', () => {
     expect(JSON.stringify(archivedExecution.rawOutput || archivedExecution.output)).toContain('PROJECT_FACT|code=ORBIT');
   });
 
+  it('should only expose get_tool_response when reduced tool-response markers are visible', async () => {
+    const seenToolSets: string[][] = [];
+    const model = {
+      bindTools: (tools: any[]) => {
+        seenToolSets.push(tools.map((tool) => tool.name));
+        return {
+          invoke: async () => ({ role: 'assistant', content: 'ok' }),
+        };
+      },
+      invoke: async () => ({ role: 'assistant', content: 'ok' }),
+    } as any;
+
+    const agent = createSmartAgent({ model });
+
+    await agent.invoke({ messages: [{ role: 'user', content: 'hello' }] as Message[] });
+    expect(seenToolSets[0] ?? []).not.toContain('get_tool_response');
+
+    seenToolSets.length = 0;
+    await agent.invoke({
+      messages: [{
+        role: 'user',
+        content: 'ARCHIVED_TOOL_RESPONSE [toolName=search_workspace_knowledge; executionId=exec-123]\nSummary: use get_tool_response with executionId "exec-123" to inspect the full payload.',
+      }] as Message[],
+    });
+    expect(seenToolSets[0] ?? []).toContain('get_tool_response');
+  });
+
   it('should evaluate profiles with the harness', async () => {
     const createEvalAgent = (profile: 'fast' | 'balanced' | 'custom', descriptor?: { customProfile?: { extends?: 'balanced' } }) => createSmartAgent({
       runtimeProfile: profile,
@@ -188,5 +215,16 @@ describe('Smart Agent V2', () => {
     expect(resolved.runtimeProfile).toBe('custom');
     expect(resolved.baseProfile).toBe('fast');
     expect(resolved.planning.mode).toBe('todo');
+  });
+
+  it('should not expose stale smart-agent config flags in resolved output', () => {
+    const resolved = normalizeSmartAgentOptions({
+      model: { invoke: async () => ({ role: 'assistant', content: 'ok' }) } as any,
+      runtimeProfile: 'balanced',
+    });
+
+    expect(Object.hasOwn(resolved.context, 'archiveLargeToolResponses')).toBe(false);
+    expect(Object.hasOwn(resolved.context, 'retrieveArchivedToolResponseOnDemand')).toBe(false);
+    expect(Object.hasOwn(resolved.toolResponses, 'retryOnSchemaError')).toBe(false);
   });
 });

@@ -77,6 +77,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         anyTool._stateRef.toolHistory = state.toolHistory;
         anyTool._stateRef.toolHistoryArchived = state.toolHistoryArchived;
         anyTool._stateRef.pendingApprovals = pendingApprovals;
+        anyTool._stateRef.messages = state.messages;
         anyTool._stateRef.ctx = state.ctx || (state.ctx = {});
         anyTool._stateRef.__onEvent = onEvent;
       }

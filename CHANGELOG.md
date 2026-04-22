@@ -23,7 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `toolResponses.largeResponsePolicy`
   - `toolResponses.fallbackPolicy`
   - `toolResponses.keepRecentFullCount`
-- Remaining config surface: `defaultPolicy`, `toolResponseRetentionByTool`, `criticalTools`, `maxToolResponseChars`, `maxToolResponseTokens`, `schemaValidation`, `retryOnSchemaError`.
+- Removed stale no-op config fields (no backward compatibility):
+  - `context.archiveLargeToolResponses`
+  - `context.retrieveArchivedToolResponseOnDemand`
+  - `toolResponses.retryOnSchemaError`
+- Remaining config surface: `defaultPolicy`, `toolResponseRetentionByTool`, `criticalTools`, `maxToolResponseChars`, `maxToolResponseTokens`, `schemaValidation`.
 - Classification enum simplified to `critical | informative | verbose` (removed `small`, `redundant`).
 - `maxToolResponseChars` / `maxToolResponseTokens` now only drive an eager hard-cap truncation for non-critical, oversized single responses; the truncated head points at `get_tool_response` for recovery.
 - Summarization placeholder prefixes: `STRUCTURED_TOOL_RESPONSE`, `ARCHIVED_TOOL_RESPONSE`, `DROPPED_TOOL_RESPONSE`. Critical tools and per-tool `keep_full` overrides are always preserved.

@@ -28,8 +28,6 @@ const BASE_DEFAULTS: ProfileConfig = {
     policy: "hybrid",
     lastTurnsToKeep: 8,
     toolResponsePolicy: "summarize_archive",
-    archiveLargeToolResponses: true,
-    retrieveArchivedToolResponseOnDemand: true,
     budget: {
       systemReserveTokens: 1200,
       goalsReserveTokens: 1200,
@@ -63,7 +61,6 @@ const BASE_DEFAULTS: ProfileConfig = {
     toolResponseRetentionByTool: {},
     criticalTools: [...DEFAULT_CRITICAL_TOOLS],
     schemaValidation: "strict",
-    retryOnSchemaError: true,
   },
 };
 

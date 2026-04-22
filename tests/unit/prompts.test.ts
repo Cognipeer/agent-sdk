@@ -92,6 +92,7 @@ describe('buildSystemPrompt', () => {
       const prompt = buildSystemPrompt(basePrompt, false, 'DevAgent');
 
       expect(prompt).toContain(basePrompt);
+      expect(prompt).toContain('Use recovery tools such as "get_tool_response" only when the visible transcript explicitly shows a reduced tool-response marker');
     });
 
     it('should handle multiline base prompts', () => {

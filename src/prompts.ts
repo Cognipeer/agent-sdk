@@ -51,6 +51,7 @@ export function buildSystemPrompt(
     "- Keep privacy and safety: do not reveal secrets or sensitive data.",
     "- If inputs are ambiguous or missing, ask one concise clarifying question.",
     "- Reuse prior tool results already present in the conversation when sufficient.",
+    "- Use recovery tools such as \"get_tool_response\" only when the visible transcript explicitly shows a reduced tool-response marker (for example ARCHIVED_TOOL_RESPONSE, STRUCTURED_TOOL_RESPONSE, SUMMARIZED_TOOL_RESPONSE, DROPPED_TOOL_RESPONSE, or a truncation note with an executionId). Never use a recovery tool to re-fetch a normal tool result already visible in context.",
     planningBlock,
     extraTrimmed ? `Extra instructions: ${extraTrimmed}` : "",
   ]
