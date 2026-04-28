@@ -219,6 +219,56 @@ describe('Summarization with deterministic mock models', () => {
     expect(latestSummary).toContain('PROJECT_FACT|code=NOVA|owner=Grace Hopper|risk=medium|milestone=blocked');
   });
 
+  it('should never emit the synthetic summarization marker as a finalAnswer event', async () => {
+    const summarizationEvents: SummarizationEvent[] = [];
+    const finalAnswerEvents: Array<{ content: string }> = [];
+
+    const fetchProjectSnapshot = createTool({
+      name: 'fetch_project_snapshot',
+      description: 'Return a large project snapshot that should be compacted by summarization.',
+      schema: z.object({ project: z.enum(['orbit', 'nova']) }),
+      func: async ({ project }) => buildToolPayload(projectFacts[project]),
+    });
+
+    const model = createDeterministicSummarizationModel();
+    const agent = createSmartAgent({
+      name: 'DeterministicSummaryAgent',
+      model,
+      tools: [fetchProjectSnapshot],
+      summarization: {
+        enable: true,
+        maxTokens: 350,
+        summaryPromptMaxTokens: 2000,
+      },
+      limits: { maxToolCalls: 4 },
+    });
+
+    await agent.invoke({
+      messages: [{
+        role: 'user',
+        content: 'Fetch the ORBIT and NOVA project snapshots, then tell me the owner and risk for each project after any summarization happens.',
+      }],
+    }, {
+      onEvent: (event: any) => {
+        if (event.type === 'summarization') {
+          summarizationEvents.push(event as SummarizationEvent);
+        }
+
+        if (event.type === 'finalAnswer') {
+          finalAnswerEvents.push({ content: typeof event.content === 'string' ? event.content : '' });
+        }
+      },
+    });
+
+    // At least one summarization actually happened, otherwise this regression
+    // check would silently pass without exercising the path it protects.
+    expect(summarizationEvents.length).toBeGreaterThanOrEqual(1);
+    expect(finalAnswerEvents.length).toBeGreaterThanOrEqual(1);
+    for (const event of finalAnswerEvents) {
+      expect(event.content).not.toMatch(/Context limit reached\. Summarizing conversation history/i);
+    }
+  });
+
   it('should pass the previous summary into later summarization prompts', async () => {
     const { model, initialResult } = await runRepeatedSummarizationScenario();
     const state = initialResult.state!;

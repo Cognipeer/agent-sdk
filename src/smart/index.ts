@@ -133,6 +133,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     };
   }
 
+  function producedTerminalAssistantTurn(messages: any[]) {
+    const lastAssistant = [...messages].reverse().find((message) => message?.role === 'assistant');
+    if (!lastAssistant) return false;
+    const toolCalls = Array.isArray(lastAssistant.tool_calls) ? lastAssistant.tool_calls : [];
+    return toolCalls.length === 0;
+  }
+
   /** Runs the summarizer and applies the result to state. Returns updated state and whether summarization succeeded. */
   async function trySummarize(
     currentState: SmartState,
@@ -222,6 +229,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // If the base agent also parsed structured output via JSON-from-text fallback,
         // accept it and stop (the `output` field will be populated even without the flag).
         if (opts.outputSchema && lastResult?.output != null) break;
+
+        // Once the model has produced a terminal assistant turn, do not run a
+        // post-turn summarization pass. Summary messages are internal state
+        // maintenance and should only happen before the next model call, not
+        // after a real final answer has already been produced for this turn.
+        if (producedTerminalAssistantTurn(appendedMessages)) break;
 
         // Post-tools summarization decision
         if (summarizationEnabled) {

@@ -631,8 +631,23 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       status: "success",
     });
 
-    const finalAssistantMsg = getLastAssistantMessage(res.messages);
-    const content = extractMessageText(finalAssistantMsg);
+    // The base loop can exit purely to signal SmartAgent that the conversation
+    // needs summarization before the model can be invoked again. In that case the
+    // last assistant message in state can be a synthetic summarize_context call
+    // produced by the previous summarization pass — it is internal runtime
+    // metadata, not a real terminal answer. Treat this as "no final answer yet"
+    // and let the SmartAgent driver loop continue without leaking the synthetic
+    // marker as visible assistant content / finalAnswer event.
+    const isTransientSummarizationExit = !!(res as any).ctx?.__needsSummarization;
+    const finalAssistantMsg = isTransientSummarizationExit
+      ? undefined
+      : getLastAssistantMessage(res.messages);
+    const finalIsSyntheticSummary = !isTransientSummarizationExit
+      && finalAssistantMsg
+      && isSyntheticSummaryMessage(finalAssistantMsg);
+    const content = (isTransientSummarizationExit || finalIsSyntheticSummary)
+      ? ""
+      : extractMessageText(finalAssistantMsg);
 
     let parsed: TOutput | undefined = undefined;
     let outputError: StructuredOutputError | undefined = undefined;
@@ -649,7 +664,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         } else {
           outputError = fallbackResult.error;
         }
-      } else {
+      } else if (!isTransientSummarizationExit) {
         // No content at all — report no_output error
         const noResult = soManager.noOutputResult(1);
         if (!noResult.success) {
@@ -658,10 +673,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
     }
 
-    emit({ type: "finalAnswer", content });
-    if (streamEnabled && content) {
-      onStream?.({ text: content, isFinal: true });
-      emit({ type: "stream", text: content, isFinal: true });
+    // Only emit a final answer event when the loop actually produced one.
+    // Suppress when we exited transiently for summarization (SmartAgent will
+    // retry) or when the only candidate is the synthetic summary marker.
+    if (!isTransientSummarizationExit && !finalIsSyntheticSummary) {
+      emit({ type: "finalAnswer", content });
+      if (streamEnabled && content) {
+        onStream?.({ text: content, isFinal: true });
+        emit({ type: "stream", text: content, isFinal: true });
+      }
     }
 
     return {
