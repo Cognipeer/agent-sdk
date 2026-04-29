@@ -389,7 +389,7 @@ export type SmartAgentToolResponseConfig = {
   /**
    * Retention policy applied to all non-critical tool responses by the summarizer
    * when it fires (context limit reached). Has no effect at execution time.
-   * Defaults to "summarize_archive".
+    * Defaults to context.toolResponsePolicy, or the active runtime profile default.
    */
   defaultPolicy?: ToolResponseRetentionPolicy;
   /**

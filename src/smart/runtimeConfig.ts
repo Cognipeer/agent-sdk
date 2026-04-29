@@ -173,6 +173,9 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
   const summarizationOverride = typeof opts.summarization === "object" ? opts.summarization : {};
   const planningMode = opts.planning?.mode ?? customProfile.planning?.mode ?? (useTodoList ? "todo" : preset.planning.mode);
   const memoryStore = (opts.memory?.store ?? customProfile.memory?.store) as MemoryStore | undefined;
+  const contextToolResponsePolicy = opts.context?.toolResponsePolicy
+    ?? customProfile.context?.toolResponsePolicy
+    ?? preset.context.toolResponsePolicy;
 
   return {
     runtimeProfile,
@@ -202,7 +205,7 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
         ...((customProfile.context?.budget || {})),
         ...((opts.context?.budget || {})),
       },
-      toolResponsePolicy: opts.context?.toolResponsePolicy ?? customProfile.context?.toolResponsePolicy ?? preset.context.toolResponsePolicy,
+      toolResponsePolicy: contextToolResponsePolicy,
     },
     planning: {
       ...preset.planning,
@@ -225,6 +228,9 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
       ...preset.toolResponses,
       ...(customProfile.toolResponses || {}),
       ...(opts.toolResponses || {}),
+      defaultPolicy: opts.toolResponses?.defaultPolicy
+        ?? customProfile.toolResponses?.defaultPolicy
+        ?? contextToolResponsePolicy,
       toolResponseRetentionByTool: {
         ...preset.toolResponses.toolResponseRetentionByTool,
         ...((customProfile.toolResponses?.toolResponseRetentionByTool || {})),

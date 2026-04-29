@@ -227,4 +227,27 @@ describe('Smart Agent V2', () => {
     expect(Object.hasOwn(resolved.context, 'retrieveArchivedToolResponseOnDemand')).toBe(false);
     expect(Object.hasOwn(resolved.toolResponses, 'retryOnSchemaError')).toBe(false);
   });
+
+  it('should use context toolResponsePolicy as the default summarization retention policy', () => {
+    const resolved = normalizeSmartAgentOptions({
+      model: { invoke: async () => ({ role: 'assistant', content: 'ok' }) } as any,
+      context: { toolResponsePolicy: 'keep_full' },
+      toolResponses: { maxToolResponseTokens: 1234 },
+    });
+
+    expect(resolved.context.toolResponsePolicy).toBe('keep_full');
+    expect(resolved.toolResponses.defaultPolicy).toBe('keep_full');
+    expect(resolved.toolResponses.maxToolResponseTokens).toBe(1234);
+  });
+
+  it('should let explicit toolResponses defaultPolicy override context toolResponsePolicy', () => {
+    const resolved = normalizeSmartAgentOptions({
+      model: { invoke: async () => ({ role: 'assistant', content: 'ok' }) } as any,
+      context: { toolResponsePolicy: 'keep_full' },
+      toolResponses: { defaultPolicy: 'summarize_archive' },
+    });
+
+    expect(resolved.context.toolResponsePolicy).toBe('keep_full');
+    expect(resolved.toolResponses.defaultPolicy).toBe('summarize_archive');
+  });
 });

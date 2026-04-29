@@ -136,7 +136,7 @@ export class OpenAIProvider extends BaseProvider {
       body.tools = request.tools.map((t) => this.toOpenAITool(t));
     }
 
-    if (request.toolChoice != null) {
+    if (request.toolChoice != null && request.tools?.length) {
       if (typeof request.toolChoice === "string") {
         body.tool_choice = request.toolChoice;
       } else {

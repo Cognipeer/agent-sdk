@@ -143,7 +143,7 @@ export function fromNativeProvider(
 
     // Per-call tool choice override (used by reflection node to disable tools temporarily)
     const tc = (invokeOptions as any)?.tool_choice ?? (invokeOptions as any)?.toolChoice;
-    if (tc) {
+    if (tc && tools?.length) {
       req.toolChoice = tc;
     }
 

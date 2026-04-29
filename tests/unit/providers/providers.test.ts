@@ -287,6 +287,26 @@ describe("OpenAIProvider", () => {
     const body = JSON.parse(call[1].body);
     expect(body.tool_choice).toEqual({ type: "function", function: { name: "get_weather" } });
   });
+
+  it("should omit tool_choice when no tools are specified", async () => {
+    const apiResponse = {
+      id: "chatcmpl-no-tools",
+      model: "gpt-4o",
+      choices: [{ message: { role: "assistant", content: "No tools needed" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    };
+
+    globalThis.fetch = mockFetch(apiResponse);
+    await provider.complete({
+      ...simpleRequest,
+      toolChoice: "none",
+    });
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
 });
 
 // ─── Anthropic Provider ──────────────────────────────────────────────────────
