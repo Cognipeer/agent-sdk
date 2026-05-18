@@ -35,6 +35,7 @@ export class OpenAIProvider extends BaseProvider {
       ...config.defaultHeaders,
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
+    if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -216,15 +217,13 @@ export class OpenAIProvider extends BaseProvider {
 
   protected async doFetch(body: Record<string, any>): Promise<Response> {
     const url = `${this.baseURL}/chat/completions`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...this.defaultHeaders,
-      },
-      body: JSON.stringify(body),
-    });
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      ...this.defaultHeaders,
+    };
+    const payload = JSON.stringify(body);
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

@@ -45,12 +45,26 @@ const agent = createSmartAgent({
 Important fields:
 
 - `summarization.enable`
-- `summarization.maxTokens`
-- `summarization.summaryTriggerTokens`
-- `summarization.summaryMode`
-- `context.toolResponsePolicy`
-- `toolResponses.defaultPolicy` (applied to non-critical tool messages when the summarizer runs)
-- `toolResponses.toolResponseRetentionByTool` (per-tool override, highest priority)
+- `summarization.maxTokens` — output ceiling (and the fallback trigger when `summaryTriggerTokens` is omitted)
+- `summarization.summaryTriggerTokens` — token threshold that triggers compaction; falls back to `maxTokens`, then to `limits.maxContextTokens`
+- `summarization.summaryMode` — `"incremental"` (default) chains the prior summary; `"full_rewrite"` discards it
+- `summarization.summaryPromptMaxTokens` — caps the summarization prompt size
+- `summarization.integrityCheck` — verifies stable facts survive across passes (default `true`)
+- `context.toolResponsePolicy` — retention applied when the summarizer rewrites tool messages
+- `toolResponses.defaultPolicy` — same as above; takes precedence over `context.toolResponsePolicy`
+- `toolResponses.toolResponseRetentionByTool` — per-tool override, highest priority
+- `toolResponses.criticalTools` — tool names that are never reduced (defaults include `response`, `manage_todo_list`, `get_tool_response`)
+
+## How the trigger interacts with the loop
+
+The base agent checks the threshold on every iteration before invoking the model. When the conversation token count exceeds `summaryTriggerTokens`:
+
+1. The base agent sets `__needsSummarization` and breaks out so the smart wrapper can run compaction.
+2. The smart wrapper runs the summarizer.
+3. If the summarizer cannot compress anything (e.g. every remaining tool response is `keep_full`), the runtime sets `__summarizationExhausted` and falls through to a normal model call instead of deadlocking.
+4. As soon as a new compactable tool result is appended on a later turn, the runtime automatically clears `__summarizationExhausted` so future compaction can fire again.
+
+This keeps the loop progressive even when retention policies temporarily lock out compaction.
 
 ## Recovery after compaction
 

@@ -63,10 +63,51 @@ Large tool results push token pressure higher. Techniques:
 3. For binary / huge text: store externally, return reference ID.
 
 ## Idempotency & Caching
-If your tool is deterministic for a given input, you can implement a lightweight memo cache external to the tool and return cached results. (Framework does not impose caching today.)
+
+Opt into the built-in per-invoke result cache:
+
+```ts
+const lookup = createTool({
+  name: "lookup_owner",
+  description: "Return the owner for a project code",
+  schema: z.object({ code: z.string() }),
+  func: async ({ code }) => projectRegistry[code],
+  cache: true, // or { keyFn: (a) => a.code, ttlMs: 60_000 }
+});
+```
+
+The runtime hashes the validated args, stores results on `state.toolCache`, and short-circuits duplicate calls inside the same invoke. Use `keyFn` to canonicalize cache keys (drop nonces) and `ttlMs` to expire entries.
+
+Do NOT enable `cache` for non-deterministic tools — the agent will never see fresh results.
+
+## Retry, Backoff, and Circuit Breaker
+
+For tools that hit flaky external APIs:
+
+```ts
+const search = createTool({
+  name: "search",
+  description: "Search the docs index",
+  schema: z.object({ q: z.string() }),
+  func: async ({ q }) => client.search(q),
+  retry: {
+    maxRetries: 3,
+    backoffMs: 250,                              // doubled each attempt
+    shouldRetry: (err) => !`${err?.message}`.includes("UNAUTHORIZED"),
+    circuitBreakerThreshold: 5,                  // open after 5 consecutive failures
+  },
+});
+```
+
+- The first attempt + up to `maxRetries` retries with exponential backoff happen transparently.
+- `shouldRetry` lets you skip retries for non-transient errors.
+- The circuit breaker counts consecutive failures across the invoke and short-circuits once tripped.
+
+Provider-level retries (429 / 5xx with `Retry-After`) are handled separately by the native provider layer and do not consume `maxRetries`.
 
 ## Parallel Calls
-`maxParallelTools` limits concurrency per turn. If your tool is resource heavy, document expected latency so users can tune this.
+
+`maxParallelTools` fans non-approval tool calls across a bounded worker pool while preserving result order for strict-pairing providers (Bedrock / Anthropic). Approval-required tools always run sequentially. If your tool is resource-heavy, document expected latency so users can tune this.
 
 ## Side Effects
 Avoid unbounded side effects (writing files, mutating global state). Keep tools primarily query or pure transformation style.

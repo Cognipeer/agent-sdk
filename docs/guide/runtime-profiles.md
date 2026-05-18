@@ -16,12 +16,12 @@ That makes profiles operational presets, not just marketing labels.
 
 ## Built-in profiles
 
-| Profile | Best for | Tool budget | Context budget | Delegation |
-|---|---|---:|---:|---|
-| `fast` | Short tasks, fast UI turnarounds, mostly direct answers | 4 | 12000 | off |
-| `balanced` | Default product integrations and general autonomous workflows | 8 | 24000 | role-based |
-| `deep` | Heavier investigation, larger context windows, more tool-heavy work | 14 | 42000 | role-based |
-| `research` | Long-running research agents with broad context and stronger delegation | 20 | 56000 | automatic |
+| Profile | Best for | Tool budget | Parallel tools | Context budget | Delegation |
+|---|---|---:|---:|---:|---|
+| `fast` | Short tasks, fast UI turnarounds, mostly direct answers | 4 | 1 | 12000 | off |
+| `balanced` | Default product integrations and general autonomous workflows | 8 | 2 | 24000 | role-based |
+| `deep` | Heavier investigation, larger context windows, more tool-heavy work | 14 | 3 | 42000 | role-based |
+| `research` | Long-running research agents with broad context and stronger delegation | 20 | 4 | 56000 | automatic |
 
 ## Practical differences
 

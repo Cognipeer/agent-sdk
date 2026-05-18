@@ -50,12 +50,15 @@ type ReasoningConfig = {
     summarize?: boolean;
     promptTemplate?: string;
     emitEvents?: boolean;
+    maxPerRun?: number;     // cap total reflections in a single invoke
+    everyNTurns?: number;   // minimum tool turns between reflections (default 1)
   } | false;
 }
 ```
 
 - `native` configures provider-specific reasoning/thinking fields.
 - `reflection` creates short post-tool text notes without adding normal assistant turns.
+- `reflection.maxPerRun` and `reflection.everyNTurns` cap reflection cost in long tool-heavy invokes.
 - Explicit sub-fields always win over `level` presets.
 
 ## `ReflectionRecord`
@@ -147,11 +150,33 @@ type BuiltInRuntimeProfile = "fast" | "balanced" | "deep" | "research";
 type RuntimeProfile = BuiltInRuntimeProfile | "custom";
 
 type AgentLimits = {
-  maxToolCalls?: number;
-  maxParallelTools?: number;
-  maxContextTokens?: number;
+  maxToolCalls?: number;          // tool budget for the whole invoke
+  maxParallelTools?: number;      // concurrent non-approval tools per turn
+  maxContextTokens?: number;      // approx ceiling for model-facing context
+  maxTotalOutputTokens?: number;  // cumulative model output token budget
+  maxCostUsd?: number;            // cumulative USD cost — needs costEstimator
+  maxWallClockMs?: number;        // total wall-clock budget for the invoke
 }
 ```
+
+`AgentOptions` and `SmartAgentOptions` additionally expose:
+
+```ts
+type AgentOptions = {
+  // ... model, tools, limits, tracing, reasoning, ...
+  tokenCounter?: (text: string) => number;
+  costEstimator?: (args: {
+    modelName?: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
+  }) => number;
+};
+```
+
+- `tokenCounter` swaps the built-in character heuristic for a real tokenizer (tiktoken, `@anthropic-ai/tokenizer`, …) for the duration of a single `invoke(...)`.
+- `costEstimator` is required for `maxCostUsd` to take effect. The SDK has no built-in pricing table.
 
 If you are building a configurable product, these are usually the first types you expose to your own application config layer.
 

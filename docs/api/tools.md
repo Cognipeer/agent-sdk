@@ -28,6 +28,8 @@ const search = createTool({
 - `approvalPrompt?`
 - `approvalDefaults?`
 - `maxExecutionsPerRun?`
+- `cache?` — opt-in result cache (`true` or `{ keyFn?, ttlMs?, scope? }`). Identical args inside the same invoke skip re-execution and the cached value is replayed from `state.toolCache`.
+- `retry?` — per-tool retry policy: `{ maxRetries?, backoffMs?, shouldRetry?, circuitBreakerThreshold? }`. Exponential backoff doubles `backoffMs` per attempt. After `circuitBreakerThreshold` consecutive failures the tool short-circuits with a breaker error for the rest of the invoke.
 
 ## Approval-gated tools
 
@@ -49,6 +51,52 @@ The runtime pauses before execution, records a pending approval, and resumes aft
 ## Execution limits per tool
 
 Use `maxExecutionsPerRun` when one specific tool should not be called indefinitely even if the global tool budget is still available.
+
+## Idempotent tool caching
+
+When a tool is deterministic for a given input (e.g. file reads, web fetches, lookups), opt into the per-invoke cache:
+
+```ts
+const fetchPage = createTool({
+  name: "fetch_page",
+  description: "Fetch a static page",
+  schema: z.object({ url: z.string().url() }),
+  func: async ({ url }) => fetch(url).then((r) => r.text()),
+  cache: true, // identical { url } within the same invoke replays the result
+});
+```
+
+Advanced form:
+
+```ts
+cache: {
+  keyFn: (args) => args.url, // canonicalize cache key
+  ttlMs: 30_000,             // expire cached entries after 30s
+}
+```
+
+The cache lives on `state.toolCache` and is scoped to the current invoke. Cached results are flagged with `fromCache: true` in `state.toolHistory`.
+
+## Retry and circuit breaker
+
+Per-tool retry policy with exponential backoff:
+
+```ts
+const search = createTool({
+  name: "search",
+  description: "External search API",
+  schema: z.object({ q: z.string() }),
+  func: async ({ q }) => searchClient.query(q),
+  retry: {
+    maxRetries: 3,
+    backoffMs: 500,                  // doubles each attempt (500, 1000, 2000, ...)
+    shouldRetry: (err) => !`${err?.message}`.includes("UNAUTHORIZED"),
+    circuitBreakerThreshold: 5,      // open the breaker after 5 consecutive failures
+  },
+});
+```
+
+Once the breaker opens, subsequent calls to that tool within the same invoke short-circuit with a breaker error message — no model retries, no extra latency.
 
 ## Non-SDK tools
 

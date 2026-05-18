@@ -9,7 +9,7 @@ import { normalizeSmartAgentOptions } from "./runtimeConfig.js";
 import { buildModelMessages } from "./contextPolicy.js";
 import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "./memory.js";
 import { StructuredOutputManager } from "../structuredOutput/manager.js";
-import { resolveStrategy } from "../structuredOutput/resolver.js";
+import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resolver.js";
 import { extractMessageText } from "../utils/content.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
@@ -30,17 +30,45 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     useTodoList: planningEnabled,
   };
 
-  // Prepare stable tool-set variants so get_tool_response only appears when the
-  // visible transcript already contains a reduced tool-response marker.
-  const stateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
-  const contextTools = createContextTools(stateRef, { planningEnabled, includeGetToolResponse: false });
-  const getToolResponseTool = createGetToolResponseTool(stateRef);
-  const toolsWithoutRecovery = [...((opts.tools as any) ?? []), ...contextTools];
-  const toolsWithRecovery = [...toolsWithoutRecovery, getToolResponseTool];
+  // Build a placeholder stateRef + tool set for the base agent construction.
+  // Each invoke replaces these with fresh per-call instances so concurrent
+  // invocations of the same agent do not clobber each other's plan/todo state.
+  const userTools = ((opts.tools as any) ?? []) as any[];
+  const factoryStateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
+  const factoryContextTools = createContextTools(factoryStateRef, { planningEnabled, includeGetToolResponse: false });
+  const factoryToolsWithoutRecovery = [...userTools, ...factoryContextTools];
+
+  // Pre-resolve the structured-output manager so we can plug the `response`
+  // finalize tool into the smart runtime's tool set (state.agent.tools).
+  // Otherwise the smart agent would override base agent's tools without the
+  // finalize tool and the model could never call it.
+  const soManagerFactory = opts.outputSchema
+    ? new StructuredOutputManager<TOutput>(opts.outputSchema, resolveStrategy(opts.model))
+    : undefined;
+  const modelCapabilities = opts.outputSchema ? getModelCapabilities(opts.model) : undefined;
+  const responseFinalizeTool = soManagerFactory && modelCapabilities?.structuredOutput !== "native"
+    ? soManagerFactory.getResponseTool()
+    : undefined;
+
+  type InvokeToolSet = {
+    stateRef: any;
+    toolsWithoutRecovery: any[];
+    toolsWithRecovery: any[];
+  };
+  const buildInvokeToolSet = (): InvokeToolSet => {
+    const ref: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
+    const ctxTools = createContextTools(ref, { planningEnabled, includeGetToolResponse: false });
+    const recoveryTool = createGetToolResponseTool(ref);
+    const base = [...userTools, ...ctxTools];
+    if (responseFinalizeTool) base.push(responseFinalizeTool);
+    const without = base;
+    const withRec = [...without, recoveryTool];
+    return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec };
+  };
 
   // Compose base agent – pass summarization config so createAgent's token-budget
   // guard and __needsSummarization throw know summarization is handled externally.
-  const base = createAgent<TOutput>({ ...runtimeOpts, tools: toolsWithoutRecovery });
+  const base = createAgent<TOutput>({ ...runtimeOpts, tools: factoryToolsWithoutRecovery });
   base.__runtime.runtimeProfile = resolved.runtimeProfile;
   base.__runtime.smart = resolved;
 
@@ -91,17 +119,17 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     return { ...state, memoryFacts };
   }
 
-  function syncPlanState(state: SmartState): SmartState {
-    if (!Array.isArray(stateRef.todoList)) return state;
+  function syncPlanStateWith(ref: any, state: SmartState): SmartState {
+    if (!Array.isArray(ref.todoList)) return state;
     return {
       ...state,
       plan: {
-        version: stateRef.planVersion || state.planVersion || 1,
-        steps: stateRef.todoList,
+        version: ref.planVersion || state.planVersion || 1,
+        steps: ref.todoList,
         lastUpdated: new Date().toISOString(),
-        adherenceScore: stateRef.adherenceScore || 0,
+        adherenceScore: ref.adherenceScore || 0,
       },
-      planVersion: stateRef.planVersion || state.planVersion || 1,
+      planVersion: ref.planVersion || state.planVersion || 1,
     };
   }
 
@@ -115,9 +143,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     return { role: 'system', content: sys } as any;
   }
 
-  function syncRuntimeTools(currentState: SmartState, currentMessages: any[]): SmartState {
+  function syncRuntimeTools(
+    currentState: SmartState,
+    currentMessages: any[],
+    toolSet: InvokeToolSet,
+  ): SmartState {
     const needsRecoveryTool = hasToolResponseRecoveryReference(currentMessages as Array<{ content?: unknown }>);
-    const nextTools = needsRecoveryTool ? toolsWithRecovery : toolsWithoutRecovery;
+    const nextTools = needsRecoveryTool ? toolSet.toolsWithRecovery : toolSet.toolsWithoutRecovery;
     const currentRuntime = currentState.agent || base.__runtime;
 
     if (currentRuntime.tools === nextTools) {
@@ -144,6 +176,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   async function trySummarize(
     currentState: SmartState,
     currentRawMessages: any[],
+    ref: any,
   ): Promise<{ state: SmartState; rawMessages: any[]; compressed: boolean }> {
     if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
     const delta = await summarizer(currentState);
@@ -153,34 +186,39 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     }
     const ctx = { ...(currentState.ctx || {}) };
     delete ctx.__summarizationExhausted;
-    const updated = await persistLatestSummary(syncPlanState({ ...currentState, ...delta, ctx } as SmartState));
+    const updated = await persistLatestSummary(syncPlanStateWith(ref, { ...currentState, ...delta, ctx } as SmartState));
     return { state: updated, rawMessages: [...(updated.messages || currentRawMessages)], compressed: true };
   }
 
   const instance: SmartAgentInstance<TOutput> = {
     invoke: async (input: SmartState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
-      // wire stateRef for context tools
+      // Per-invoke tool set + stateRef so concurrent invocations on the same
+      // agent instance never share planning/todo/tool-history state.
+      const toolSet = buildInvokeToolSet();
+      const stateRef = toolSet.stateRef;
       stateRef.toolHistory = input.toolHistory;
       stateRef.toolHistoryArchived = input.toolHistoryArchived;
       stateRef.todoList = input.plan?.steps;
       stateRef.planVersion = input.planVersion || input.plan?.version || 0;
       stateRef.adherenceScore = input.plan?.adherenceScore || 0;
 
+      const syncPlanFromRef = (state: SmartState) => syncPlanStateWith(stateRef, state);
+
       // Prepend a single system message once
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
       const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(), ...(input.messages || [])];
-      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages } as SmartState), seedMessages);
+      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       let rawMessages = [...seedMessages];
       const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? resolved.limits.maxToolCalls ?? 10) as number;
       const iterationLimit = Math.max(effectiveMaxToolCalls * 3 + 5, 30);
 
       for (let i = 0; i < iterationLimit; i++) {
-        state = syncRuntimeTools({ ...state, messages: rawMessages } as SmartState, rawMessages);
+        state = syncRuntimeTools({ ...state, messages: rawMessages } as SmartState, rawMessages, toolSet);
         // Pre-agent summarization decision
         const next = summarizationEnabled ? decideBefore(state) : 'agent';
         if (next === 'contextSummarize' && summarizer) {
-          const result = await trySummarize(state, rawMessages);
+          const result = await trySummarize(state, rawMessages, stateRef);
           state = result.state;
           rawMessages = result.rawMessages;
           if (result.compressed) continue;
@@ -208,7 +246,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         if (currentPlan && !state.plan) {
           state = { ...state, plan: currentPlan };
         }
-        state = syncRuntimeTools(syncPlanState(await syncMemory(state)), rawMessages);
+        state = syncRuntimeTools(syncPlanFromRef(await syncMemory(state)), rawMessages, toolSet);
         stateRef.toolHistory = state.toolHistory;
         stateRef.toolHistoryArchived = state.toolHistoryArchived;
 
@@ -217,7 +255,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const ctx = { ...(state.ctx || {}) };
           delete ctx.__needsSummarization;
           state = { ...state, ctx } as SmartState;
-          const result = await trySummarize(state, rawMessages);
+          const result = await trySummarize(state, rawMessages, stateRef);
           state = result.state;
           rawMessages = result.rawMessages;
           continue;
@@ -240,7 +278,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         if (summarizationEnabled) {
           const after = decideAfter(state);
           if (after === 'contextSummarize' && summarizer) {
-            const result = await trySummarize(state, rawMessages);
+            const result = await trySummarize(state, rawMessages, stateRef);
             state = result.state;
             rawMessages = result.rawMessages;
             if (result.compressed) continue;

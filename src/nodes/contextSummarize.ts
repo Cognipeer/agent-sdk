@@ -283,7 +283,10 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         const config = resolved.summarization;
         if (!config.enable) return {};
 
-    const model = (opts as any).model;
+    // Prefer the live runtime model (state.agent.model) so handoffs and
+    // per-invoke model overrides also reach the summarizer. Falls back to the
+    // factory-time model when no runtime is attached.
+    const model = (state.agent as any)?.model || (opts as any).model;
     const messages = state.messages || [];
 
     // Get onEvent and traceSession from state context

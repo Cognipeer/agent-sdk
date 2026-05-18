@@ -93,6 +93,42 @@ console.log(result.state?.plan?.steps);
 4. If context pressure builds, the smart wrapper can summarize while preserving recovery paths for raw tool output.
 5. With tracing enabled, you can inspect the run without instrumenting the whole loop yourself.
 
+## Production hardening checklist
+
+Before shipping an autonomous agent, configure the budget surfaces explicitly:
+
+```ts
+const agent = createSmartAgent({
+  model,
+  tools,
+  runtimeProfile: "balanced",
+  limits: {
+    maxToolCalls: 12,
+    maxParallelTools: 3,
+    maxTotalOutputTokens: 50_000,
+    maxWallClockMs: 60_000,
+    maxCostUsd: 0.50,
+  },
+  costEstimator: ({ inputTokens, outputTokens, cachedInputTokens, modelName }) => {
+    // Your pricing table here. The SDK has no built-in pricing.
+    return 0;
+  },
+  tokenCounter: (text) => myTokenizer.encode(text).length, // optional but recommended
+});
+```
+
+For Anthropic / Bedrock with stable system prompts, enable prompt caching on the provider:
+
+```ts
+createProvider({
+  provider: "anthropic",
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+  prompt_caching: { enabled: true },
+});
+```
+
+This typically reduces input-token cost by ~90% on long-running tool-heavy agents.
+
 ## What the smart runtime adds on top of the base loop
 
 | Capability | `createAgent` | `createSmartAgent` |

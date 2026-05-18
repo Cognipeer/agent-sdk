@@ -43,6 +43,39 @@ function getActiveSummarizationThreshold(opts: AgentOptions): number | undefined
   );
 }
 
+/**
+ * Decision helper for summarization signaling. Returns "trigger" only when:
+ *  - the conversation (excluding synthetic/context-overhead system messages)
+ *    exceeds the configured threshold, AND
+ *  - the summarizer has not already given up (`__summarizationExhausted`), AND
+ *  - we are not bouncing right after a fresh summary pass (15% tolerance).
+ * Returns "skip" in every other case so the loop continues without breaking.
+ */
+function shouldSignalSummarization(state: AgentState, threshold: number): "trigger" | "skip" {
+  const tokCountMessages = (state.messages || []).filter((message: any) => {
+    if (isSyntheticSummaryMessage(message)) return false;
+    if (message.role === 'system' && (message.name === 'context_summary' || message.name === 'memory_context')) return false;
+    return true;
+  });
+  const tokenCount = countMessagesTokens(tokCountMessages);
+  if (tokenCount <= threshold) return "skip";
+
+  // SmartAgent already attempted and could not compress further; pressing
+  // again would deadlock. Proceed with the clamped context instead.
+  if ((state.ctx as any)?.__summarizationExhausted) return "skip";
+
+  // Fresh summary in transcript + only marginally over budget: do not
+  // re-summarize. Context overhead alone can keep us 0–15% above the trigger.
+  const hasFreshSummary = (state.messages || []).some((m: any) =>
+    m.role === 'tool'
+    && typeof m.content === 'string'
+    && (m.content === 'SUMMARIZED' || m.content.startsWith('SUMMARIZED_TOOL_RESPONSE'))
+  );
+  if (hasFreshSummary && tokenCount <= threshold * 1.15) return "skip";
+
+  return "trigger";
+}
+
 function clearNeedsSummarization(state: AgentState): AgentState {
   if (!(state.ctx as any)?.__needsSummarization) {
     return state;
@@ -175,6 +208,47 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     const maxToolCalls = (mergedLimits?.maxToolCalls === undefined) ? 50 : mergedLimits?.maxToolCalls;
     const iterationLimit = maxToolCalls === Infinity ? 100 : Math.max(maxToolCalls * 3 + 10, 40);
+    const wallClockStart = Date.now();
+    // Treat 0 / undefined as "disabled" so resolved-profile placeholders do not
+    // accidentally throttle the loop.
+    const maxWallClockMs = mergedLimits?.maxWallClockMs && mergedLimits.maxWallClockMs > 0 ? mergedLimits.maxWallClockMs : undefined;
+    const maxTotalOutputTokens = mergedLimits?.maxTotalOutputTokens && mergedLimits.maxTotalOutputTokens > 0 ? mergedLimits.maxTotalOutputTokens : undefined;
+    const maxCostUsd = mergedLimits?.maxCostUsd && mergedLimits.maxCostUsd > 0 ? mergedLimits.maxCostUsd : undefined;
+    const costEstimator = (opts as any).costEstimator as ((args: { modelName?: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number }) => number) | undefined;
+    const checkBudgetBreached = (): { breached: false } | { breached: true; reason: string } => {
+      if (maxWallClockMs && Date.now() - wallClockStart > maxWallClockMs) {
+        return { breached: true, reason: `maxWallClockMs (${maxWallClockMs}ms) exceeded` };
+      }
+      if (maxTotalOutputTokens) {
+        const totals = (state as any).usage?.totals as Record<string, { output: number }> | undefined;
+        if (totals) {
+          let outputSum = 0;
+          for (const v of Object.values(totals)) outputSum += Number(v?.output) || 0;
+          if (outputSum > maxTotalOutputTokens) {
+            return { breached: true, reason: `maxTotalOutputTokens (${maxTotalOutputTokens}) exceeded` };
+          }
+        }
+      }
+      if (maxCostUsd && costEstimator) {
+        const perRequest = (state as any).usage?.perRequest as Array<{ modelName: string; usage: any }> | undefined;
+        if (perRequest) {
+          let cost = 0;
+          for (const r of perRequest) {
+            cost += costEstimator({
+              modelName: r.modelName,
+              inputTokens: Number(r.usage?.prompt_tokens) || 0,
+              outputTokens: Number(r.usage?.completion_tokens) || 0,
+              cachedInputTokens: Number(r.usage?.prompt_tokens_details?.cached_tokens) || 0,
+              reasoningTokens: Number(r.usage?.completion_tokens_details?.reasoning_tokens) || 0,
+            }) || 0;
+          }
+          if (cost > maxCostUsd) {
+            return { breached: true, reason: `maxCostUsd ($${maxCostUsd}) exceeded (actual: $${cost.toFixed(4)})` };
+          }
+        }
+      }
+      return { breached: false };
+    };
     let iterations = 0;
     const onStateChange = config?.onStateChange;
     const checkpointReason = config?.checkpointReason;
@@ -228,6 +302,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     while (iterations < iterationLimit) {
       iterations++;
+      // Enforce budget limits before each iteration so we never spend extra
+      // tokens after the cap has been hit.
+      const budget = checkBudgetBreached();
+      if (budget.breached) {
+        emit?.({ type: "metadata", limitBreached: budget.reason });
+        const ctx = { ...(state.ctx || {}), __limitBreached: budget.reason } as any;
+        state = { ...state, ctx } as AgentState;
+        break;
+      }
 
       // Open an iteration span as parent for all ai_call / tool_call events in this turn
       const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
@@ -289,48 +372,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           }
         }
 
-        // Check if context is too large and needs summarization (signal to SmartAgent).
-        // Use summaryTriggerTokens (the intended threshold) rather than maxTokens
-        // (which controls summary output size) to avoid premature compaction.
+        // Defer to a single decision helper for context summarization. The
+        // helper returns "trigger" only when the context truly exceeds the
+        // budget and re-running the summarizer can plausibly shrink it.
         if (summarizationThreshold !== undefined) {
-          // Exclude synthetic summary messages AND context overhead injected by SmartAgent's
-          // buildModelMessages (context_summary, memory_context). These system messages are
-          // added on top of the conversation and shouldn't trigger re-summarization.
-          const tokCountMessages = (state.messages || []).filter((message: any) => {
-            if (isSyntheticSummaryMessage(message)) return false;
-            if (message.role === 'system' && (message.name === 'context_summary' || message.name === 'memory_context')) return false;
-            return true;
-          });
-          const tokenCount = countMessagesTokens(tokCountMessages);
-          if (tokenCount > summarizationThreshold) {
-            // If SmartAgent already attempted summarization and it could not compress
-            // anything (e.g. all tool responses use keep_full retention), breaking here
-            // would create a deadlock: SmartAgent would re-invoke base, base would break
-            // again, and no progress would ever be made.
-            // When __summarizationExhausted is set, skip the break and let the agent
-            // proceed with the available (clamped) context up to maxContextTokens.
-            const summarizationExhausted = !!(state.ctx as any)?.__summarizationExhausted;
-
-            // Only signal summarization if tokens exceed the threshold by a meaningful margin
-            // or if summarization hasn't just been performed (prevents infinite break loops
-            // where summarized output + context overhead barely exceeds the limit).
-            const hasFreshSummary = (state.messages || []).some((m: any) =>
-              m.role === 'tool'
-              && typeof m.content === 'string'
-              && (m.content === 'SUMMARIZED' || m.content.startsWith('SUMMARIZED_TOOL_RESPONSE'))
-            );
-            if (hasFreshSummary && tokenCount <= summarizationThreshold * 1.15) {
-              // Summarization was recently performed and the overshoot is within 15%.
-              // Proceed to agent call instead of re-triggering summarization.
-            } else if (summarizationExhausted) {
-              // Summarization was already attempted by SmartAgent but nothing could be
-              // compressed (all tool responses are keep_full or no compressable messages).
-              // Proceed with the current context instead of deadlocking.
-            } else {
-              const ctx = { ...(state.ctx || {}), __needsSummarization: true };
-              state = { ...state, ctx } as AgentState;
-              break;
-            }
+          const verdict = shouldSignalSummarization(state, summarizationThreshold);
+          if (verdict === "trigger") {
+            const ctx = { ...(state.ctx || {}), __needsSummarization: true };
+            state = { ...state, ctx } as AgentState;
+            break;
           }
         }
 
@@ -466,7 +516,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       // main loop is never disturbed.
       if (reflectNode && resolvedReasoning?.reflection.enabled) {
         const cadence = resolvedReasoning.reflection.cadence;
-        if (shouldRunReflection(cadence, state as any, true)) {
+        const refl = resolvedReasoning.reflection;
+        const reflectionsSoFar = ((state as any).reflections?.length ?? 0) as number;
+        const lastTurn = ((state as any).reflections?.at(-1)?.turn ?? -Infinity) as number;
+        const currentTurn = state.toolCallCount || 0;
+        const budgetExceeded = typeof refl.maxPerRun === "number" && reflectionsSoFar >= refl.maxPerRun;
+        const cadenceGap = currentTurn - (Number.isFinite(lastTurn) ? lastTurn : -refl.everyNTurns) < refl.everyNTurns;
+        if (!budgetExceeded && !cadenceGap && shouldRunReflection(cadence, state as any, true)) {
           try {
             const patch = await reflectNode(state as any, cadence);
             if (patch && Object.keys(patch).length > 0) {
@@ -553,7 +609,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         state.ctx?.__cancelled ||
         state.ctx?.__finalizedDueToStructuredOutput ||
         state.ctx?.__finalizedDueToToolLimit ||
-        state.ctx?.__needsSummarization;
+        state.ctx?.__needsSummarization ||
+        state.ctx?.__limitBreached;
       if (!isExpectedExit) {
         throw new Error(
           "Agent loop terminated with a pending tool response but no subsequent model invocation. " +
@@ -570,6 +627,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   }
 
   const invokeAgent = async (input: AgentState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
+    // Install custom token counter for the duration of this invoke. The
+    // setter is process-wide but we restore it in `finally` below so nested
+    // / concurrent invokes do not poison one another's counter.
+    const userTokenCounter = (opts as any).tokenCounter as ((text: string) => number) | undefined;
+    if (userTokenCounter) {
+      // Lazy import to avoid circular deps when this module is preloaded.
+      const { setTokenCounter } = await import("./utils/utilTokens.js");
+      setTokenCounter(userTokenCounter);
+    }
     const onEvent = config?.onEvent;
     const onProgress = config?.onProgress;
     const onStream = config?.onStream;
@@ -623,7 +689,22 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         status: "error",
         error: { message: err?.message, stack: err?.stack },
       });
+      if (userTokenCounter) {
+        const { setTokenCounter } = await import("./utils/utilTokens.js");
+        setTokenCounter(undefined);
+      }
       throw err;
+    } finally {
+      // Restore default token counter as soon as the loop ends so subsequent
+      // unrelated invokes do not inherit it.
+      if (userTokenCounter) {
+        try {
+          const { setTokenCounter } = await import("./utils/utilTokens.js");
+          setTokenCounter(undefined);
+        } catch {
+          // ignore
+        }
+      }
     }
 
     await finalizeTraceSession(traceSession, {
@@ -711,12 +792,66 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     resolveToolApproval,
     asTool: ({ toolName, description, inputDescription }: { toolName: string; description?: string; inputDescription?: string }) => {
       const schema = z.object({ input: z.string().describe(inputDescription || "Input for delegated agent") });
-  return createTool({
+      const delegatedTool: any = createTool({
         name: toolName,
         description: description || `Delegate task to agent ${opts.name || 'Agent'}`,
         schema,
         func: async ({ input }) => {
-          const res = await instance.invoke({ messages: [{ role: 'user', content: input } as any] });
+          // Read parent runtime delegation policy + current depth from the
+          // injected _stateRef. The toolsNode wires this on every call.
+          const ref: any = delegatedTool._stateRef;
+          const parentCtx: any = ref.ctx || {};
+          const parentMessages: any[] = Array.isArray(ref.messages) ? ref.messages : [];
+          const parentRuntime: any = ref.parentRuntime;
+          // The parent runtime is whichever agent is currently executing.
+          // Pull its resolved delegation policy if available (SmartAgent only).
+          const resolvedSmart = parentRuntime?.smart || (opts as any).__resolvedSmart;
+          const delegationPolicy = resolvedSmart?.delegation || {
+            mode: "role_based",
+            maxDelegationDepth: 2,
+            maxChildCalls: 4,
+            childContextPolicy: "scoped",
+          };
+          const currentDepth = Number(parentCtx.__delegationDepth) || 0;
+          if (delegationPolicy.mode === "off") {
+            return { error: "Delegation disabled by runtime policy." };
+          }
+          if (currentDepth >= delegationPolicy.maxDelegationDepth) {
+            return {
+              error: `Delegation depth limit reached (${delegationPolicy.maxDelegationDepth}). Refusing nested call.`,
+            };
+          }
+          parentCtx.__delegatedCallCount = (parentCtx.__delegatedCallCount || 0) + 1;
+          if (parentCtx.__delegatedCallCount > delegationPolicy.maxChildCalls) {
+            return {
+              error: `Child-call budget exhausted (${delegationPolicy.maxChildCalls}).`,
+            };
+          }
+
+          // Apply childContextPolicy when seeding the child agent.
+          let childMessages: any[];
+          switch (delegationPolicy.childContextPolicy) {
+            case "full":
+              childMessages = [...parentMessages, { role: "user", content: input } as any];
+              break;
+            case "scoped": {
+              // Last assistant message + last user task + the explicit delegation input.
+              const systemPrefix = parentMessages[0]?.role === "system" ? [parentMessages[0]] : [];
+              const lastUser = [...parentMessages].reverse().find((m) => m?.role === "user");
+              childMessages = [
+                ...systemPrefix,
+                ...(lastUser ? [lastUser] : []),
+                { role: "user", content: input } as any,
+              ];
+              break;
+            }
+            case "minimal":
+            default:
+              childMessages = [{ role: "user", content: input } as any];
+          }
+
+          const childCtx = { __delegationDepth: currentDepth + 1 };
+          const res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any);
           return {
             content: res.content,
             output: res.output,
@@ -724,6 +859,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           };
         }
       });
+      // Eagerly initialize _stateRef so the parent's toolsNode (which only
+      // writes into existing _stateRef objects) can deposit `parentRuntime`,
+      // `ctx`, and `messages` before the delegation tool runs.
+      delegatedTool._stateRef = {};
+      return delegatedTool;
     },
     asHandoff: ({ toolName, description, schema }: { toolName?: string; description?: string; schema?: ZodSchema<any>; }): HandoffDescriptor => {
       const finalName = toolName || `handoff_to_${runtime.name || 'agent'}`;

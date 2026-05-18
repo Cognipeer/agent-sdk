@@ -50,6 +50,7 @@ export default defineConfig({
         {
           text: 'Advanced',
           items: [
+            { text: 'Tool-Heavy & Long-Running Agents', link: '/guide/tool-heavy-agents' },
             { text: 'Limits & Tokens', link: '/guide/limits-tokens' },
             { text: 'Debugging & Tracing', link: '/guide/debugging' },
             { text: 'FAQ', link: '/guide/faq' },

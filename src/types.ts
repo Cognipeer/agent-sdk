@@ -115,6 +115,24 @@ export type AgentLimits = {
   maxParallelTools?: number;
   // Approximate maximum context tokens the smart runtime should build for model calls
   maxContextTokens?: number;
+  /**
+   * Cap on cumulative model output tokens across the whole invoke. Once
+   * exceeded the loop terminates after the current iteration with a
+   * `metadata` event explaining the reason and emits `finalAnswer` so callers
+   * can still recover the partial result.
+   */
+  maxTotalOutputTokens?: number;
+  /**
+   * Cap on cumulative cost in USD. Requires `costEstimator` on the agent
+   * options to be a no-op-free check; otherwise this limit is ignored.
+   */
+  maxCostUsd?: number;
+  /**
+   * Cap on total wall-clock time for the invoke in milliseconds. Identical
+   * semantics to `InvokeConfig.timeoutMs` but lives on the agent definition
+   * so server-side defaults can be enforced without per-call wiring.
+   */
+  maxWallClockMs?: number;
 };
 
 // Alias for backward compatibility
@@ -200,6 +218,25 @@ export type AgentOptions = {
    * When omitted or `enabled=false` the agent behaves exactly as before.
    */
   reasoning?: ReasoningConfig;
+  /**
+   * Optional drop-in token counter. When provided, all internal token
+   * estimates (summarization trigger, hard caps, context budget) use this
+   * function instead of the built-in character heuristic. Recommended:
+   * tiktoken / @anthropic-ai/tokenizer for production accuracy.
+   */
+  tokenCounter?: (text: string) => number;
+  /**
+   * Pluggable cost estimator: returns USD cost for a single model call's
+   * usage. Used by the `maxCostUsd` budget limit. When omitted the SDK has
+   * no built-in pricing table and the cost limit is a no-op.
+   */
+  costEstimator?: (args: {
+    modelName?: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
+  }) => number;
 };
 
 // ─── Reasoning + Reflection ──────────────────────────────────────────────────
@@ -230,6 +267,18 @@ export type ReflectionConfig = {
   promptTemplate?: string;
   /** When true emits `reflection` SmartAgent events. Default true. */
   emitEvents?: boolean;
+  /**
+   * Hard cap on the number of reflection calls within a single invoke. Once
+   * the cap is hit subsequent qualifying turns no longer trigger reflection.
+   * Default: unlimited.
+   */
+  maxPerRun?: number;
+  /**
+   * Minimum number of tool-bearing turns between reflections. Defaults to 1
+   * (reflect on every qualifying turn). Set to 2 to reflect every other tool
+   * turn, etc. Independent of `cadence`.
+   */
+  everyNTurns?: number;
 };
 
 export type NativeReasoningConfig = {
@@ -470,6 +519,10 @@ export type SmartAgentOptions = {
    * Unified reasoning configuration. Same shape as on `AgentOptions`. See `ReasoningConfig`.
    */
   reasoning?: ReasoningConfig;
+  /** See AgentOptions.tokenCounter. */
+  tokenCounter?: (text: string) => number;
+  /** See AgentOptions.costEstimator. */
+  costEstimator?: AgentOptions["costEstimator"];
 };
 
 // Runtime representation of an agent (used inside state.agent)

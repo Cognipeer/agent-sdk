@@ -23,9 +23,12 @@ function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartA
 - `planning`: explicit multi-step workflow control
 - `summarization`, `context`, `toolResponses`: context pressure handling
 - `memory`: fact read/write policy
-- `delegation`: child-agent behavior
+- `delegation`: child-agent behavior (depth, child-call budget, context policy — enforced at runtime)
 - `tracing`: execution telemetry
 - `outputSchema`: deterministic structured output
+- `limits`: budget surfaces — see [Limits & Tokens](/limits-tokens/) for the full list including `maxTotalOutputTokens`, `maxCostUsd`, `maxWallClockMs`
+- `tokenCounter`: drop-in tokenizer used by all internal estimates (default: character heuristic)
+- `costEstimator`: pluggable pricing function required for the `maxCostUsd` budget
 
 ### Tool response retention
 
@@ -111,6 +114,21 @@ Both builders expose more than `invoke(...)`:
 - `asHandoff(options?)`
 
 These methods matter if your agent is long-running, approval-gated, resumable, or composed into a bigger agent system.
+
+### `asTool(...)` and delegation
+
+`child.asTool({ toolName, description?, inputDescription? })` wraps an agent as a tool callable by another agent. When the wrapped tool runs, the runtime:
+
+- Reads the parent's resolved delegation policy from the live runtime.
+- Refuses the call with an `error` payload when `delegation.mode === "off"`.
+- Tracks delegation depth via `state.ctx.__delegationDepth` and refuses further nesting past `delegation.maxDelegationDepth`.
+- Counts child invocations against `delegation.maxChildCalls` (shared across the invoke).
+- Seeds child messages according to `delegation.childContextPolicy`:
+  - `minimal` — only the explicit delegation input
+  - `scoped` — parent system + last user message + delegation input
+  - `full` — full parent transcript + delegation input
+
+This makes asTool safe to expose to a model: nested delegation cannot recurse infinitely and the child does not inherit the full parent context unless you ask for it.
 
 ## `invoke(...)`
 

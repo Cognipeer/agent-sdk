@@ -1,19 +1,46 @@
 /**
+ * Token counter contract used across the SDK. The default is a
+ * character-based heuristic; users can swap in a real tokenizer (tiktoken,
+ * @anthropic-ai/tokenizer, …) via SmartAgentOptions.tokenCounter.
+ */
+export type TokenCounter = (text: string) => number;
+
+/**
  * Estimates token count from text using a character-based heuristic.
- * 
- * This is a rough approximation:
+ *
+ * Approximation:
  * - For Latin/ASCII text: ~4 characters per token (GPT-family models)
  * - For CJK/Unicode text: ~1.5 characters per token
- * 
- * For production accuracy, consider using a proper tokenizer like tiktoken.
+ *
+ * For production accuracy, pass a `tokenCounter` option backed by tiktoken.
  */
-export function countApproxTokens(text: string): number {
+export function defaultTokenCounter(text: string): number {
   if (!text) return 0;
   // Count non-ASCII characters (CJK, Arabic, etc.) which use more tokens
   const nonAsciiCount = (text.match(/[^\x00-\x7F]/g) || []).length;
   const asciiCount = text.length - nonAsciiCount;
   // ASCII text: ~4 chars/token, non-ASCII: ~1.5 chars/token
   return Math.ceil(asciiCount / 4 + nonAsciiCount / 1.5);
+}
+
+let activeTokenCounter: TokenCounter = defaultTokenCounter;
+
+/**
+ * Installs a custom token counter used by every callable in this module
+ * (countApproxTokens, countMessagesTokens). Pass `undefined` or
+ * `defaultTokenCounter` to restore the heuristic.
+ */
+export function setTokenCounter(counter?: TokenCounter | null): void {
+  activeTokenCounter = typeof counter === "function" ? counter : defaultTokenCounter;
+}
+
+export function getTokenCounter(): TokenCounter {
+  return activeTokenCounter;
+}
+
+/** Backwards-compatible alias that delegates to the active counter. */
+export function countApproxTokens(text: string): number {
+  return activeTokenCounter(text || "");
 }
 
 /**

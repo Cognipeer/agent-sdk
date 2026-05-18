@@ -12,7 +12,7 @@ const DEFAULT_CRITICAL_TOOLS = ["response", "manage_todo_list", "get_tool_respon
 
 // Shared defaults across all profiles — only overridden values need to be specified per profile.
 const BASE_DEFAULTS: ProfileConfig = {
-  limits: { maxToolCalls: 8, maxParallelTools: 2, maxContextTokens: 24000 },
+  limits: { maxToolCalls: 8, maxParallelTools: 2, maxContextTokens: 24000, maxTotalOutputTokens: 0, maxCostUsd: 0, maxWallClockMs: 0 },
   summarization: {
     enable: true,
     maxTokens: 24000,
@@ -154,6 +154,9 @@ function mergeLimits(base: Required<AgentLimits>, override?: AgentLimits): Requi
     maxToolCalls: override?.maxToolCalls ?? base.maxToolCalls,
     maxParallelTools: override?.maxParallelTools ?? base.maxParallelTools,
     maxContextTokens: override?.maxContextTokens ?? base.maxContextTokens,
+    maxTotalOutputTokens: override?.maxTotalOutputTokens ?? base.maxTotalOutputTokens ?? 0,
+    maxCostUsd: override?.maxCostUsd ?? base.maxCostUsd ?? 0,
+    maxWallClockMs: override?.maxWallClockMs ?? base.maxWallClockMs ?? 0,
   };
 }
 

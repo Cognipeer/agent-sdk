@@ -5,7 +5,7 @@ import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelN
 // Minimal agent node: no system prompt injection. Invokes model with messages as-is.
 export function createAgentCoreNode(opts: SmartAgentOptions) {
   return async (state: SmartState): Promise<Partial<SmartState>> => {
-    const runtime = state.agent || {
+    const runtime: any = state.agent || {
       name: opts.name,
       version: opts.version,
       model: opts.model,
@@ -17,6 +17,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       useTodoList: undefined,
       outputSchema: (opts as any).outputSchema,
       tracing: opts.tracing,
+      responseFormat: undefined,
     };
 
     const tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];

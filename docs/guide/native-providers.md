@@ -60,8 +60,10 @@ createProvider({
   provider: "anthropic",
   apiKey: process.env.ANTHROPIC_API_KEY!,
   defaultModel: "claude-sonnet-4-20250514",
-  anthropicVersion: "2023-06-01",   // optional, defaults to latest
+  anthropicVersion: "2023-06-01",      // optional, defaults to latest
   baseURL: "https://api.anthropic.com",
+  prompt_caching: { enabled: true },   // see "Prompt caching" below
+  retry: { maxRetries: 4, baseDelayMs: 500 }, // see "Retry & backoff" below
 })
 ```
 
@@ -92,6 +94,8 @@ createProvider({
   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY, // or reads from env
   sessionToken: process.env.AWS_SESSION_TOKEN,        // optional, for STS
   defaultModel: "anthropic.claude-sonnet-4-20250514-v1:0",
+  prompt_caching: { enabled: true },   // see "Prompt caching" below
+  retry: { maxRetries: 4 },            // see "Retry & backoff" below
 })
 ```
 
@@ -171,6 +175,51 @@ type ChatCompletionRequest = {
   extra?: Record<string, any>;   // provider-specific extras
 };
 ```
+
+## Prompt caching
+
+Long-running tool-heavy agents repeat the same system prompt and tool catalog on every turn. Anthropic and Bedrock (Converse) charge for those tokens unless you place a cache breakpoint, in which case cached tokens cost roughly 10% of normal input pricing.
+
+Opt in on the provider config:
+
+```ts
+createProvider({
+  provider: "anthropic",
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+  prompt_caching: { enabled: true },
+});
+```
+
+When enabled:
+
+- **Anthropic** — the provider wraps the system prompt as a `[{ type: "text", text, cache_control: { type: "ephemeral" } }]` block and places a `cache_control: ephemeral` marker on the last tool definition. The cumulative effect caches `[system + all tool definitions]`, which is the largest stable prefix in a tool-heavy run.
+- **Bedrock** — the provider appends `{ cachePoint: { type: "default" } }` blocks at the end of the `system` and `toolConfig.tools` arrays (Converse-API native shape).
+- **OpenAI / Azure** — caching is automatic for prompts over the provider's threshold; no breakpoint configuration needed.
+
+Cache hit/miss tokens flow back through `response.usage.cachedInputTokens` and `response.usage.cachedWriteTokens` regardless of which provider you use, so you can verify the cache is working from telemetry without provider-specific code.
+
+When NOT to enable caching: short-lived runs (less than ~1k tokens of stable prefix), workflows whose system prompt is rewritten every turn, or test environments where you do not want cache eviction noise polluting traces.
+
+## Retry & backoff
+
+Native providers retry transient failures automatically. Defaults retry on `429` and `5xx` with exponential backoff and honour `Retry-After`. Configure per provider:
+
+```ts
+createProvider({
+  provider: "openai",
+  apiKey: "...",
+  retry: {
+    maxRetries: 3,              // default
+    baseDelayMs: 500,           // default; doubled per attempt up to maxDelayMs
+    maxDelayMs: 8000,           // default
+    shouldRetry: (err, attempt) => err.status !== 401, // custom predicate
+  },
+});
+```
+
+The retry helper drains the response body between attempts so connections are reused. 4xx responses other than 429 surface immediately. Once `maxRetries` is exhausted, the final response is converted to a `ProviderError` like any other failure.
+
+This is separate from per-tool `retry` policies on `createTool(...)` — provider retries cover the model call, tool retries cover external API calls inside your `func`.
 
 ## Native reasoning pass-through
 

@@ -333,7 +333,7 @@ Exported helpers (`agent-sdk/src/index.ts`):
 **Agent factories:**
 - `createSmartAgent(options)`
 - `createAgent(options)`
-- `createTool({ name, description?, schema, func, needsApproval?, approvalPrompt?, approvalDefaults?, maxExecutionsPerRun? })`
+- `createTool({ name, description?, schema, func, needsApproval?, approvalPrompt?, approvalDefaults?, maxExecutionsPerRun?, cache?, retry? })`
 
 **Native providers (no LangChain):**
 - `createProvider(config)` – factory for all six providers
@@ -348,11 +348,25 @@ Exported helpers (`agent-sdk/src/index.ts`):
 
 **Utilities:**
 - `buildSystemPrompt(extra?, planning?, name?)`
+- `setTokenCounter`, `getTokenCounter`, `defaultTokenCounter` – swap in a real tokenizer (tiktoken, etc.) globally or per-invoke
 - Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
 
-`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `reasoning`, `usageConverter`, `tracing`). See `docs/api/` for detailed type references.
+`SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `reasoning`, `usageConverter`, `tracing`, `tokenCounter`, `costEstimator`). See `docs/api/` for detailed type references.
 
-Tools can also declare `maxExecutionsPerRun` to cap successful executions for that tool within a single agent run. Leave it unset or set it to `null` for unlimited usage. This is separate from global limits such as `limits.maxToolCalls` and `limits.maxParallelTools`.
+**Budget surfaces** (`limits`):
+- `maxToolCalls`, `maxParallelTools`, `maxContextTokens` – classic loop budgets
+- `maxTotalOutputTokens` – cap on cumulative completion tokens
+- `maxCostUsd` – cumulative USD cost (requires `costEstimator`)
+- `maxWallClockMs` – overall wall-clock budget (also available as `InvokeConfig.timeoutMs`)
+
+**Tool-level controls** (`createTool`):
+- `maxExecutionsPerRun` – cap successful executions of that tool within a single run
+- `cache` – opt-in per-invoke result cache (`true` or `{ keyFn?, ttlMs? }`)
+- `retry` – per-tool retry policy `{ maxRetries?, backoffMs?, shouldRetry?, circuitBreakerThreshold? }`
+
+**Provider-level controls** (`createProvider`):
+- `retry` – automatic 429 / 5xx retry with exponential backoff and `Retry-After` support
+- `prompt_caching: { enabled: true }` – Anthropic `cache_control` and Bedrock `cachePoint` breakpoints for ~90% input-token savings on long tool-heavy runs
 
 ## Tracing & observability
 

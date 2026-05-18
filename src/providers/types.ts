@@ -138,6 +138,17 @@ export type ChatCompletionChunk = {
 
 // ─── Provider Configs ────────────────────────────────────────────────────────
 
+export type ProviderRetryConfig = {
+  /** Maximum retries on 429/5xx (default 3). */
+  maxRetries?: number;
+  /** Initial delay between retries in ms (default 500, doubled each attempt). */
+  baseDelayMs?: number;
+  /** Hard cap on a single retry delay in ms (default 8000). */
+  maxDelayMs?: number;
+  /** Custom predicate to opt in/out of a specific retry. */
+  shouldRetry?: (error: any, attempt: number) => boolean;
+};
+
 export type OpenAIProviderConfig = {
   provider: "openai";
   apiKey: string;
@@ -145,6 +156,7 @@ export type OpenAIProviderConfig = {
   organization?: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  retry?: ProviderRetryConfig;
 };
 
 export type AnthropicProviderConfig = {
@@ -154,6 +166,13 @@ export type AnthropicProviderConfig = {
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
   anthropicVersion?: string;
+  retry?: ProviderRetryConfig;
+  /**
+   * Prompt caching configuration. When enabled, places cache_control:
+   * ephemeral breakpoints on the system prompt and the final tool definition,
+   * which is the recommended Anthropic recipe for static system + tools.
+   */
+  prompt_caching?: { enabled: boolean };
 };
 
 export type AzureProviderConfig = {
@@ -182,6 +201,13 @@ export type BedrockProviderConfig = {
   sessionToken?: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  retry?: ProviderRetryConfig;
+  /**
+   * Insert Bedrock Converse `cachePoint` blocks at the end of the system
+   * prompt and tools list. Only supported by models that implement Converse
+   * prompt caching (most Anthropic Claude variants on Bedrock).
+   */
+  prompt_caching?: { enabled: boolean };
 };
 
 export type VertexProviderConfig = {

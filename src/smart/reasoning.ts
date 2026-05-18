@@ -23,6 +23,8 @@ export type ResolvedReflectionConfig = {
   summarize: boolean;
   promptTemplate?: string;
   emitEvents: boolean;
+  maxPerRun?: number;
+  everyNTurns: number;
 };
 
 export type ResolvedReasoning = {
@@ -86,6 +88,7 @@ function resolveReflection(
       keepLast: 3,
       summarize: false,
       emitEvents: true,
+      everyNTurns: 1,
     };
   }
   const cfg = input ?? {};
@@ -101,5 +104,7 @@ function resolveReflection(
     summarize: cfg.summarize ?? false,
     promptTemplate: cfg.promptTemplate,
     emitEvents: cfg.emitEvents ?? true,
+    maxPerRun: typeof cfg.maxPerRun === "number" && cfg.maxPerRun >= 0 ? cfg.maxPerRun : undefined,
+    everyNTurns: Math.max(1, Math.trunc(cfg.everyNTurns ?? 1)),
   };
 }

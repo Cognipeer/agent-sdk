@@ -7,13 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5]
+
 ### Added
+- **Parallel tool execution.** `limits.maxParallelTools` now actually fans non-approval tool calls across a bounded worker pool while preserving `tool_use → tool_result` order for Bedrock / Anthropic strict pairing. Approval-required tools still run sequentially.
+- **Anthropic / Bedrock prompt caching.** Opt in with `prompt_caching: { enabled: true }` on the provider; system prompt and the final tool definition receive `cache_control: ephemeral` (Anthropic) or `cachePoint` blocks (Bedrock Converse). Typical input-token cost drops by ~90% on long tool-heavy runs.
+- **Opt-in tool result cache.** `createTool({ cache: true | { keyFn?, ttlMs? } })` short-circuits duplicate args within an invoke and surfaces cached hits as `state.toolHistory[].fromCache === true`.
+- **Per-tool retry / circuit breaker.** `createTool({ retry: { maxRetries, backoffMs, shouldRetry, circuitBreakerThreshold } })` retries transient errors with exponential backoff and short-circuits after consecutive failures.
+- **Provider retry + backoff.** Native providers automatically retry 429 / 5xx with `Retry-After` support. Configure via `createProvider({ retry: { maxRetries, baseDelayMs, maxDelayMs, shouldRetry } })`.
+- **Delegation enforcement.** `asTool` now reads the parent's resolved delegation policy and enforces `mode`, `maxDelegationDepth`, `maxChildCalls`, and `childContextPolicy` (`minimal` / `scoped` / `full`) at runtime instead of just describing them in the system prompt.
+- **Budget limits.** `AgentLimits` gains `maxTotalOutputTokens`, `maxCostUsd`, and `maxWallClockMs`. Pair `maxCostUsd` with `costEstimator` on the agent options for real cost enforcement.
+- **Pluggable token counter.** `AgentOptions.tokenCounter` (or the exported `setTokenCounter` / `defaultTokenCounter` helpers) swaps the built-in character heuristic for a real tokenizer (tiktoken, `@anthropic-ai/tokenizer`, etc.) without losing concurrency safety.
+- **Reflection budget.** `reasoning.reflection.maxPerRun` and `reasoning.reflection.everyNTurns` cap reflection cost in long tool-heavy invokes.
+- **stateRef per-invoke isolation.** Plan / todo / tool-history references are now created per `invoke(...)` so concurrent invocations on the same agent instance no longer clobber each other.
+
+### Fixed
+- Summarizer now uses `state.agent?.model` (live runtime model) instead of `opts.model`, so handoffs and per-invoke model overrides reach the summarizer too.
+- `__summarizationExhausted` is automatically cleared when a new compactable tool result is appended, preventing infinite "nothing to compress" deadlocks after partial retention bouts.
+- `state.ctx` mutations from `toolsNode` now propagate correctly to the caller (delta explicitly returns `ctx`).
+- SmartAgent runtime tool set now includes the structured-output `response` finalize tool when `outputSchema` is set, eliminating "tool not found" loops in retry paths.
+- The base-loop "tool result without subsequent model call" safety check now respects the new `__limitBreached` exit reason.
+- `asTool` delegation sub-agents pre-initialize `_stateRef` so the parent's tools node can deposit `parentRuntime` / `ctx` before the delegation runs.
+
+### Added (continued from earlier)
 - Unified `reasoning` configuration on `createAgent(...)` / `createSmartAgent(...)` for provider-native reasoning plus post-tool reflection.
 - Reflection persistence on `state.reflections` plus `reflection` events for streaming UIs and task timelines.
 - Native provider reasoning mappings for OpenAI/Azure/OpenAI-compatible, Anthropic, and Vertex/Gemini through the built-in provider layer.
 
 ### Changed
-- Documentation now explains reasoning presets, reflection behavior, provider mappings, and the new public types/events.
+- Documentation refreshed: limits/tokens, summarization, tool development, runtime profiles, native providers, getting started, and API reference now cover the new budget surfaces, prompt caching, parallel tool exec, tool cache/retry, delegation enforcement, and the pluggable token counter.
 
 ### Changed (breaking)
 - **Tool response retention collapsed to a single lazy-summarizer model.** Tool outputs are never reduced at tool-call time. When the summarizer runs (context limits reached), old tool messages are rewritten according to `toolResponses.defaultPolicy` (default: `summarize_archive`). The full payload always stays available via `get_tool_response` because it is stored in `state.toolHistory` / `state.toolHistoryArchived`.

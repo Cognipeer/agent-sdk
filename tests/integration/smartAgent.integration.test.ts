@@ -60,9 +60,11 @@ describe('SmartAgent Integration', () => {
         useTodoList: true,
       });
 
-      // Check runtime has context tools
+      // Planning enables manage_todo_list at agent creation time. The
+      // get_tool_response recovery tool is now added lazily — only when the
+      // visible transcript already contains a reduced-tool-response marker.
       const toolNames = agent.__runtime.tools?.map((t: any) => t.name) || [];
-      expect(toolNames).toContain('get_tool_response');
+      expect(toolNames).toContain('manage_todo_list');
     });
 
     it('should handle todo list operations', async () => {

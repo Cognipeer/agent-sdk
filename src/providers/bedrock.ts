@@ -24,11 +24,15 @@ export class BedrockProvider extends BaseProvider {
   private readonly defaultModel: string;
   private readonly defaultHeaders: Record<string, string>;
 
+  private readonly promptCachingEnabled: boolean;
+
   constructor(config: BedrockProviderConfig) {
     super();
     this.region = config.region;
     this.defaultModel = config.defaultModel ?? "anthropic.claude-sonnet-4-20250514-v1:0";
     this.defaultHeaders = config.defaultHeaders ?? {};
+    this.promptCachingEnabled = config.prompt_caching?.enabled === true;
+    if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
 
     this.credentials = {
       accessKeyId: config.accessKeyId ?? process.env.AWS_ACCESS_KEY_ID ?? "",
@@ -79,7 +83,9 @@ export class BedrockProvider extends BaseProvider {
     };
 
     if (system.length > 0) {
-      body.system = system.map((s) => ({ text: s }));
+      const systemBlocks = system.map((s) => ({ text: s }) as Record<string, any>);
+      if (this.promptCachingEnabled) systemBlocks.push({ cachePoint: { type: "default" } });
+      body.system = systemBlocks;
     }
 
     // Inference config
@@ -92,8 +98,13 @@ export class BedrockProvider extends BaseProvider {
 
     // Tools
     if (request.tools?.length) {
+      const tools = request.tools.map((t) => this.toBedrockTool(t)) as Array<Record<string, any>>;
+      if (this.promptCachingEnabled && tools.length > 0) {
+        // Converse uses a {cachePoint} block at the end of the tools array.
+        tools.push({ cachePoint: { type: "default" } });
+      }
       body.toolConfig = {
-        tools: request.tools.map((t) => this.toBedrockTool(t)),
+        tools,
       };
 
       if (request.toolChoice != null) {
@@ -208,24 +219,22 @@ export class BedrockProvider extends BaseProvider {
     const url = `https://${host}/model/${encodeURIComponent(modelId)}/converse`;
     const bodyStr = JSON.stringify(body);
 
-    const headers = signRequest({
-      method: "POST",
-      url,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        ...this.defaultHeaders,
-      },
-      body: bodyStr,
-      region: this.region,
-      service: "bedrock",
-      credentials: this.credentials,
-    });
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: bodyStr,
+    const res = await this.doFetchWithRetry(() => {
+      // SigV4 must re-sign on each retry because of the x-amz-date header.
+      const headers = signRequest({
+        method: "POST",
+        url,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...this.defaultHeaders,
+        },
+        body: bodyStr,
+        region: this.region,
+        service: "bedrock",
+        credentials: this.credentials,
+      });
+      return fetch(url, { method: "POST", headers, body: bodyStr });
     });
 
     if (!res.ok) {

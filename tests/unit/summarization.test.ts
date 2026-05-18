@@ -284,9 +284,12 @@ describe('Summarization with deterministic mock models', () => {
   });
 
   it('should recover raw tool output after tool messages are compacted', async () => {
-    const { agent, initialResult } = await runRepeatedSummarizationScenario();
+    const { initialResult } = await runRepeatedSummarizationScenario();
     const state = initialResult.state!;
-    const recoveryTool = agent.__runtime.tools.find((tool: any) => tool.name === 'get_tool_response') as any;
+    // get_tool_response is now attached lazily to the per-invoke runtime once
+    // the transcript contains a recovery marker. We look it up there instead
+    // of on the factory __runtime, which only carries the static tool set.
+    const recoveryTool = (state.agent?.tools || []).find((tool: any) => tool.name === 'get_tool_response') as any;
     const orbitExecution = state.toolHistory?.find((entry) => String(entry.output).includes('PROJECT_FACT|code=ORBIT'));
 
     expect(recoveryTool).toBeDefined();

@@ -80,6 +80,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         anyTool._stateRef.messages = state.messages;
         anyTool._stateRef.ctx = state.ctx || (state.ctx = {});
         anyTool._stateRef.__onEvent = onEvent;
+        // Expose parent runtime to delegation-aware tools (asTool sub-agents).
+        anyTool._stateRef.parentRuntime = runtime;
       }
     }
 
@@ -95,6 +97,11 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     const remaining = Math.max(0, limits.maxToolCalls - toolCount);
     const planned = toolCalls.slice(0, remaining);
     const skipped = toolCalls.slice(remaining);
+    // Per-tool slot used to preserve append order across parallel execution.
+    // Bedrock / Anthropic adapters expect tool_result blocks in the same order
+    // as tool_use blocks in the assistant turn; we honor that by writing each
+    // call's output messages to its planned index and flattening at the end.
+    const orderedSlots: Message[][] = planned.map(() => []);
 
     type ToolExecutionResult =
       | { status: "success" | "error"; approval?: PendingToolApproval }
@@ -118,7 +125,14 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       state.ctx = ctx;
     };
 
-    const runOne = async (tc: { id?: string; name: string; args: any }): Promise<ToolExecutionResult> => {
+    // Each runOne writes its tool/result messages to the provided slot. We
+    // keep `appended` as the canonical accumulator but slots let parallel
+    // execution preserve the deterministic planned order.
+    const runOne = async (
+      tc: { id?: string; name: string; args: any },
+      slot: Message[] = appended,
+    ): Promise<ToolExecutionResult> => {
+      const push = (msg: Message) => slot.push(msg);
       const cancelState = isCancelled();
       if (cancelState.cancelled) {
         const ctx = (state.ctx = state.ctx || {});
@@ -130,7 +144,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
       const tool = toolByName.get(tc.name);
       if (!tool) {
-        appended.push({ role: "tool", content: `Tool not found: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        push({ role: "tool", content: `Tool not found: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_unknown`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args: tc.args, error: { message: "Tool not found" } });
         toolCount += 1;
         return { status: "error" };
@@ -145,7 +159,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const validatedArgs = validateToolArgs(tool, args);
       if (!validatedArgs.ok && resolved.toolResponses.schemaValidation === "strict") {
         const errorMessage = `Tool argument validation failed for ${tc.name}: ${validatedArgs.message}`;
-        appended.push({ role: "tool", content: errorMessage, tool_call_id: toolCallId, name: tc.name });
+        push({ role: "tool", content: errorMessage, tool_call_id: toolCallId, name: tc.name });
         markToolFailure(errorMessage, tc.name, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args, error: { message: errorMessage } });
         toolCount += 1;
@@ -172,7 +186,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const currentExecutions = countSuccessfulToolExecutions(toolHistory, toolName);
         if (currentExecutions >= maxExecutionsPerRun) {
           const limitMessage = `Skipped tool due to per-tool execution limit: ${toolName} (${maxExecutionsPerRun}/run)`;
-          appended.push({ role: "tool", content: limitMessage, tool_call_id: toolCallId, name: tc.name });
+          push({ role: "tool", content: limitMessage, tool_call_id: toolCallId, name: tc.name });
           onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args });
           recordTraceEvent(traceSession, {
             type: "tool_call",
@@ -237,7 +251,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
         if (approvalEntry.status === "rejected") {
           const rejectionMessage = approvalEntry.comment || "Tool call rejected by reviewer.";
-          appended.push({ role: "tool", content: `Tool call rejected: ${rejectionMessage}`, tool_call_id: toolCallId, name: tc.name });
+          push({ role: "tool", content: `Tool call rejected: ${rejectionMessage}`, tool_call_id: toolCallId, name: tc.name });
           approvalEntry.metadata = { ...(approvalEntry.metadata || {}), resolution: "rejected" };
           approvalEntry.status = "executed";
           approvalEntry.resolvedAt = new Date().toISOString();
@@ -258,25 +272,116 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const sanitizedArgs = sanitizeTracePayload(args);
       const inputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedArgs) : undefined;
 
+      // ── Tool result cache (opt-in via `cache: true` on the tool) ──────────
+      const cacheCfg = (tool as any).cache;
+      const cacheEnabled = cacheCfg === true || (cacheCfg && typeof cacheCfg === "object");
+      const cacheKeyFn: ((a: any) => string) | undefined = cacheEnabled && typeof cacheCfg === "object" ? cacheCfg.keyFn : undefined;
+      const stableJson = (value: any): string => {
+        try {
+          if (value === null || typeof value !== "object") return JSON.stringify(value);
+          if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+          const keys = Object.keys(value).sort();
+          return `{${keys.map((k) => JSON.stringify(k) + ":" + stableJson(value[k])).join(",")}}`;
+        } catch {
+          return String(value);
+        }
+      };
+      const cacheKey = cacheEnabled ? `${toolName}|${cacheKeyFn ? cacheKeyFn(args) : stableJson(args)}` : undefined;
+      const toolCache = (state.toolCache = state.toolCache || {});
+      let cachedHit: any = undefined;
+      if (cacheKey && Object.prototype.hasOwnProperty.call(toolCache, cacheKey)) {
+        const entry = toolCache[cacheKey];
+        const ttl = cacheEnabled && typeof cacheCfg === "object" ? cacheCfg.ttlMs : undefined;
+        if (!ttl || (entry?.timestamp && Date.now() - entry.timestamp <= ttl)) {
+          cachedHit = entry?.value;
+        }
+      }
+
+      // ── Circuit breaker (consecutive failure cap per tool) ────────────────
+      const retryCfg = (tool as any).retry;
+      const failureStats = (state.ctx as any).__toolFailureCounts ||= {} as Record<string, number>;
+      if (retryCfg?.circuitBreakerThreshold && failureStats[toolName] >= retryCfg.circuitBreakerThreshold) {
+        const breakerMsg = `Tool ${toolName} circuit breaker open after ${failureStats[toolName]} consecutive failures`;
+        push({ role: "tool", content: breakerMsg, tool_call_id: toolCallId, name: tc.name });
+        markToolFailure(breakerMsg, toolName, toolCallId);
+        onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message: breakerMsg } });
+        toolCount += 1;
+        return { status: "error" };
+      }
+
       try {
+        if (cachedHit !== undefined) {
+          // Short-circuit: serve from cache without re-invoking the tool.
+          const executionId = nanoid();
+          const responsePolicy = applyToolResponseHardCap(toolName, cachedHit, executionId, resolved);
+          toolHistory.push({
+            executionId,
+            toolName,
+            args,
+            output: cachedHit,
+            rawOutput: cachedHit,
+            timestamp: new Date().toISOString(),
+            tool_call_id: tc.id,
+            summarized: false,
+            originalTokenCount: responsePolicy.tokenCount,
+            classification: responsePolicy.classification,
+            retentionPolicy: "keep_full",
+            fromCache: true,
+            status: "success",
+          });
+          push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
+          onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: cachedHit, durationMs: 0 });
+          toolCount += 1;
+          return { status: "success" };
+        }
         onEvent?.({ type: "tool_call", phase: "start", name: toolName, id: tc.id, args });
         onProgress?.({ stage: "tools", message: `Running tool ${tc.name}` });
         const anyTool = tool as any;
         const callOptions = { cancellationToken, signal: abortSignal };
+        const invokeOnce = async (): Promise<any> => {
+          if (typeof anyTool.func === "function") return anyTool.func(args, callOptions);
+          if (typeof anyTool.invoke === "function") return anyTool.invoke(args, callOptions);
+          if (typeof anyTool.call === "function") return anyTool.call(args, callOptions);
+          if (typeof anyTool._call === "function") return anyTool._call(args, callOptions);
+          if (typeof anyTool.run === "function") return anyTool.run(args, callOptions);
+          throw new Error("Tool is not invokable");
+        };
+
         let output: any;
-        if (typeof anyTool.func === "function") output = await anyTool.func(args, callOptions);
-        else if (typeof anyTool.invoke === "function") output = await anyTool.invoke(args, callOptions);
-        else if (typeof anyTool.call === "function") output = await anyTool.call(args, callOptions);
-        else if (typeof anyTool._call === "function") output = await anyTool._call(args, callOptions);
-        else if (typeof anyTool.run === "function") output = await anyTool.run(args, callOptions);
-        else throw new Error("Tool is not invokable");
+        const maxRetries = Math.max(0, Number(retryCfg?.maxRetries) || 0);
+        const backoffMs = Math.max(0, Number(retryCfg?.backoffMs) || 250);
+        let attempt = 0;
+        // First attempt + up to maxRetries retries with exponential backoff.
+        // shouldRetry can short-circuit retries for non-transient errors.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          try {
+            output = await invokeOnce();
+            failureStats[toolName] = 0;
+            break;
+          } catch (retryErr) {
+            attempt += 1;
+            const shouldRetry = retryCfg?.shouldRetry
+              ? retryCfg.shouldRetry(retryErr, attempt)
+              : true;
+            if (attempt > maxRetries || !shouldRetry) {
+              failureStats[toolName] = (failureStats[toolName] || 0) + 1;
+              throw retryErr;
+            }
+            await new Promise((r) => setTimeout(r, backoffMs * Math.pow(2, attempt - 1)));
+          }
+        }
+
+        if (cacheKey) {
+          toolCache[cacheKey] = { value: output, timestamp: Date.now() };
+        }
 
         const durationMs = Date.now() - start;
         const executionId = nanoid();
 
         if (output && typeof output === "object" && output.__handoff && output.__handoff.runtime) {
           toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
-          appended.push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+          push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
           state.agent = output.__handoff.runtime as AgentRuntimeConfig;
           onEvent?.({ type: "handoff", from: runtime.name, to: state.agent?.name, toolName });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: "handoff", durationMs });
@@ -336,7 +441,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           status: "success",
         });
 
-        appended.push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
         onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
@@ -394,7 +499,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const executionId = nanoid();
         const message = error?.message || String(error);
         toolHistory.push({ executionId, toolName, args, output: `Error executing tool: ${message}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "error" });
-        appended.push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+        push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
         markToolFailure(message, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message } });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: message } });
@@ -432,21 +537,78 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
     };
 
-    for (const tc of planned) {
-      if (awaitingApproval) break;
+    // Split into two index groups: tools that need human approval must run
+    // sequentially (the first pending one short-circuits the turn), tools that
+    // do not need approval can be fanned out up to `maxParallelTools`.
+    const approvalIndices: number[] = [];
+    const parallelIndices: number[] = [];
+    planned.forEach((tc, idx) => {
+      const t = toolByName.get(tc.name);
+      if (t && (t as any).needsApproval) approvalIndices.push(idx);
+      else parallelIndices.push(idx);
+    });
+
+    let shouldStop = false;
+    const checkCancellationStop = () => {
       const cancelState = isCancelled();
       if (cancelState.cancelled) {
         const ctx = (state.ctx = state.ctx || {});
         (ctx as any).__cancelled = { stage: "tools", reason: cancelState.reason, timestamp: new Date().toISOString() };
         onEvent?.({ type: "cancelled", stage: "tools", reason: cancelState.reason });
         onProgress?.({ stage: "tools", message: "Cancelled", detail: { reason: cancelState.reason } });
-        break;
+        shouldStop = true;
+        return true;
       }
-      const result = await runOne(tc);
+      return false;
+    };
+
+    // Approval-requiring tools: sequential so the first pending approval can
+    // break the turn deterministically.
+    for (const idx of approvalIndices) {
+      if (awaitingApproval || shouldStop) break;
+      if (checkCancellationStop()) break;
+      const result = await runOne(planned[idx], orderedSlots[idx]);
       if (result.status === "awaiting_approval") {
         awaitingApproval = true;
         break;
       }
+    }
+
+    // Fan out non-approval tools with bounded concurrency.
+    if (!awaitingApproval && !shouldStop && parallelIndices.length > 0) {
+      const concurrency = Math.max(1, Math.min(limits.maxParallelTools, parallelIndices.length));
+      let cursor = 0;
+      const workerError: { err?: unknown } = {};
+      const workers: Promise<void>[] = [];
+      for (let w = 0; w < concurrency; w++) {
+        workers.push((async () => {
+          while (true) {
+            if (workerError.err || shouldStop || awaitingApproval) return;
+            const i = cursor++;
+            if (i >= parallelIndices.length) return;
+            if (checkCancellationStop()) return;
+            const idx = parallelIndices[i];
+            try {
+              const result = await runOne(planned[idx], orderedSlots[idx]);
+              if (result.status === "awaiting_approval") {
+                awaitingApproval = true;
+                return;
+              }
+            } catch (err) {
+              workerError.err = err;
+              return;
+            }
+          }
+        })());
+      }
+      await Promise.all(workers);
+      if (workerError.err) throw workerError.err;
+    }
+
+    // Flatten per-planned-index slots into the canonical appended order so
+    // tool_result blocks line up with the assistant turn's tool_use order.
+    for (const slot of orderedSlots) {
+      if (slot.length > 0) appended.push(...slot);
     }
 
     for (const tc of skipped) {
@@ -486,11 +648,28 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       state.ctx = Object.keys(ctx).length > 0 ? ctx : undefined;
     }
 
+    // New tool results invalidate any prior "summarizer had nothing to
+    // compress" verdict — fresh raw payloads are now in scope. Without this,
+    // a previously-exhausted summarization run would silently suppress
+    // legitimate compaction on subsequent turns.
+    const appendedHasToolResult = appended.some((m) => m.role === "tool");
+    if (appendedHasToolResult && state.ctx?.__summarizationExhausted) {
+      const ctx = { ...state.ctx };
+      delete ctx.__summarizationExhausted;
+      state.ctx = Object.keys(ctx).length > 0 ? ctx : undefined;
+    }
+
     return {
       messages: [...state.messages, ...appended],
       toolCallCount: toolCount,
       toolHistory,
       toolHistoryArchived,
+      toolCache: state.toolCache,
+      // Explicitly propagate ctx so callers using `{ ...state, ...delta }`
+      // do not silently capture a stale ctx reference. Mutations to
+      // __summarizationExhausted / __awaitingApproval / __structuredOutputParsed
+      // are made on this object during execution.
+      ctx: state.ctx,
       agent: state.agent,
       pendingApprovals,
     };

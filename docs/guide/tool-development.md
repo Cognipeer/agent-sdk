@@ -58,10 +58,49 @@ Large tool results push token pressure higher. Techniques:
 3. For binary / huge text: store externally, return reference ID.
 
 ## Idempotency & Caching
-If your tool is deterministic for a given input, you can implement a lightweight memo cache external to the tool and return cached results. (Framework does not impose caching today.)
+
+If your tool is deterministic for a given input, opt into the built-in per-invoke result cache:
+
+```ts
+const lookup = createTool({
+  name: "lookup_owner",
+  description: "Return the owner for a project code",
+  schema: z.object({ code: z.string() }),
+  func: async ({ code }) => projectRegistry[code],
+  cache: true, // or { keyFn: (a) => a.code, ttlMs: 60_000 }
+});
+```
+
+The runtime hashes the validated args, stores results on `state.toolCache`, and short-circuits duplicate calls inside the same invoke. Use `keyFn` to canonicalize keys (drop nonces) and `ttlMs` to expire entries. Per-tool execution limits (`maxExecutionsPerRun`) and the cache work together: a cached hit does NOT consume an execution count toward your global `maxToolCalls` budget? It still increments `toolCallCount`, but it bypasses `func` and any external rate limit. If a non-deterministic tool is incorrectly flagged `cache: true`, the model never sees fresh results — only enable it on genuinely idempotent operations.
+
+## Retry, Backoff, and Circuit Breaker
+
+For tools that talk to flaky external APIs, declare a retry policy on the tool itself rather than rolling your own loop inside `func`:
+
+```ts
+const search = createTool({
+  name: "search",
+  description: "Search the docs index",
+  schema: z.object({ q: z.string() }),
+  func: async ({ q }) => client.search(q),
+  retry: {
+    maxRetries: 3,
+    backoffMs: 250,                              // doubled each attempt
+    shouldRetry: (err) => !`${err?.message}`.includes("UNAUTHORIZED"),
+    circuitBreakerThreshold: 5,                  // open after 5 consecutive failures
+  },
+});
+```
+
+- The first attempt + up to `maxRetries` retries with exponential backoff happen transparently — only the *final* result (success or failure) reaches the agent state.
+- `shouldRetry` lets you skip retries for non-transient errors (auth, 4xx, business logic).
+- The circuit breaker counts *consecutive* failures across the invoke. Once it trips, the tool short-circuits with a breaker message until the loop ends.
+
+Provider-level retries (429 / 5xx with `Retry-After`) are handled separately by the native provider layer and do not consume `maxRetries`.
 
 ## Parallel Calls
-`maxParallelTools` limits concurrency per turn. If your tool is resource heavy, document expected latency so users can tune this.
+
+`maxParallelTools` controls concurrency per agent turn. The runtime fans non-approval tool calls out across a bounded worker pool while preserving tool-result ordering for strict-pairing providers (Bedrock / Anthropic). Approval-required tools always run sequentially. If your tool is resource-heavy, document the expected latency so callers can tune the limit.
 
 ## Side Effects
 Avoid unbounded side effects (writing files, mutating global state). Keep tools primarily query or pure transformation style.

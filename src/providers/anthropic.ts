@@ -26,6 +26,8 @@ export class AnthropicProvider extends BaseProvider {
   private readonly defaultHeaders: Record<string, string>;
   private readonly anthropicVersion: string;
 
+  private readonly promptCachingEnabled: boolean;
+
   constructor(config: AnthropicProviderConfig) {
     super();
     this.apiKey = config.apiKey;
@@ -33,6 +35,8 @@ export class AnthropicProvider extends BaseProvider {
     this.defaultModel = config.defaultModel ?? "claude-sonnet-4-20250514";
     this.defaultHeaders = config.defaultHeaders ?? {};
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
+    this.promptCachingEnabled = config.prompt_caching?.enabled === true;
+    if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -171,13 +175,27 @@ export class AnthropicProvider extends BaseProvider {
       stream,
     };
 
-    if (system) body.system = system;
+    if (system) {
+      // When prompt caching is on, ship `system` as a block array with a
+      // cache_control breakpoint so the static system prompt is reused.
+      if (this.promptCachingEnabled) {
+        body.system = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+      } else {
+        body.system = system;
+      }
+    }
     if (request.temperature != null) body.temperature = request.temperature;
     if (request.topP != null) body.top_p = request.topP;
     if (request.stop) body.stop_sequences = request.stop;
 
     if (request.tools?.length) {
-      body.tools = request.tools.map((t) => this.toAnthropicTool(t));
+      const tools = request.tools.map((t) => this.toAnthropicTool(t));
+      // Cache the entire tools block by placing the breakpoint on the final
+      // tool definition – everything above it in the request is cached too.
+      if (this.promptCachingEnabled && tools.length > 0) {
+        tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+      }
+      body.tools = tools;
     }
 
     if (request.toolChoice != null) {
@@ -298,16 +316,14 @@ export class AnthropicProvider extends BaseProvider {
 
   private async doFetch(body: Record<string, any>): Promise<Response> {
     const url = `${this.baseURL}/v1/messages`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": this.anthropicVersion,
-        ...this.defaultHeaders,
-      },
-      body: JSON.stringify(body),
-    });
+    const headers = {
+      "Content-Type": "application/json",
+      "x-api-key": this.apiKey,
+      "anthropic-version": this.anthropicVersion,
+      ...this.defaultHeaders,
+    };
+    const payload = JSON.stringify(body);
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

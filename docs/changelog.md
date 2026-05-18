@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.6.5]
+
+### Added
+- **Parallel tool execution.** `limits.maxParallelTools` now actually fans non-approval tool calls across a bounded worker pool while preserving `tool_use → tool_result` order for Bedrock / Anthropic strict pairing.
+- **Anthropic / Bedrock prompt caching.** Opt in via `prompt_caching: { enabled: true }` on the provider; system + final tool definition receive `cache_control: ephemeral` (Anthropic) or `cachePoint` blocks (Bedrock Converse). Typical input-token cost drops by ~90% on long tool-heavy runs.
+- **Opt-in tool result cache.** `createTool({ cache: true | { keyFn?, ttlMs? } })` short-circuits duplicate args within an invoke; cached hits surface as `state.toolHistory[].fromCache === true`.
+- **Per-tool retry / circuit breaker.** `createTool({ retry: { maxRetries, backoffMs, shouldRetry, circuitBreakerThreshold } })` retries transient errors with exponential backoff and trips a breaker after consecutive failures.
+- **Provider retry + backoff.** Native providers automatically retry 429 / 5xx with `Retry-After`. Configure via `createProvider({ retry })`.
+- **Delegation enforcement.** `asTool` reads the parent's resolved `delegation` policy at runtime and enforces `mode`, `maxDelegationDepth`, `maxChildCalls`, and `childContextPolicy` (`minimal` / `scoped` / `full`).
+- **Budget limits.** `AgentLimits` gains `maxTotalOutputTokens`, `maxCostUsd`, and `maxWallClockMs`. Pair `maxCostUsd` with `costEstimator` on the agent options.
+- **Pluggable token counter.** `AgentOptions.tokenCounter` swaps the built-in character heuristic for a real tokenizer per-invoke. Exported helpers: `setTokenCounter`, `getTokenCounter`, `defaultTokenCounter`.
+- **Reflection budget.** `reasoning.reflection.maxPerRun` and `reasoning.reflection.everyNTurns` cap reflection cost on tool-heavy invokes.
+- **stateRef per-invoke isolation.** Concurrent invocations on the same agent instance no longer share plan / todo / tool-history references.
+
+### Fixed
+- Summarizer uses `state.agent?.model` (live runtime model), so handoffs and per-invoke model overrides reach compaction too.
+- `__summarizationExhausted` is cleared automatically when a new compactable tool result is appended; prevents deadlocks after partial retention bouts.
+- `state.ctx` mutations from `toolsNode` propagate to the caller correctly (delta now explicitly returns `ctx`).
+- Smart-agent runtime tool set includes the structured-output `response` finalize tool when `outputSchema` is set.
+- Base-loop safety check honours the new `__limitBreached` exit reason.
+- `asTool` delegation sub-agents pre-initialize `_stateRef` so the parent's tools node can deposit `parentRuntime` / `ctx` before the delegation runs.
+
+### Changed
+- Documentation refreshed: limits/tokens, summarization, tool development, runtime profiles, native providers, getting started, and API reference now cover the new budget surfaces, prompt caching, parallel tool exec, tool cache/retry, delegation enforcement, and pluggable token counter.
+
+## [Earlier Unreleased]
+
 ### Added
 - Unified `reasoning` configuration on `createAgent(...)` / `createSmartAgent(...)` for provider-native reasoning plus post-tool reflection.
 - Reflection persistence on `state.reflections` plus `reflection` events for streaming UIs and task timelines.
