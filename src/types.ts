@@ -237,6 +237,12 @@ export type AgentOptions = {
     cachedInputTokens?: number;
     reasoningTokens?: number;
   }) => number;
+  /**
+   * Human-in-the-loop hooks. When `askUser` is enabled, the agent gains a
+   * built-in `ask_user_question` tool that pauses the run with structured
+   * questions for the host application to answer.
+   */
+  humanInTheLoop?: HumanInTheLoopOptions;
 };
 
 // ─── Reasoning + Reflection ──────────────────────────────────────────────────
@@ -523,6 +529,8 @@ export type SmartAgentOptions = {
   tokenCounter?: (text: string) => number;
   /** See AgentOptions.costEstimator. */
   costEstimator?: AgentOptions["costEstimator"];
+  /** See AgentOptions.humanInTheLoop. */
+  humanInTheLoop?: HumanInTheLoopOptions;
 };
 
 // Runtime representation of an agent (used inside state.agent)
@@ -542,6 +550,7 @@ export type AgentRuntimeConfig = {
   tracing?: TracingConfig;
   runtimeProfile?: RuntimeProfile;
   smart?: ResolvedSmartAgentConfig;
+  humanInTheLoop?: HumanInTheLoopRuntimeConfig;
 };
 
 export type TraceMessageSection = {
@@ -759,6 +768,7 @@ export type AgentState = {
   metadata?: Record<string, any>;
   ctx?: Record<string, any>;
   pendingApprovals?: PendingToolApproval[];
+  pendingUserQuestions?: PendingUserQuestion[];
   // Usage tracking (per agent model call). Each agent turn that produces an AI response
   // appends an entry to usage.perRequest. totals aggregates by modelName.
   usage?: {
@@ -1014,6 +1024,111 @@ export type ToolApprovalEvent = {
   comment?: string;
 };
 
+// ─── Ask-User (Human-in-the-Loop questions) ──────────────────────────────────
+// Lets the model pause the agent and surface a structured prompt back to the
+// host application. Mirrors the Claude Code "AskUserQuestion" UX: one or more
+// related questions with multi-choice options and (optionally) free-text.
+
+export type UserQuestionOption = {
+  /** Label shown to the user. */
+  label: string;
+  /** Value returned in the resolution. Defaults to `label` when omitted. */
+  value?: string;
+  /** Optional helper text rendered alongside the option. */
+  description?: string;
+  /** Optional code / ASCII preview rendered when the option is focused. */
+  preview?: string;
+};
+
+export type UserQuestionItem = {
+  /** The full question text shown to the user. */
+  question: string;
+  /** Short label (chip / tag) displayed alongside the question. */
+  header?: string;
+  /** When true the user may pick multiple options. Default: false. */
+  multiSelect?: boolean;
+  /** Placeholder shown for the free-text input (when enabled globally). */
+  placeholder?: string;
+  /** Predefined options; omit for a pure free-text question. */
+  options?: UserQuestionOption[];
+  /** When true the user must answer this item. Default: true. */
+  required?: boolean;
+};
+
+export type UserQuestionStatus = "pending" | "answered" | "cancelled" | "executed";
+
+export type UserQuestionAnswer = {
+  /** Selected option values. Single-select questions report exactly one entry. */
+  values: string[];
+  /** Populated when the user typed a custom answer (only when free-text is enabled). */
+  freeText?: string;
+  /** Optional reviewer notes. */
+  notes?: string;
+};
+
+/** Keyed by the question text (or `header`, if both questions share text). */
+export type UserQuestionAnswerSet = Record<string, UserQuestionAnswer>;
+
+export type PendingUserQuestion = {
+  id: string;
+  toolCallId: string;
+  toolName: "ask_user_question";
+  questions: UserQuestionItem[];
+  status: UserQuestionStatus;
+  requestedAt: string;
+  answeredAt?: string;
+  answeredBy?: string;
+  answers?: UserQuestionAnswerSet;
+  cancelled?: boolean;
+  notes?: string;
+  /** Snapshot of the global free-text flag at request time, for UI rendering. */
+  allowFreeText?: boolean;
+  metadata?: Record<string, any>;
+};
+
+export type UserQuestionResolution = {
+  id: string;
+  answers?: UserQuestionAnswerSet;
+  answeredBy?: string;
+  notes?: string;
+  /** When true the tool call is reported back as cancelled / unanswered. */
+  cancelled?: boolean;
+};
+
+export type UserQuestionEvent = {
+  type: "user_question";
+  status: "pending" | "answered" | "cancelled";
+  id: string;
+  toolCallId: string;
+  questions?: UserQuestionItem[];
+  answers?: UserQuestionAnswerSet;
+  answeredBy?: string;
+  allowFreeText?: boolean;
+};
+
+// Runtime configuration carried on AgentRuntimeConfig / ctx so the tool and
+// the resolver share a single source of truth.
+export type HumanInTheLoopAskUserConfig = {
+  enabled: boolean;
+  allowFreeText: boolean;
+  promptOverride?: string;
+};
+
+export type HumanInTheLoopRuntimeConfig = {
+  askUser?: HumanInTheLoopAskUserConfig;
+};
+
+export type HumanInTheLoopOptions = {
+  askUser?: boolean | {
+    /** Allow the user to type a custom "Other" answer. Default: true. */
+    allowFreeText?: boolean;
+    /** Override the built-in tool description. */
+    promptOverride?: string;
+    /** Convenience: subscribe to user_question events without setting up onEvent. */
+    onQuestion?: (event: UserQuestionEvent) => void;
+  };
+};
+
 export type GuardrailEvent = {
   type: "guardrail";
   phase: GuardrailPhase;
@@ -1029,6 +1144,7 @@ export type GuardrailEvent = {
 export type SmartAgentEvent =
   | ToolCallEvent
   | ToolApprovalEvent
+  | UserQuestionEvent
   | PlanEvent
   | SummarizationEvent
   | FinalAnswerEvent
@@ -1154,6 +1270,7 @@ export type AgentInstance<TOutput = unknown> = {
   snapshot: (state: SmartState, options?: SnapshotOptions) => AgentSnapshot;
   resume: (snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions) => Promise<AgentInvokeResult<TOutput>>;
   resolveToolApproval: (state: SmartState, resolution: ToolApprovalResolution) => SmartState;
+  resolveUserQuestion: (state: SmartState, resolution: UserQuestionResolution) => SmartState;
   // Convert this agent into a tool usable by another agent. Accepts optional overrides.
   asTool: (opts: { toolName: string; description?: string; inputDescription?: string } ) => ToolInterface<any, any, any>;
   // Create a handoff descriptor so another agent can switch control to this one mid-conversation

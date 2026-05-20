@@ -13,6 +13,7 @@ export function createResolverNode() {
   toolHistory: state.toolHistory || [],
   toolHistoryArchived: state.toolHistoryArchived || [],
       pendingApprovals: state.pendingApprovals || [],
+      pendingUserQuestions: state.pendingUserQuestions || [],
       plan: state.plan || null,
       planVersion: state.planVersion || 0,
     } as SmartState;

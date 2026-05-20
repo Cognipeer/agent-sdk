@@ -48,6 +48,12 @@ This section is a recipe catalog, not a loose folder dump. Each example is here 
 		<span>Pause before sensitive execution, then resume from an approved runtime state.</span>
 		<code>example:tool-approval</code>
 	</a>
+	<a class="example-card" href="/agent-sdk/examples/ask-user">
+		<span class="example-card-badge">Control &amp; Safety</span>
+		<strong>Ask User</strong>
+		<span>Pause with a structured multi-choice prompt, then resume with the user's answer.</span>
+		<code>example:ask-user</code>
+	</a>
 	<a class="example-card" href="/agent-sdk/examples/pause-resume">
 		<span class="example-card-badge">Control &amp; Safety</span>
 		<span>Snapshot a paused run, serialize it, and continue later without replaying the session.</span>
@@ -105,7 +111,7 @@ Some examples run entirely with fake models. Others need real provider credentia
 | `basic`, `planning`, `summarization`, `tool-limit` | optional | These examples include a fake model fallback. |
 | `tools` | `OPENAI_API_KEY` | `TAVILY_API_KEY` is optional unless the search tool is used. |
 | `structured-output` | optional | Includes a fake model fallback. |
-| `pause-resume`, `tool-approval`, `guardrails` | no | Built for local runtime behavior inspection. |
+| `pause-resume`, `tool-approval`, `ask-user`, `guardrails` | no | Built for local runtime behavior inspection. |
 | `multi-agent` | optional | Includes fake-model fallback. |
 | `handoff` | yes | Uses `ChatOpenAI` directly. |
 | `vision` | yes | Requires a multimodal-capable provider model. |
@@ -123,6 +129,7 @@ Some examples run entirely with fake models. Others need real provider credentia
 | continue after compaction on a later turn | `/examples/rewrite-summary` |
 | stop unbounded tool recursion | `/examples/tool-limit` |
 | pause for human approval | `/examples/tool-approval` |
+| ask the user a structured question | `/examples/ask-user` |
 | snapshot and resume later | `/examples/pause-resume` |
 | force typed final output | `/examples/structured-output` |
 | block unsafe requests or responses | `/examples/guardrails` |
@@ -149,6 +156,7 @@ Some examples run entirely with fake models. Others need real provider credentia
 ### 3. Production control surfaces
 
 - `tool-approval`
+- `ask-user`
 - `pause-resume`
 - `structured-output`
 - `guardrails`

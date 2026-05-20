@@ -37,7 +37,8 @@ Highlights:
 - **Unified reasoning surface** – one `reasoning` config controls provider-native reasoning and post-tool plain-text reflections.
 - **Structured output** – provide a Zod schema and the agent injects a finalize tool to capture JSON deterministically.
 - **Multi-agent and handoffs** – wrap agents as tools or transfer control mid-run with `asTool` / `asHandoff`.
-- **Usage + events** – normalize provider usage, surface `tool_call`, `plan`, `summarization`, `reflection`, `metadata`, and `handoff` events.
+- **Human-in-the-loop** – `needsApproval` tools pause for review; `humanInTheLoop.askUser` enables a built-in `ask_user_question` tool that pauses with a structured multi-choice prompt and resumes from the user's answer.
+- **Usage + events** – normalize provider usage, surface `tool_call`, `tool_approval`, `user_question`, `plan`, `summarization`, `reflection`, `metadata`, and `handoff` events.
 - **Structured tracing** – optional per-invoke JSON traces with metadata, payload capture, and pluggable sinks (file, HTTP, Cognipeer, custom).
 
 ## What’s inside
@@ -267,6 +268,7 @@ console.log(res.content);
 - **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
+- **Ask the user** – opt in with `humanInTheLoop: { askUser: true }` to give the model an `ask_user_question` tool that pauses the run; resume by calling `agent.resolveUserQuestion(state, { id, answers })`. The global `allowFreeText` flag controls whether "Other" / typed answers are allowed.
 - **MCP + LangChain tools** – any object satisfying the minimal tool interface works; LangChain’s `Tool` implementations plug in directly.
 - **Vision input** – message parts accept base64 or URL images for multimodal requests.
 - **Observability hooks** – `config.onEvent` surfaces tool lifecycle, summarization, reflection, metadata, and final answer events for streaming UIs or CLIs.
@@ -285,6 +287,7 @@ Examples live under `examples/` with per-folder READMEs. Build the package first
 | `summarize-context/` | Summaries + `get_tool_response` raw retrieval. |
 | `structured-output/` | Zod schema finalize tool and parsed outputs. |
 | `rewrite-summary/` | Continue conversations after summaries are injected. |
+| `ask-user/` | Built-in `ask_user_question` tool, structured multi-choice prompt, resume with user's answer. |
 | `multi-agent/` | Delegating between agents via `asTool`. |
 | `handoff/` | Explicit runtime handoffs. |
 | `mcp-tavily/` | MCP remote tool discovery. |
@@ -349,7 +352,9 @@ Exported helpers (`agent-sdk/src/index.ts`):
 **Utilities:**
 - `buildSystemPrompt(extra?, planning?, name?)`
 - `setTokenCounter`, `getTokenCounter`, `defaultTokenCounter` – swap in a real tokenizer (tiktoken, etc.) globally or per-invoke
-- Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, etc.).
+- `resolveToolApprovalState`, `resolveUserQuestionState` – pure helpers behind `agent.resolveToolApproval` / `agent.resolveUserQuestion` for callers that want to apply a resolution outside the agent factory.
+- `createAskUserQuestionTool(stateRef, { allowFreeText, promptOverride })` – exposed for advanced users that want to attach the human-in-the-loop tool manually instead of via `humanInTheLoop.askUser`.
+- Node factories (`nodes/*`), context helpers, token utilities, and full TypeScript types (`SmartAgentOptions`, `SmartState`, `AgentInvokeResult`, `PendingUserQuestion`, `UserQuestionResolution`, etc.).
 
 `SmartAgentOptions` accepts the usual suspects (`model`, `tools`, `limits`, `runtimeProfile`, `customProfile`, `useTodoList`, `summarization`, `reasoning`, `usageConverter`, `tracing`, `tokenCounter`, `costEstimator`). See `docs/api/` for detailed type references.
 

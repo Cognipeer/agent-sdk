@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Ask-user (structured human-in-the-loop).** Opt in with `humanInTheLoop: { askUser: true }` on `createAgent` / `createSmartAgent` to register a built-in `ask_user_question` tool. When the model calls it, the runtime pauses with a `PendingUserQuestion` entry, emits a `user_question` event, and sets `ctx.__awaitingUserQuestion`. Resume by calling `agent.resolveUserQuestion(state, { id, answers })` which validates the response and appends it as a `role: "tool"` message bound to the original `tool_call_id`. The global `allowFreeText` flag (default `true`) decides whether "Other" / typed answers are accepted; when `false`, every question must include `>= 2` options and the resolver rejects `freeText`. Also exposed: `resolveUserQuestionState`, `createAskUserQuestionTool`, and types `PendingUserQuestion`, `UserQuestionItem`, `UserQuestionOption`, `UserQuestionAnswer`, `UserQuestionAnswerSet`, `UserQuestionResolution`, `UserQuestionEvent`, `HumanInTheLoopOptions`.
+
 ## [0.6.5]
 
 ### Added

@@ -110,10 +110,29 @@ Both builders expose more than `invoke(...)`:
 - `snapshot(state, options?)`
 - `resume(snapshot, options?)`
 - `resolveToolApproval(state, resolution)`
+- `resolveUserQuestion(state, resolution)` — apply an answer to a pending `ask_user_question` entry (see `humanInTheLoop.askUser` below)
 - `asTool(options?)`
 - `asHandoff(options?)`
 
 These methods matter if your agent is long-running, approval-gated, resumable, or composed into a bigger agent system.
+
+### `humanInTheLoop.askUser`
+
+Both `createAgent` and `createSmartAgent` accept a `humanInTheLoop` option:
+
+```ts
+humanInTheLoop?: {
+  askUser?: boolean | {
+    allowFreeText?: boolean;       // default true
+    promptOverride?: string;       // override the built-in tool description
+    onQuestion?: (event: UserQuestionEvent) => void;
+  };
+};
+```
+
+When `askUser` is truthy the runtime registers a built-in `ask_user_question` tool. When the model calls it, the run pauses with `state.pendingUserQuestions[0]` populated and `ctx.__awaitingUserQuestion` set. Resume by calling `agent.resolveUserQuestion(state, { id, answers })` and re-invoking. See [Guide → Ask User](../guide/ask-user.md) for the full UX flow.
+
+`allowFreeText` is a **global** decision: when `false`, the tool description tells the model that "Other" / typed answers are unavailable, every question must include `>= 2` options, and the resolver rejects any `freeText` field on incoming answers.
 
 ### `asTool(...)` and delegation
 
@@ -163,5 +182,7 @@ type AgentInvokeResult<TOutput = unknown> = {
 - `state.planVersion`
 - `state.summaryRecords`
 - `state.memoryFacts`
+- `state.pendingApprovals` — populated when a tool with `needsApproval: true` is requested
+- `state.pendingUserQuestions` — populated when the model calls `ask_user_question`
 
 If you are using the smart runtime, prefer `state.plan` over any event-only or legacy todo mental model.

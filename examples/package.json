@@ -16,6 +16,7 @@
     "example:summarization": "tsx summarization/summarization.ts",
     "example:summarize-context": "tsx summarize-context/summarize-context.ts",
     "example:todo-planning": "tsx todo-planning/todo.ts",
+    "example:ask-user": "tsx ask-user/ask-user.ts",
     "example:tool-approval": "tsx tool-approval/tool-approval.ts",
     "example:tool-limit": "tsx tool-limit/tool-limit.ts",
     "example:tools": "tsx tools/tools.ts",

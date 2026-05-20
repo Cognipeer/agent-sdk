@@ -6,6 +6,7 @@ import type {
   ToolInterface,
   Message,
   PendingToolApproval,
+  PendingUserQuestion,
 } from "../types.js";
 import { nanoid } from "nanoid";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
@@ -69,7 +70,11 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       ? state.pendingApprovals.map((entry) => ({ ...entry }))
       : [];
     const pendingByCallId = new Map(pendingApprovals.map((entry) => [entry.toolCallId, entry]));
+    const pendingUserQuestions: PendingUserQuestion[] = Array.isArray(state.pendingUserQuestions)
+      ? state.pendingUserQuestions.map((entry) => ({ ...entry }))
+      : [];
     let awaitingApproval = false;
+    let awaitingUserQuestion = false;
 
     for (const tool of toolByName.values()) {
       const anyTool: any = tool as any;
@@ -77,6 +82,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         anyTool._stateRef.toolHistory = state.toolHistory;
         anyTool._stateRef.toolHistoryArchived = state.toolHistoryArchived;
         anyTool._stateRef.pendingApprovals = pendingApprovals;
+        anyTool._stateRef.pendingUserQuestions = pendingUserQuestions;
         anyTool._stateRef.messages = state.messages;
         anyTool._stateRef.ctx = state.ctx || (state.ctx = {});
         anyTool._stateRef.__onEvent = onEvent;
@@ -105,7 +111,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
     type ToolExecutionResult =
       | { status: "success" | "error"; approval?: PendingToolApproval }
-      | { status: "awaiting_approval" | "rejected"; approval: PendingToolApproval };
+      | { status: "awaiting_approval" | "rejected"; approval: PendingToolApproval }
+      | { status: "awaiting_user_question"; userQuestion: PendingUserQuestion };
 
     const isCancelled = () => {
       if (abortSignal?.aborted) return { cancelled: true, reason: "aborted" };
@@ -176,6 +183,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
       if (toolStateRef) {
         toolStateRef.pendingApprovals = pendingApprovals;
+        toolStateRef.pendingUserQuestions = pendingUserQuestions;
         toolStateRef.ctx = state.ctx || (state.ctx = {});
         toolStateRef.__currentToolCallId = toolCallId;
         delete toolStateRef.__awaitingApproval;
@@ -415,6 +423,26 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           };
         }
 
+        if (output && typeof output === "object" && (output as any).__awaitingUserQuestion) {
+          if (toolStateRef?.ctx && typeof toolStateRef.ctx === "object") {
+            state.ctx = toolStateRef.ctx;
+          }
+
+          const pendingQuestion = pendingUserQuestions.find((entry) =>
+            entry.toolCallId === (output as any).toolCallId || entry.id === (output as any).id
+          );
+
+          if (!pendingQuestion) {
+            throw new Error(`Tool ${toolName} requested a user question but no pending question entry was recorded.`);
+          }
+
+          awaitingUserQuestion = true;
+          return {
+            status: "awaiting_user_question",
+            userQuestion: pendingQuestion,
+          };
+        }
+
         if (output && typeof output === "object" && output.__finalStructuredOutput) {
           if (!state.ctx) state.ctx = {};
           state.ctx.__structuredOutputParsed = output.data;
@@ -565,17 +593,21 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     // Approval-requiring tools: sequential so the first pending approval can
     // break the turn deterministically.
     for (const idx of approvalIndices) {
-      if (awaitingApproval || shouldStop) break;
+      if (awaitingApproval || awaitingUserQuestion || shouldStop) break;
       if (checkCancellationStop()) break;
       const result = await runOne(planned[idx], orderedSlots[idx]);
       if (result.status === "awaiting_approval") {
         awaitingApproval = true;
         break;
       }
+      if (result.status === "awaiting_user_question") {
+        awaitingUserQuestion = true;
+        break;
+      }
     }
 
     // Fan out non-approval tools with bounded concurrency.
-    if (!awaitingApproval && !shouldStop && parallelIndices.length > 0) {
+    if (!awaitingApproval && !awaitingUserQuestion && !shouldStop && parallelIndices.length > 0) {
       const concurrency = Math.max(1, Math.min(limits.maxParallelTools, parallelIndices.length));
       let cursor = 0;
       const workerError: { err?: unknown } = {};
@@ -583,7 +615,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       for (let w = 0; w < concurrency; w++) {
         workers.push((async () => {
           while (true) {
-            if (workerError.err || shouldStop || awaitingApproval) return;
+            if (workerError.err || shouldStop || awaitingApproval || awaitingUserQuestion) return;
             const i = cursor++;
             if (i >= parallelIndices.length) return;
             if (checkCancellationStop()) return;
@@ -592,6 +624,10 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
               const result = await runOne(planned[idx], orderedSlots[idx]);
               if (result.status === "awaiting_approval") {
                 awaitingApproval = true;
+                return;
+              }
+              if (result.status === "awaiting_user_question") {
+                awaitingUserQuestion = true;
                 return;
               }
             } catch (err) {
@@ -667,11 +703,12 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       toolCache: state.toolCache,
       // Explicitly propagate ctx so callers using `{ ...state, ...delta }`
       // do not silently capture a stale ctx reference. Mutations to
-      // __summarizationExhausted / __awaitingApproval / __structuredOutputParsed
-      // are made on this object during execution.
+      // __summarizationExhausted / __awaitingApproval / __awaitingUserQuestion /
+      // __structuredOutputParsed are made on this object during execution.
       ctx: state.ctx,
       agent: state.agent,
       pendingApprovals,
+      pendingUserQuestions,
     };
   };
 }

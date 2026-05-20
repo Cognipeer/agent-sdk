@@ -44,6 +44,7 @@ export default defineConfig({
             { text: 'State Management', link: '/guide/state-management' },
             { text: 'Structured Output', link: '/guide/structured-output' },
             { text: 'Tool Approvals', link: '/guide/tool-approvals' },
+            { text: 'Ask User (Human-in-the-Loop)', link: '/guide/ask-user' },
             { text: 'MCP Integration', link: '/guide/mcp' },
           ],
         },
@@ -99,6 +100,7 @@ export default defineConfig({
           text: 'Control & Safety',
           items: [
             { text: 'Tool Approval', link: '/examples/tool-approval' },
+            { text: 'Ask User', link: '/examples/ask-user' },
             { text: 'Pause & Resume', link: '/examples/pause-resume' },
             { text: 'Structured Output', link: '/examples/structured-output' },
             { text: 'Guardrails', link: '/examples/guardrails' },

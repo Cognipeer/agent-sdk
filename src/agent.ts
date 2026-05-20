@@ -1,5 +1,5 @@
 // A minimal agent builder: no system prompt, no summarization, with tool limit and optional structured output finalize.
-import type { AgentInvokeResult, InvokeConfig, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution } from "./types.js";
+import type { AgentInvokeResult, InvokeConfig, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution, UserQuestionResolution, HumanInTheLoopAskUserConfig } from "./types.js";
 import { GuardrailPhase } from "./types.js";
 import { z, ZodSchema } from "zod";
 import { createResolverNode } from "./nodes/resolver.js";
@@ -13,6 +13,8 @@ import { createTraceSession, finalizeTraceSession, startStreamingSession, record
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
+import { resolveUserQuestionState } from "./utils/userQuestions.js";
+import { createAskUserQuestionTool } from "./humanLoop.js";
 import { countMessagesTokens } from "./utils/utilTokens.js";
 import { isSyntheticSummaryMessage } from "./utils/syntheticMessages.js";
 import { extractMessageText } from "./utils/content.js";
@@ -96,6 +98,31 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   // Prepare tools list: base tools + structured output finalize if schema provided
   const toolsBase = [...((opts.tools as any) ?? [])];
 
+  // Resolve human-in-the-loop config; when askUser is enabled we attach the
+  // built-in ask_user_question tool to the agent's tool surface.
+  const askUserConfig: HumanInTheLoopAskUserConfig | undefined = (() => {
+    const raw = (opts as any).humanInTheLoop?.askUser;
+    if (!raw) return undefined;
+    if (raw === true) return { enabled: true, allowFreeText: true };
+    return {
+      enabled: true,
+      allowFreeText: raw.allowFreeText !== false,
+      promptOverride: raw.promptOverride,
+    };
+  })();
+  const askUserOnQuestion = typeof (opts as any).humanInTheLoop?.askUser === "object"
+    ? (opts as any).humanInTheLoop?.askUser?.onQuestion as ((event: any) => void) | undefined
+    : undefined;
+  // Shared per-agent stateRef for the ask_user tool. Each invoke replaces the
+  // pendingUserQuestions array via the tools node, but the tool object itself
+  // is reused — that's fine because it only reads from this ref at call time.
+  const askUserStateRef: any = askUserConfig
+    ? { pendingUserQuestions: undefined, ctx: undefined, __onEvent: undefined, __currentToolCallId: undefined }
+    : undefined;
+  if (askUserConfig && askUserStateRef) {
+    toolsBase.push(createAskUserQuestionTool(askUserStateRef, askUserConfig));
+  }
+
   // Structured output manager: resolves strategy (native vs tool-based) based on model capabilities
   const soManager = opts.outputSchema
     ? new StructuredOutputManager<TOutput>(opts.outputSchema, resolveStrategy(opts.model))
@@ -164,6 +191,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     outputSchema: opts.outputSchema as any,
     responseFormat: soManager?.getResponseFormat(),
     tracing: opts.tracing,
+    humanInTheLoop: askUserConfig ? { askUser: askUserConfig } : undefined,
   };
   const summarizationThreshold = getActiveSummarizationThreshold(opts);
 
@@ -508,6 +536,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       state = { ...state, ...(await toolsNode(state)) } as AgentState;
       onProgress?.({ stage: "tools", message: "Tools finished" });
       if (state.ctx?.__awaitingApproval) break;
+      if (state.ctx?.__awaitingUserQuestion) break;
       if (checkpointIfRequested("after_tools")) break;
       if (state.ctx?.__finalizedDueToStructuredOutput) break;
 
@@ -606,6 +635,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     if (lastAfterLoop?.role === 'tool' && !pausedStage) {
       const isExpectedExit =
         state.ctx?.__awaitingApproval ||
+        state.ctx?.__awaitingUserQuestion ||
         state.ctx?.__cancelled ||
         state.ctx?.__finalizedDueToStructuredOutput ||
         state.ctx?.__finalizedDueToToolLimit ||
@@ -636,7 +666,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       const { setTokenCounter } = await import("./utils/utilTokens.js");
       setTokenCounter(userTokenCounter);
     }
-    const onEvent = config?.onEvent;
+    const callerOnEvent = config?.onEvent;
+    const onEvent = askUserOnQuestion
+      ? (event: SmartAgentEvent) => {
+          if (event && (event as any).type === "user_question") {
+            try { askUserOnQuestion(event as any); } catch (err) { console.warn('[agent-sdk] humanInTheLoop.askUser.onQuestion error:', err); }
+          }
+          callerOnEvent?.(event);
+        }
+      : callerOnEvent;
     const onProgress = config?.onProgress;
     const onStream = config?.onStream;
     const streamEnabled = config?.stream === true;
@@ -675,6 +713,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       metadata: input.metadata,
       ctx,
       pendingApprovals: input.pendingApprovals || [],
+      pendingUserQuestions: input.pendingUserQuestions || [],
       agent: input.agent || runtimeWithInvokeLimits,
       usage: input.usage || { perRequest: [], totals: {} },
     };
@@ -785,11 +824,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   const resolveToolApproval = (state: AgentState, resolution: ToolApprovalResolution) =>
     resolveToolApprovalState(state, resolution);
 
+  const resolveUserQuestion = (state: AgentState, resolution: UserQuestionResolution) =>
+    resolveUserQuestionState(state, resolution);
+
   const instance: AgentInstance<TOutput> = {
     invoke: invokeAgent,
     snapshot: snapshotState,
     resume: resumeAgent,
     resolveToolApproval,
+    resolveUserQuestion,
     asTool: ({ toolName, description, inputDescription }: { toolName: string; description?: string; inputDescription?: string }) => {
       const schema = z.object({ input: z.string().describe(inputDescription || "Input for delegated agent") });
       const delegatedTool: any = createTool({

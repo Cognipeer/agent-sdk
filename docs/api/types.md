@@ -22,8 +22,87 @@ type SmartState = {
   } | null;
   planVersion?: number;
   reflections?: ReflectionRecord[];
+  pendingApprovals?: PendingToolApproval[];
+  pendingUserQuestions?: PendingUserQuestion[];
   ctx?: Record<string, any>;
 }
+```
+
+## `PendingUserQuestion`
+
+Populated when the model calls the built-in `ask_user_question` tool (enabled via `humanInTheLoop.askUser`). The run pauses with `ctx.__awaitingUserQuestion` set.
+
+```ts
+type UserQuestionOption = {
+  label: string;
+  value?: string;       // defaults to label
+  description?: string;
+  preview?: string;
+};
+
+type UserQuestionItem = {
+  question: string;
+  header?: string;            // short chip (max ~12 chars recommended)
+  multiSelect?: boolean;      // default false
+  placeholder?: string;
+  options?: UserQuestionOption[];
+  required?: boolean;         // default true
+};
+
+type PendingUserQuestion = {
+  id: string;
+  toolCallId: string;
+  toolName: "ask_user_question";
+  questions: UserQuestionItem[];
+  status: "pending" | "answered" | "cancelled" | "executed";
+  requestedAt: string;
+  answeredAt?: string;
+  answeredBy?: string;
+  answers?: UserQuestionAnswerSet;
+  cancelled?: boolean;
+  notes?: string;
+  allowFreeText?: boolean;    // snapshot of the global flag at request time
+  metadata?: Record<string, any>;
+};
+```
+
+### `UserQuestionResolution`
+
+Passed to `agent.resolveUserQuestion(state, resolution)`:
+
+```ts
+type UserQuestionAnswer = {
+  values: string[];      // selected option values; single-select questions get one entry
+  freeText?: string;     // only valid when allowFreeText is true
+  notes?: string;
+};
+
+type UserQuestionAnswerSet = Record<string /* question text */, UserQuestionAnswer>;
+
+type UserQuestionResolution = {
+  id: string;            // PendingUserQuestion.id or toolCallId
+  answers?: UserQuestionAnswerSet;
+  answeredBy?: string;
+  notes?: string;
+  cancelled?: boolean;
+};
+```
+
+### `UserQuestionEvent`
+
+Emitted by the runtime when the model invokes `ask_user_question`. Subscribe through `invoke({ onEvent })` or the `humanInTheLoop.askUser.onQuestion` shortcut.
+
+```ts
+type UserQuestionEvent = {
+  type: "user_question";
+  status: "pending" | "answered" | "cancelled";
+  id: string;
+  toolCallId: string;
+  questions?: UserQuestionItem[];
+  answers?: UserQuestionAnswerSet;
+  answeredBy?: string;
+  allowFreeText?: boolean;
+};
 ```
 
 ## `ReasoningConfig`

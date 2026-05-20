@@ -1,7 +1,8 @@
-import type { AgentInvokeResult, InvokeConfig, SmartAgentOptions, SmartState, SmartAgentInstance } from "../types.js";
+import type { AgentInvokeResult, InvokeConfig, SmartAgentOptions, SmartState, SmartAgentInstance, HumanInTheLoopAskUserConfig } from "../types.js";
 import type { ZodSchema } from "zod";
 import { createAgent } from "../agent.js";
 import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from "../contextTools.js";
+import { createAskUserQuestionTool } from "../humanLoop.js";
 import { createContextSummarizeNode } from "../nodes/contextSummarize.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
@@ -36,7 +37,22 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   const userTools = ((opts.tools as any) ?? []) as any[];
   const factoryStateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
   const factoryContextTools = createContextTools(factoryStateRef, { planningEnabled, includeGetToolResponse: false });
+
+  const askUserConfig: HumanInTheLoopAskUserConfig | undefined = (() => {
+    const raw = (opts as any).humanInTheLoop?.askUser;
+    if (!raw) return undefined;
+    if (raw === true) return { enabled: true, allowFreeText: true };
+    return {
+      enabled: true,
+      allowFreeText: raw.allowFreeText !== false,
+      promptOverride: raw.promptOverride,
+    };
+  })();
+
   const factoryToolsWithoutRecovery = [...userTools, ...factoryContextTools];
+  if (askUserConfig) {
+    factoryToolsWithoutRecovery.push(createAskUserQuestionTool(factoryStateRef, askUserConfig));
+  }
 
   // Pre-resolve the structured-output manager so we can plug the `response`
   // finalize tool into the smart runtime's tool set (state.agent.tools).
@@ -61,6 +77,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     const recoveryTool = createGetToolResponseTool(ref);
     const base = [...userTools, ...ctxTools];
     if (responseFinalizeTool) base.push(responseFinalizeTool);
+    if (askUserConfig) base.push(createAskUserQuestionTool(ref, askUserConfig));
     const without = base;
     const withRec = [...without, recoveryTool];
     return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec };
@@ -316,6 +333,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     snapshot: base.snapshot,
     resume: base.resume,
     resolveToolApproval: base.resolveToolApproval,
+    resolveUserQuestion: base.resolveUserQuestion,
     asTool: base.asTool,
     asHandoff: base.asHandoff,
     __runtime: base.__runtime,

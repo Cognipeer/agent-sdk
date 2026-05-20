@@ -94,6 +94,7 @@ const resumed = await agent.resume(saved);
 Checkpoints integrate seamlessly with other features:
 
 - Human-in-the-loop approvals add `ctx.__awaitingApproval`; probe this flag inside `onStateChange` to differentiate deliberate pauses.
+- `ask_user_question` pauses (enabled via `humanInTheLoop.askUser`) set `ctx.__awaitingUserQuestion` and append entries to `state.pendingUserQuestions`. Treat them the same way as approval pauses for checkpointing — they’re a deterministic exit reason, not an error.
 - Guardrails may block a run or inject extra assistant messages. Use the callback to emit alerts when `state.ctx.guardrailIncidents?.length > 0`.
 - Structured output finalization sets `ctx.__finalizedDueToStructuredOutput`. Checkpoints after this stage are usually unnecessary because the run is effectively done.
 
@@ -103,4 +104,4 @@ Checkpoints integrate seamlessly with other features:
 - If you need to log intermediate states, throttle the output to avoid noisy logs during tool loops.
 - Combine `onEvent` (streaming telemetry) with `onStateChange` (checkpoint control) for complete observability.
 
-Continue to [Core Concepts](/core-concepts/#1-state-container) for a field-by-field reference, or jump to [Tool Approvals](/tool-approvals/) to wire checkpoints into human review flows.
+Continue to [Core Concepts](/core-concepts/#1-state-container) for a field-by-field reference, jump to [Tool Approvals](/tool-approvals/) to wire checkpoints into human review flows, or read [Ask User](/ask-user/) for structured human-in-the-loop prompts.
