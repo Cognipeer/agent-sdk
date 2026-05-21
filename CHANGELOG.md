@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+- **Default runtime-profile values modernized for frontier models.** All four built-in profiles (`fast`, `balanced`, `deep`, `research`) had their numeric defaults rescaled for 2026-era models (Claude 4.x, GPT-4o, Gemini 2.x). The previous defaults were tuned for 8k–16k context windows and now leave too much headroom unused. Headline changes per profile:
+  - `fast`: `maxToolCalls 4→8`, `maxParallelTools 1→3`, `maxContextTokens 12000→32000`, summarization trigger `9000→24000`, `maxToolResponseChars 8k→16k`.
+  - `balanced` (also the shared baseline): `maxToolCalls 8→20`, `maxParallelTools 2→5`, `maxContextTokens 24000→96000`, summarization trigger `17000→72000`, `lastTurnsToKeep 8→16`, `maxChildCalls 4→6`, `maxToolResponseChars 12k→32k`.
+  - `deep`: `maxToolCalls 14→40`, `maxParallelTools 3→8`, `maxContextTokens 42000→200000`, summarization trigger `30000→150000`, `lastTurnsToKeep 12→30`, `maxChildCalls 6→10`, `maxToolResponseChars 16k→64k`.
+  - `research`: `maxToolCalls 20→80`, `maxParallelTools 4→10`, `maxContextTokens 56000→400000`, summarization trigger `42000→300000`, `lastTurnsToKeep 20→60`, `maxChildCalls 8→16`, `maxParallelChild 3→6`, `maxToolResponseChars 24k→96k`.
+  - **Migration:** if you depend on the old conservative caps (e.g., running against an 8k-window model, strict cost ceilings, or a deliberate "tight loop" agent), pass explicit `limits`, `summarization`, `context`, and `toolResponses` overrides — or build a `customProfile` extending the desired base and clamp the values you care about. Behavioral defaults (planning still `off`, `summaryMode: incremental`, `memory.writePolicy: auto_important`, `context.policy: hybrid`) are unchanged.
+
 ### Added
 - **Ask-user (structured human-in-the-loop).** Opt in with `humanInTheLoop: { askUser: true }` on `createAgent` / `createSmartAgent` to register a built-in `ask_user_question` tool. When the model calls it, the runtime pauses with a `PendingUserQuestion` entry, emits a `user_question` event, and sets `ctx.__awaitingUserQuestion`. Resume by calling `agent.resolveUserQuestion(state, { id, answers })` which validates the response and appends it as a `role: "tool"` message bound to the original `tool_call_id`. The global `allowFreeText` flag (default `true`) decides whether "Other" / typed answers are accepted; when `false`, every question must include `>= 2` options and the resolver rejects `freeText`. Also exposed: `resolveUserQuestionState`, `createAskUserQuestionTool`, and types `PendingUserQuestion`, `UserQuestionItem`, `UserQuestionOption`, `UserQuestionAnswer`, `UserQuestionAnswerSet`, `UserQuestionResolution`, `UserQuestionEvent`, `HumanInTheLoopOptions`.
 

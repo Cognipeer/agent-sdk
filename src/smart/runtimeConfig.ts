@@ -11,14 +11,16 @@ import type {
 const DEFAULT_CRITICAL_TOOLS = ["response", "manage_todo_list", "get_tool_response"];
 
 // Shared defaults across all profiles — only overridden values need to be specified per profile.
+// These mirror the "balanced" profile and are scaled for modern frontier models
+// (Claude 4.x, GPT-4o, Gemini 2.x) where 100k+ context windows are standard.
 const BASE_DEFAULTS: ProfileConfig = {
-  limits: { maxToolCalls: 8, maxParallelTools: 2, maxContextTokens: 24000, maxTotalOutputTokens: 0, maxCostUsd: 0, maxWallClockMs: 0 },
+  limits: { maxToolCalls: 20, maxParallelTools: 5, maxContextTokens: 96000, maxTotalOutputTokens: 0, maxCostUsd: 0, maxWallClockMs: 0 },
   summarization: {
     enable: true,
-    maxTokens: 24000,
-    summaryTriggerTokens: 17000,
-    summaryPromptMaxTokens: 7000,
-    summaryCompressionRatioTarget: 0.35,
+    maxTokens: 96000,
+    summaryTriggerTokens: 72000,
+    summaryPromptMaxTokens: 12000,
+    summaryCompressionRatioTarget: 0.45,
     summaryMode: "incremental",
     promptTemplate: "",
     toolFreeCall: true,
@@ -26,13 +28,13 @@ const BASE_DEFAULTS: ProfileConfig = {
   },
   context: {
     policy: "hybrid",
-    lastTurnsToKeep: 8,
+    lastTurnsToKeep: 16,
     toolResponsePolicy: "summarize_archive",
     budget: {
-      systemReserveTokens: 1200,
-      goalsReserveTokens: 1200,
-      recentTurnsReserveTokens: 5200,
-      toolResponseReserveTokens: 2800,
+      systemReserveTokens: 2000,
+      goalsReserveTokens: 2000,
+      recentTurnsReserveTokens: 18000,
+      toolResponseReserveTokens: 9000,
     },
   },
   planning: {
@@ -49,14 +51,14 @@ const BASE_DEFAULTS: ProfileConfig = {
   delegation: {
     mode: "role_based",
     maxDelegationDepth: 2,
-    maxChildCalls: 4,
-    maxParallelChild: 2,
+    maxChildCalls: 6,
+    maxParallelChild: 3,
     childContextPolicy: "scoped",
     requireJsonOutputContract: true,
   },
   toolResponses: {
-    maxToolResponseChars: 12_000,
-    maxToolResponseTokens: 3_000,
+    maxToolResponseChars: 32_000,
+    maxToolResponseTokens: 8_000,
     defaultPolicy: "summarize_archive",
     toolResponseRetentionByTool: {},
     criticalTools: [...DEFAULT_CRITICAL_TOOLS],
@@ -95,57 +97,57 @@ function buildProfile(overrides: Partial<{
 
 export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfig> = {
   fast: buildProfile({
-    limits: { maxToolCalls: 4, maxParallelTools: 1, maxContextTokens: 12000 },
+    limits: { maxToolCalls: 8, maxParallelTools: 3, maxContextTokens: 32000 },
     summarization: {
-      maxTokens: 12000,
-      summaryTriggerTokens: 9000,
-      summaryPromptMaxTokens: 5000,
-      summaryCompressionRatioTarget: 0.4,
+      maxTokens: 32000,
+      summaryTriggerTokens: 24000,
+      summaryPromptMaxTokens: 6000,
+      summaryCompressionRatioTarget: 0.5,
     },
     context: {
-      lastTurnsToKeep: 6,
+      lastTurnsToKeep: 8,
       toolResponsePolicy: "keep_structured",
-      budget: { systemReserveTokens: 1000, goalsReserveTokens: 900, recentTurnsReserveTokens: 3200, toolResponseReserveTokens: 1800 },
+      budget: { systemReserveTokens: 1500, goalsReserveTokens: 1200, recentTurnsReserveTokens: 6000, toolResponseReserveTokens: 3500 },
     },
     memory: { readPolicy: "recent_only" },
     delegation: { mode: "off", maxDelegationDepth: 1, maxChildCalls: 2, maxParallelChild: 1, childContextPolicy: "minimal" },
-    toolResponses: { maxToolResponseChars: 8_000, maxToolResponseTokens: 2_000 },
+    toolResponses: { maxToolResponseChars: 16_000, maxToolResponseTokens: 4_000 },
   }),
 
   balanced: buildProfile({}),
 
   deep: buildProfile({
-    limits: { maxToolCalls: 14, maxParallelTools: 3, maxContextTokens: 42000 },
+    limits: { maxToolCalls: 40, maxParallelTools: 8, maxContextTokens: 200000 },
     summarization: {
-      maxTokens: 42000,
-      summaryTriggerTokens: 30000,
-      summaryPromptMaxTokens: 9000,
-      summaryCompressionRatioTarget: 0.3,
+      maxTokens: 200000,
+      summaryTriggerTokens: 150000,
+      summaryPromptMaxTokens: 16000,
+      summaryCompressionRatioTarget: 0.4,
     },
     context: {
-      lastTurnsToKeep: 12,
-      budget: { systemReserveTokens: 1400, goalsReserveTokens: 1600, recentTurnsReserveTokens: 7000, toolResponseReserveTokens: 3600 },
+      lastTurnsToKeep: 30,
+      budget: { systemReserveTokens: 2500, goalsReserveTokens: 2500, recentTurnsReserveTokens: 36000, toolResponseReserveTokens: 18000 },
     },
     memory: { scope: "workspace" },
-    delegation: { maxDelegationDepth: 3, maxChildCalls: 6 },
-    toolResponses: { maxToolResponseChars: 16_000, maxToolResponseTokens: 4_000 },
+    delegation: { maxDelegationDepth: 3, maxChildCalls: 10, maxParallelChild: 4 },
+    toolResponses: { maxToolResponseChars: 64_000, maxToolResponseTokens: 16_000 },
   }),
 
   research: buildProfile({
-    limits: { maxToolCalls: 20, maxParallelTools: 4, maxContextTokens: 56000 },
+    limits: { maxToolCalls: 80, maxParallelTools: 10, maxContextTokens: 400000 },
     summarization: {
-      maxTokens: 56000,
-      summaryTriggerTokens: 42000,
-      summaryPromptMaxTokens: 10000,
-      summaryCompressionRatioTarget: 0.28,
+      maxTokens: 400000,
+      summaryTriggerTokens: 300000,
+      summaryPromptMaxTokens: 24000,
+      summaryCompressionRatioTarget: 0.35,
     },
     context: {
-      lastTurnsToKeep: 20,
-      budget: { systemReserveTokens: 1600, goalsReserveTokens: 1800, recentTurnsReserveTokens: 9000, toolResponseReserveTokens: 4800 },
+      lastTurnsToKeep: 60,
+      budget: { systemReserveTokens: 3000, goalsReserveTokens: 3000, recentTurnsReserveTokens: 72000, toolResponseReserveTokens: 32000 },
     },
     memory: { scope: "workspace" },
-    delegation: { mode: "automatic", maxDelegationDepth: 4, maxChildCalls: 8, maxParallelChild: 3, childContextPolicy: "full" },
-    toolResponses: { maxToolResponseChars: 24_000, maxToolResponseTokens: 6_000 },
+    delegation: { mode: "automatic", maxDelegationDepth: 4, maxChildCalls: 16, maxParallelChild: 6, childContextPolicy: "full" },
+    toolResponses: { maxToolResponseChars: 96_000, maxToolResponseTokens: 24_000 },
   }),
 };
 

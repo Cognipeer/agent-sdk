@@ -7,9 +7,13 @@ import type {
   Message,
   PendingToolApproval,
   PendingUserQuestion,
+  TraceDataSection,
+  TraceToolDetails,
 } from "../types.js";
 import { nanoid } from "nanoid";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
+import { extractToolItems, summarizeToolOutput } from "../utils/traceSections.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolResponses.js";
 
@@ -37,6 +41,125 @@ function normalizeToolCall(call: any): { id?: string; name: string; args: any } 
     name,
     args: call.args ?? call.arguments ?? call.input ?? call.function?.arguments ?? call.function_call?.arguments,
   };
+}
+
+function normalizeToolSchema(tool: ToolInterface, toolName: string): any {
+  const schema = (tool as any).schema;
+  if (!schema) return undefined;
+
+  if (typeof schema === "object" && (schema as any)._def) {
+    try {
+      return sanitizeTracePayload((zodToJsonSchema as any)(schema, { name: toolName }));
+    } catch {
+      // Fall through to generic serialization.
+    }
+  }
+
+  if (schema && typeof schema === "object" && typeof (schema as any).toJSON === "function") {
+    try {
+      return sanitizeTracePayload((schema as any).toJSON());
+    } catch {
+      // Fall through to generic serialization.
+    }
+  }
+
+  return sanitizeTracePayload(schema);
+}
+
+function buildToolDetails(tool: ToolInterface | undefined, toolName: string): TraceToolDetails | undefined {
+  if (!tool) return undefined;
+  const details: TraceToolDetails = { name: toolName };
+  if (typeof (tool as any).description === "string" && (tool as any).description.trim().length > 0) {
+    details.description = (tool as any).description;
+  }
+
+  const inputSchema = normalizeToolSchema(tool, toolName);
+  if (inputSchema !== undefined) details.inputSchema = inputSchema;
+
+  const needsApproval = typeof (tool as any).needsApproval === "boolean" ? (tool as any).needsApproval : undefined;
+  if (needsApproval !== undefined || (tool as any).approvalPrompt !== undefined || (tool as any).approvalDefaults !== undefined) {
+    details.approval = {
+      required: needsApproval,
+      prompt: typeof (tool as any).approvalPrompt === "string" ? (tool as any).approvalPrompt : undefined,
+      defaults: (tool as any).approvalDefaults !== undefined ? sanitizeTracePayload((tool as any).approvalDefaults) : undefined,
+    };
+  }
+
+  const cache = (tool as any).cache;
+  if (cache !== undefined) {
+    details.cache = {
+      enabled: Boolean(cache),
+      scope: cache && typeof cache === "object" && typeof cache.scope === "string" ? cache.scope : undefined,
+      ttlMs: cache && typeof cache === "object" && typeof cache.ttlMs === "number" ? cache.ttlMs : undefined,
+      hasKeyFn: Boolean(cache && typeof cache === "object" && typeof cache.keyFn === "function"),
+    };
+  }
+
+  const retry = (tool as any).retry;
+  if (retry && typeof retry === "object") {
+    details.retry = {
+      maxRetries: typeof retry.maxRetries === "number" ? retry.maxRetries : undefined,
+      backoffMs: typeof retry.backoffMs === "number" ? retry.backoffMs : undefined,
+      circuitBreakerThreshold: typeof retry.circuitBreakerThreshold === "number" ? retry.circuitBreakerThreshold : undefined,
+      hasShouldRetry: typeof retry.shouldRetry === "function",
+    };
+  }
+
+  if ((tool as any).maxExecutionsPerRun !== undefined) {
+    details.limits = { maxExecutionsPerRun: (tool as any).maxExecutionsPerRun };
+  }
+
+  if (typeof (tool as any).__source === "string") {
+    details.source = (tool as any).__source;
+  }
+
+  return details;
+}
+
+function buildToolTraceSections(params: {
+  args?: any;
+  classification?: any;
+  durationMs?: number;
+  executionId?: string;
+  output?: any;
+  retentionPolicy?: any;
+  status: "success" | "error" | "skipped" | "cached" | string;
+  summary?: string;
+  toolDetails?: TraceToolDetails;
+  toolName: string;
+  fromCache?: boolean;
+}): TraceDataSection[] {
+  const sanitizedArgs = sanitizeTracePayload(params.args ?? {});
+  const sanitizedOutput = sanitizeTracePayload(params.output);
+  const summary = params.summary ?? summarizeToolOutput(sanitizedOutput);
+  const items = extractToolItems(sanitizedOutput);
+
+  return [
+    {
+      kind: "tool_call",
+      label: `Tool Call: ${params.toolName}`,
+      tool: params.toolName,
+      arguments: sanitizedArgs,
+      toolDetails: params.toolDetails,
+    },
+    {
+      kind: "tool_result",
+      label: `Tool Result: ${params.toolName}`,
+      tool: params.toolName,
+      summary,
+      items,
+      output: sanitizedOutput,
+      toolDetails: params.toolDetails,
+      execution: {
+        id: params.executionId,
+        status: params.status,
+        durationMs: params.durationMs,
+        fromCache: params.fromCache,
+      },
+      classification: params.classification,
+      retentionPolicy: params.retentionPolicy,
+    },
+  ];
 }
 
 export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>>, opts?: SmartAgentOptions) {
@@ -177,6 +300,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
 
       const toolName = (tool as any).name || tc.name;
+      const toolDetails = buildToolDetails(tool, toolName);
       const toolStateRef = (tool as any)._stateRef && typeof (tool as any)._stateRef === "object"
         ? (tool as any)._stateRef as Record<string, any>
         : null;
@@ -201,21 +325,17 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             label: `Tool Skipped - ${toolName}`,
             actor: { scope: "tool", name: toolName, role: "tool" },
             status: "skipped",
+            toolDetails,
             toolExecutionId: tc.id,
-            messageList: [
-              {
-                role: "assistant",
-                name: toolName,
-                content: limitMessage,
-                tool_calls: [
-                  {
-                    id: tc.id,
-                    type: "function",
-                    function: { name: toolName, arguments: sanitizeTracePayload(args) },
-                  },
-                ],
-              },
-            ],
+            sections: buildToolTraceSections({
+              args,
+              executionId: tc.id,
+              output: limitMessage,
+              status: "skipped",
+              summary: limitMessage,
+              toolDetails,
+              toolName,
+            }),
           });
           toolCount += 1;
           return { status: "error" };
@@ -313,6 +433,25 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         push({ role: "tool", content: breakerMsg, tool_call_id: toolCallId, name: tc.name });
         markToolFailure(breakerMsg, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message: breakerMsg } });
+        recordTraceEvent(traceSession, {
+          type: "tool_call",
+          label: `Tool Error - ${toolName}`,
+          actor: { scope: "tool", name: toolName, role: "tool" },
+          status: "error",
+          requestBytes: inputBytes,
+          toolDetails,
+          toolExecutionId: toolCallId,
+          error: { message: breakerMsg },
+          sections: buildToolTraceSections({
+            args,
+            executionId: toolCallId,
+            output: { message: breakerMsg },
+            status: "error",
+            summary: breakerMsg,
+            toolDetails,
+            toolName,
+          }),
+        });
         toolCount += 1;
         return { status: "error" };
       }
@@ -339,6 +478,38 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           });
           push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: cachedHit, durationMs: 0 });
+          const sanitizedCachedHit = sanitizeTracePayload(cachedHit);
+          const outputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedCachedHit) : undefined;
+          recordTraceEvent(traceSession, {
+            type: "tool_call",
+            label: `Tool Execution - ${toolName}`,
+            actor: { scope: "tool", name: toolName, role: "tool" },
+            durationMs: 0,
+            requestBytes: inputBytes,
+            responseBytes: outputBytes,
+            toolDetails,
+            toolExecutionId: executionId,
+            sections: buildToolTraceSections({
+              args,
+              classification: responsePolicy.classification,
+              durationMs: 0,
+              executionId,
+              fromCache: true,
+              output: sanitizedCachedHit,
+              retentionPolicy: "keep_full",
+              status: "cached",
+              summary: responsePolicy.content,
+              toolDetails,
+              toolName,
+            }),
+            debug: {
+              classification: responsePolicy.classification,
+              retentionPolicy: "keep_full",
+              originalTokenCount: responsePolicy.tokenCount,
+              truncated: responsePolicy.truncated,
+              fromCache: true,
+            },
+          });
           toolCount += 1;
           return { status: "success" };
         }
@@ -482,28 +653,6 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
         const sanitizedOutput = sanitizeTracePayload(output);
         const outputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedOutput) : undefined;
-        const messageList = [
-          {
-            role: "assistant",
-            name: toolName,
-            content: "",
-            tool_calls: [
-              {
-                id: tc.id || executionId,
-                type: "function",
-                function: {
-                  name: toolName,
-                  arguments: sanitizedArgs,
-                },
-              },
-            ],
-          },
-          {
-            role: "tool",
-            name: toolName,
-            content: responsePolicy.content,
-          },
-        ];
         recordTraceEvent(traceSession, {
           type: "tool_call",
           label: `Tool Execution - ${toolName}`,
@@ -511,8 +660,20 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           durationMs,
           requestBytes: inputBytes,
           responseBytes: outputBytes,
+          toolDetails,
           toolExecutionId: executionId,
-          messageList,
+          sections: buildToolTraceSections({
+            args: sanitizedArgs,
+            classification: responsePolicy.classification,
+            durationMs,
+            executionId,
+            output: sanitizedOutput,
+            retentionPolicy: "keep_full",
+            status: "success",
+            summary: responsePolicy.content,
+            toolDetails,
+            toolName,
+          }),
           debug: {
             classification: responsePolicy.classification,
             retentionPolicy: "keep_full",
@@ -531,6 +692,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         markToolFailure(message, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message } });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: message } });
+        const errorOutput = { message, stack: error?.stack };
         recordTraceEvent(traceSession, {
           type: "tool_call",
           label: `Tool Error - ${toolName}`,
@@ -538,27 +700,20 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           status: "error",
           durationMs,
           requestBytes: inputBytes,
+          responseBytes: traceSession?.resolvedConfig.logData ? estimatePayloadBytes(errorOutput) : undefined,
+          toolDetails,
           toolExecutionId: executionId,
           error: { message, stack: error?.stack },
-          messageList: [
-            {
-              role: "assistant",
-              name: toolName,
-              content: "",
-              tool_calls: [
-                {
-                  id: tc.id || executionId,
-                  type: "function",
-                  function: { name: toolName, arguments: sanitizedArgs },
-                },
-              ],
-            },
-            {
-              role: "tool",
-              name: toolName,
-              content: `Error executing tool: ${message}`,
-            },
-          ],
+          sections: buildToolTraceSections({
+            args: sanitizedArgs,
+            durationMs,
+            executionId,
+            output: errorOutput,
+            status: "error",
+            summary: `Error executing tool: ${message}`,
+            toolDetails,
+            toolName,
+          }),
         });
         toolCount += 1;
         return { status: "error", approval: approvalEntry };
@@ -649,29 +804,26 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
     for (const tc of skipped) {
       onEvent?.({ type: "tool_call", phase: "skipped", name: tc.name, id: tc.id, args: tc.args });
-      const sanitizedArgs = sanitizeTracePayload(tc.args);
+      const toolDetails = buildToolDetails(toolByName.get(tc.name), tc.name);
+      const skipMessage = `Skipped tool due to tool-call limit: ${tc.name}`;
       recordTraceEvent(traceSession, {
         type: "tool_call",
         label: `Tool Skipped - ${tc.name}`,
         actor: { scope: "tool", name: tc.name, role: "tool" },
         status: "skipped",
+        toolDetails,
         toolExecutionId: tc.id,
-        messageList: [
-          {
-            role: "assistant",
-            name: tc.name,
-            content: `Skipped tool due to tool-call limit: ${tc.name}`,
-            tool_calls: [
-              {
-                id: tc.id,
-                type: "function",
-                function: { name: tc.name, arguments: sanitizedArgs },
-              },
-            ],
-          },
-        ],
+        sections: buildToolTraceSections({
+          args: tc.args,
+          executionId: tc.id,
+          output: skipMessage,
+          status: "skipped",
+          summary: skipMessage,
+          toolDetails,
+          toolName: tc.name,
+        }),
       });
-      appended.push({ role: "tool", content: `Skipped tool due to tool-call limit: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+      appended.push({ role: "tool", content: skipMessage, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
       toolCount += 1;
     }
 

@@ -18,19 +18,21 @@ That makes profiles operational presets, not just marketing labels.
 
 | Profile | Best for | Tool budget | Parallel tools | Context budget | Delegation |
 |---|---|---:|---:|---:|---|
-| `fast` | Short tasks, fast UI turnarounds, mostly direct answers | 4 | 1 | 12000 | off |
-| `balanced` | Default product integrations and general autonomous workflows | 8 | 2 | 24000 | role-based |
-| `deep` | Heavier investigation, larger context windows, more tool-heavy work | 14 | 3 | 42000 | role-based |
-| `research` | Long-running research agents with broad context and stronger delegation | 20 | 4 | 56000 | automatic |
+| `fast` | Short tasks, fast UI turnarounds, mostly direct answers | 8 | 3 | 32000 | off |
+| `balanced` | Default product integrations and general autonomous workflows | 20 | 5 | 96000 | role-based |
+| `deep` | Heavier investigation, larger context windows, more tool-heavy work | 40 | 8 | 200000 | role-based |
+| `research` | Long-running research agents with broad context and stronger delegation | 80 | 10 | 400000 | automatic |
+
+Profile defaults assume a modern frontier model (Claude 4.x, GPT-4o, Gemini 2.x) with at least a 128k context window. If you are running an older or smaller model, pass an explicit `limits.maxContextTokens` to clamp the budget.
 
 ## Practical differences
 
 | Profile | Last turns kept | Child context policy | Memory scope | Summarization trigger |
 |---|---:|---|---|---:|
-| `fast` | 6 | `minimal` | `session` | 9000 |
-| `balanced` | 8 | `scoped` | `session` | 17000 |
-| `deep` | 12 | `scoped` | `workspace` | 30000 |
-| `research` | 20 | `full` | `workspace` | 42000 |
+| `fast` | 8 | `minimal` | `session` | 24000 |
+| `balanced` | 16 | `scoped` | `session` | 72000 |
+| `deep` | 30 | `scoped` | `workspace` | 150000 |
+| `research` | 60 | `full` | `workspace` | 300000 |
 
 ## Important default to remember
 

@@ -2,15 +2,15 @@
 layout: home
 
 hero:
-  name: Agent SDK
-  text: Build Reliable Agent Workflows
-  tagline: A smart runtime for autonomous agents that need typed tools, explicit planning, configurable reasoning, resilient context handling, and inspectable execution.
+  name: "@cognipeer/agent-sdk"
+  text: A smart runtime for autonomous agents.
+  tagline: Typed tools, explicit planning, configurable reasoning, resilient context handling, and inspectable execution — without leaving plain TypeScript.
   actions:
     - theme: brand
-      text: Get Started
+      text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: Study Architecture
+      text: Study architecture
       link: /guide/architecture
 
 features:

@@ -568,6 +568,35 @@ export type TraceToolCallSection = {
   label: string;
   tool: string;
   arguments?: any;
+  toolDetails?: TraceToolDetails;
+};
+
+export type TraceToolDetails = {
+  name: string;
+  description?: string;
+  inputSchema?: any;
+  approval?: {
+    required?: boolean;
+    prompt?: string;
+    defaults?: any;
+  };
+  cache?: {
+    enabled: boolean;
+    scope?: string;
+    ttlMs?: number;
+    hasKeyFn?: boolean;
+  };
+  retry?: {
+    maxRetries?: number;
+    backoffMs?: number;
+    circuitBreakerThreshold?: number;
+    hasShouldRetry?: boolean;
+  };
+  limits?: {
+    maxExecutionsPerRun?: number | null;
+  };
+  source?: string;
+  metadata?: Record<string, any>;
 };
 
 export type TraceToolResultItem = {
@@ -585,6 +614,15 @@ export type TraceToolResultSection = {
   summary?: string;
   items?: TraceToolResultItem[];
   output?: any;
+  toolDetails?: TraceToolDetails;
+  execution?: {
+    id?: string;
+    status?: "success" | "error" | "skipped" | "cached" | string;
+    durationMs?: number;
+    fromCache?: boolean;
+  };
+  classification?: ToolResponseClassification;
+  retentionPolicy?: ToolResponseRetentionPolicy;
 };
 
 export type TraceToolResponseSection = {
@@ -595,6 +633,7 @@ export type TraceToolResponseSection = {
   summary?: string;
   items?: TraceToolResultItem[];
   output?: any;
+  toolDetails?: TraceToolDetails;
   classification?: ToolResponseClassification;
   retentionPolicy?: ToolResponseRetentionPolicy;
 };
@@ -642,6 +681,7 @@ export type TraceEventRecord = {
   responseBytes?: number;
   model?: string;
   provider?: string;
+  toolDetails?: TraceToolDetails;
   toolExecutionId?: string;
   retryOf?: string;
   error?: { message: string; stack?: string } | null;

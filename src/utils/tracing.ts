@@ -587,6 +587,7 @@ function eventToOtlpSpan(event: TraceEventRecord): Record<string, unknown> {
     stringAttr("cognipeer.actor.role", event.actor?.role),
     stringAttr("cognipeer.model", event.model),
     stringAttr("cognipeer.provider", event.provider),
+    stringAttr("cognipeer.tool.details", event.toolDetails ? JSON.stringify(event.toolDetails) : undefined),
     intAttr("cognipeer.tokens.input", event.inputTokens),
     intAttr("cognipeer.tokens.output", event.outputTokens),
     intAttr("cognipeer.tokens.total", event.totalTokens),
@@ -1091,6 +1092,7 @@ export function recordTraceEvent(
     responseBytes?: number;
     model?: string;
     provider?: string;
+    toolDetails?: TraceEventRecord["toolDetails"];
     toolExecutionId?: string;
     retryOf?: string;
     error?: { message: string; stack?: string } | null;
@@ -1193,6 +1195,7 @@ export function recordTraceEvent(
     responseBytes,
     model: resolvedModel,
     provider: resolvedProvider,
+    toolDetails: session.resolvedConfig.logData ? sanitizeTracePayload(event.toolDetails) : undefined,
     toolExecutionId: event.toolExecutionId,
     retryOf: event.retryOf,
     error: event.error ?? (status === "error" ? { message: "Unknown error" } : undefined) ?? undefined,

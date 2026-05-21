@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTraceSession, finalizeTraceSession, startStreamingSession } from "../../src/utils/tracing.js";
-import type { AgentRuntimeConfig, SmartAgentOptions, TracingConfig } from "../../src/types.js";
+import { z } from "zod";
+import { createAgent, createTool } from "../../src/index.js";
+import { createTraceSession, customSink, finalizeTraceSession, startStreamingSession } from "../../src/utils/tracing.js";
+import type { AgentRuntimeConfig, Message, SmartAgentOptions, TracingConfig } from "../../src/types.js";
 
 function makeAgentOptions(tracing: TracingConfig): SmartAgentOptions {
   return {
@@ -60,5 +62,85 @@ describe("tracing degraded session handling", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0]?.[0]).toContain("/stream/");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("https://trace.example.test/sessions");
+  });
+});
+
+describe("tool observability tracing", () => {
+  it("emits tool details, arguments, and full result sections", async () => {
+    const traceEvents: any[] = [];
+    let turn = 0;
+    const model = {
+      modelName: "trace-model",
+      bindTools() { return this; },
+      async invoke(_messages: Message[]) {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_lookup",
+              type: "function",
+              function: {
+                name: "lookup_customer",
+                arguments: JSON.stringify({ customerId: "cus_123" }),
+              },
+            }],
+          };
+        }
+        return { role: "assistant", content: "done" };
+      },
+    } as any;
+    const tool = createTool({
+      name: "lookup_customer",
+      description: "Fetch customer profile details",
+      schema: z.object({ customerId: z.string() }),
+      func: async ({ customerId }) => ({
+        customerId,
+        plan: "pro",
+        items: [{ title: "Profile", snippet: "Active customer" }],
+      }),
+      cache: true,
+      retry: { maxRetries: 2, backoffMs: 1 },
+    });
+    const agent = createAgent({
+      model,
+      tools: [tool],
+      limits: { maxToolCalls: 3 },
+      tracing: {
+        enabled: true,
+        logData: true,
+        sink: customSink((event) => traceEvents.push(event)),
+      },
+    });
+
+    await agent.invoke({ messages: [{ role: "user", content: "look it up" }] } as any);
+
+    const toolEvent = traceEvents.find((event) => event.type === "tool_call" && event.actor?.name === "lookup_customer");
+    expect(toolEvent).toBeDefined();
+    expect(toolEvent.toolDetails).toEqual(expect.objectContaining({
+      name: "lookup_customer",
+      description: "Fetch customer profile details",
+      cache: expect.objectContaining({ enabled: true }),
+      retry: expect.objectContaining({ maxRetries: 2 }),
+    }));
+    expect(toolEvent.toolDetails.inputSchema).toEqual(expect.objectContaining({ definitions: expect.any(Object) }));
+
+    const sections = toolEvent.data?.sections || [];
+    expect(sections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "tool_call",
+        tool: "lookup_customer",
+        arguments: { customerId: "cus_123" },
+        toolDetails: expect.objectContaining({ name: "lookup_customer" }),
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        tool: "lookup_customer",
+        output: expect.objectContaining({ customerId: "cus_123", plan: "pro" }),
+        execution: expect.objectContaining({ status: "success" }),
+        toolDetails: expect.objectContaining({ name: "lookup_customer" }),
+      }),
+    ]));
   });
 });
