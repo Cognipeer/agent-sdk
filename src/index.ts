@@ -22,6 +22,7 @@ export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { resolveUserQuestionState } from "./utils/userQuestions.js";
 export { createAskUserQuestionTool } from "./humanLoop.js";
 export { fromLangchainTools } from "./adapters/langchain.js";
+export { resolveReasoning, validateReasoningConfig } from "./smart/reasoning.js";
 export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp } from "./utils/tracing.js";
 // Native LLM Providers (no LangChain dependency)
 export {
@@ -142,6 +143,7 @@ export type {
 	NativeReasoningConfig,
 	ReflectionRecord,
 	ReflectionEvent,
+	ReflectionHookContext,
 	SnapshotOptions,
 	RestoreSnapshotOptions,
 	SerializableSmartState,

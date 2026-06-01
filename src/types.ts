@@ -252,9 +252,18 @@ export type AgentOptions = {
 //
 // Top-level `enabled`/`level` act as a preset; explicit sub-keys always win.
 
-export type ReasoningLevel = "low" | "medium" | "high";
+export type ReasoningLevel = "minimal" | "low" | "medium" | "high";
 
-export type ReflectionCadence = "off" | "every_turn" | "after_tool" | "on_branch";
+export type ReflectionCadence = "off" | "every_turn" | "after_tool" | "on_branch" | "initial_then_after_tool";
+
+/** Context passed to reflection lifecycle hooks. */
+export type ReflectionHookContext = {
+  state: SmartState;
+  /** The turn number (state.toolCallCount) at the time of the decision. */
+  turn: number;
+  trigger: ReflectionCadence;
+  ranToolsThisTurn: boolean;
+};
 
 export type ReflectionConfig = {
   enabled?: boolean;
@@ -285,6 +294,26 @@ export type ReflectionConfig = {
    * turn, etc. Independent of `cadence`.
    */
   everyNTurns?: number;
+  /**
+   * Where to route the reflection text in addition to the reflection record:
+   * - "memory" — store as a low-confidence agent-scoped `MemoryFact`.
+   * - "plan"   — append the note to the active plan's `lastReflection` field.
+   * - "none"   — record only (default).
+   */
+  feedTo?: "memory" | "plan" | "none";
+  /**
+   * Custom predicate that overrides the built-in cadence decision. Return true
+   * to force a reflection on this turn, false to skip. `maxPerRun`/`everyNTurns`
+   * throttles still apply on top of this.
+   */
+  shouldReflect?: (ctx: ReflectionHookContext) => boolean;
+  /**
+   * Build the reflection prompt body. Receives the resolved default prompt and
+   * the char budget; return the prompt text to send. Overrides `promptTemplate`.
+   */
+  buildPrompt?: (ctx: ReflectionHookContext & { defaultPrompt: string; maxChars: number }) => string;
+  /** Side-effect hook invoked after a reflection record is produced. */
+  onReflection?: (record: ReflectionRecord, ctx: ReflectionHookContext) => void;
 };
 
 export type NativeReasoningConfig = {
@@ -848,7 +877,7 @@ export type SmartState = AgentState & {
     summary?: string;
     status?: "success" | "error" | "rejected" | "handoff";
   }>;
-  plan?: { version: number; steps: PlanStepRecord[]; lastUpdated?: string; adherenceScore?: number } | null;
+  plan?: { version: number; steps: PlanStepRecord[]; lastUpdated?: string; adherenceScore?: number; lastReflection?: string } | null;
   planVersion?: number;
   /**
    * Post-turn reflection records produced by the reflection node. The SDK keeps the full

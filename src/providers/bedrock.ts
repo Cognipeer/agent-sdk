@@ -3,6 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
+import { applyBedrockReasoning } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -11,6 +12,7 @@ import {
   type TokenUsage,
   type UnifiedMessage,
   type ToolDefinition,
+  type ReasoningBlock,
   type BedrockProviderConfig,
   type ProviderType,
   ProviderError,
@@ -122,6 +124,10 @@ export class BedrockProvider extends BaseProvider {
       Object.assign(body, request.extra);
     }
 
+    // Native reasoning: maps to additionalModelRequestFields.thinking and
+    // enforces the budget/temperature rules for thinking-capable models.
+    applyBedrockReasoning(body, request.reasoning);
+
     return body;
   }
 
@@ -164,6 +170,7 @@ export class BedrockProvider extends BaseProvider {
     // Assistant with tool calls
     if (m.role === "assistant" && m.toolCalls?.length) {
       const content: any[] = [];
+      appendBedrockReasoning(content, m.reasoning?.blocks);
       if (typeof m.content === "string" && m.content) {
         content.push({ text: m.content });
       }
@@ -254,10 +261,24 @@ export class BedrockProvider extends BaseProvider {
     const output = json.output?.message;
     const textParts: string[] = [];
     const toolCalls: ToolCall[] = [];
+    const reasoningBlocks: ReasoningBlock[] = [];
+    const summaryParts: string[] = [];
 
     for (const block of output?.content ?? []) {
       if (block.text) {
         textParts.push(block.text);
+      } else if (block.reasoningContent) {
+        const rc = block.reasoningContent;
+        if (rc.reasoningText) {
+          reasoningBlocks.push({
+            type: "thinking",
+            text: rc.reasoningText.text ?? "",
+            signature: rc.reasoningText.signature,
+          });
+          if (rc.reasoningText.text) summaryParts.push(rc.reasoningText.text);
+        } else if (rc.redactedContent) {
+          reasoningBlocks.push({ type: "redacted_thinking", data: rc.redactedContent });
+        }
       } else if (block.toolUse) {
         toolCalls.push({
           id: block.toolUse.toolUseId,
@@ -277,6 +298,7 @@ export class BedrockProvider extends BaseProvider {
       cachedInputTokens: usage.cacheReadInputTokenCount ?? 0,
       cachedWriteTokens: usage.cacheWriteInputTokenCount ?? 0,
       cachedOutputTokens: 0,
+      // Bedrock bills thinking tokens inside outputTokens; no separate count.
       reasoningTokens: 0,
     };
 
@@ -287,12 +309,32 @@ export class BedrockProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapBedrockStopReason(json.stopReason),
+      reasoning: reasoningBlocks.length > 0
+        ? { blocks: reasoningBlocks, summary: summaryParts.join("\n").trim() || undefined }
+        : undefined,
       raw: json,
     };
   }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Replays captured thinking blocks into a Bedrock Converse assistant content
+ * array as `reasoningContent` blocks, ahead of text/toolUse blocks. */
+function appendBedrockReasoning(content: any[], blocks: ReasoningBlock[] | undefined): void {
+  if (!blocks?.length) return;
+  for (const b of blocks) {
+    if (b.type === "redacted_thinking") {
+      if (b.data) content.push({ reasoningContent: { redactedContent: b.data } });
+    } else if (b.type === "thinking") {
+      if (b.signature) {
+        content.push({
+          reasoningContent: { reasoningText: { text: b.text ?? "", signature: b.signature } },
+        });
+      }
+    }
+  }
+}
 
 function mapBedrockStopReason(reason: string | null | undefined): ChatCompletionResponse["finishReason"] {
   switch (reason) {

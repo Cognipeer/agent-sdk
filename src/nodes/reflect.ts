@@ -53,6 +53,33 @@ function stripReflectionAskMessages(messages: any[]): any[] {
   return messages.filter((m) => !(m?.role === "user" && m?.name === REFLECTION_ASK_NAME));
 }
 
+/**
+ * Returns the tool-name sets for the two most recent tool-producing turns
+ * (newest first). Used by the `on_branch` cadence to detect when the agent
+ * switched the *kind* of tools it is using (a genuine branch in strategy).
+ */
+function lastTwoToolTurns(state: SmartState): { current: string[]; previous: string[] } {
+  const groups: string[][] = [];
+  let cur: string[] = [];
+  let sawTool = false;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m: any = state.messages[i];
+    if (m?.role === "tool") {
+      if (m.name) cur.push(m.name);
+      sawTool = true;
+    } else if (m?.role === "assistant") {
+      if (sawTool) {
+        groups.push(cur);
+        cur = [];
+        sawTool = false;
+        if (groups.length >= 2) break;
+      }
+    }
+  }
+  if (sawTool && cur.length) groups.push(cur);
+  return { current: groups[0] ?? [], previous: groups[1] ?? [] };
+}
+
 export function shouldRunReflection(
   cadence: ReflectionCadence,
   state: SmartState,
@@ -61,14 +88,21 @@ export function shouldRunReflection(
   if (cadence === "off") return false;
   if (cadence === "every_turn") return true;
   if (cadence === "after_tool") return ranToolsThisTurn;
+  // The "initial" half of this cadence fires once before the loop (handled in
+  // the agent core); inside the loop it behaves exactly like "after_tool".
+  if (cadence === "initial_then_after_tool") return ranToolsThisTurn;
   if (cadence === "on_branch") {
-    // Fire when the last assistant turn changed tool usage pattern: tools just started
-    // or stopped compared to the previous assistant turn. Simple heuristic.
+    // Fire when this turn's tool-name set differs from the previous tool turn's
+    // set — i.e. the agent changed which tools it is leaning on (a real branch),
+    // not merely how many times it has called tools.
     if (!ranToolsThisTurn) return false;
-    const reflections = state.reflections || [];
-    const lastReflectionTurn = reflections[reflections.length - 1]?.turn ?? -1;
-    const currentTurnId = (state.toolCallCount ?? 0);
-    return currentTurnId - lastReflectionTurn >= 2;
+    const { current, previous } = lastTwoToolTurns(state);
+    if (previous.length === 0) return true; // first tool turn is itself a branch
+    const a = new Set(current);
+    const b = new Set(previous);
+    for (const n of a) if (!b.has(n)) return true;
+    for (const n of b) if (!a.has(n)) return true;
+    return false;
   }
   return false;
 }
@@ -92,7 +126,12 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
     const traceSession = (state.ctx as any)?.__traceSession;
 
     const maxChars = resolved.maxChars;
-    const promptBody = (resolved.promptTemplate || DEFAULT_REFLECT_PROMPT).replace(/\$\{maxChars\}/g, String(maxChars));
+    const turnNow = state.toolCallCount ?? 0;
+    const hookCtx = { state, turn: turnNow, trigger, ranToolsThisTurn: true };
+    const defaultPrompt = (resolved.promptTemplate || DEFAULT_REFLECT_PROMPT).replace(/\$\{maxChars\}/g, String(maxChars));
+    const promptBody = resolved.buildPrompt
+      ? String(resolved.buildPrompt({ ...hookCtx, defaultPrompt, maxChars }) ?? defaultPrompt)
+      : defaultPrompt;
 
     // Piggyback: append ask as user message on top of the existing transcript.
     // This maximises the provider prompt-cache hit rate vs. building a new one.
@@ -133,6 +172,11 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
     const rawText = extractText(response);
     const text = trimToChars(String(rawText ?? "").trim(), maxChars);
     if (!text) return {};
+
+    // IMP-4: skip near-identical consecutive reflections so the prompt does not
+    // accumulate restated insights that waste tokens and add no signal.
+    const prevText = (state.reflections?.[state.reflections.length - 1]?.text || "").trim();
+    if (prevText && isNearDuplicate(prevText, text)) return {};
 
     const rawUsage = (response as any)?.usage_metadata
       || (response as any)?.response_metadata?.usage
@@ -189,10 +233,21 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
       }
     }
 
-    // Now update the live message list: remove any previous ask message and the
-    // provisional assistant response (if any) — the reflection is stored as a
-    // compact `system` "agent_reflection" message so the main model sees it on
-    // the next turn without it participating in the tool_calls chain.
+    // Side-effect hook (never allowed to break the loop).
+    if (resolved.onReflection) {
+      try {
+        resolved.onReflection(record, hookCtx);
+      } catch {
+        // swallow
+      }
+    }
+
+    // Rebuild the live message list. The reflection ask is a transient probe and
+    // the model's reply is never committed as a real assistant turn — it lives in
+    // `state.reflections`. Here we (1) drop any prior ask message and (2) mirror
+    // the most recent reflections as compact `system` "agent_reflection" messages
+    // so the main model can see them next turn without them joining the
+    // tool_calls chain.
     const nextMessages = stripReflectionAskMessages([...(state.messages as any[])]);
     const reflections = [...(state.reflections || []), record];
 
@@ -211,7 +266,23 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
       });
     }
 
-    return { messages: prunedMessages, reflections };
+    const patch: Partial<SmartState> = { messages: prunedMessages, reflections };
+
+    // R4: optionally route the reflection text into another store.
+    if (resolved.feedTo === "memory") {
+      const fact = {
+        key: `reflection_turn_${turn}`,
+        value: text,
+        sourceTurn: turn,
+        confidence: 0.3,
+        tags: ["reflection"],
+      };
+      patch.memoryFacts = [...(state.memoryFacts || []), fact as any];
+    } else if (resolved.feedTo === "plan" && state.plan) {
+      patch.plan = { ...state.plan, lastReflection: text };
+    }
+
+    return patch;
   };
 }
 
@@ -244,6 +315,22 @@ function safeRandomId(): string {
   } catch {
     return `r_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
   }
+}
+
+/** Returns true when two reflection texts are effectively the same note —
+ * either an exact normalized match or a very high word-overlap (Jaccard >= 0.9). */
+function isNearDuplicate(a: string, b: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const na = norm(a);
+  const nb = norm(b);
+  if (na === nb) return true;
+  const tokensA = new Set(na.split(" ").filter(Boolean));
+  const tokensB = new Set(nb.split(" ").filter(Boolean));
+  if (tokensA.size === 0 || tokensB.size === 0) return false;
+  let inter = 0;
+  for (const t of tokensA) if (tokensB.has(t)) inter++;
+  const union = tokensA.size + tokensB.size - inter;
+  return union > 0 && inter / union >= 0.9;
 }
 
 export { REFLECTION_SYSTEM_NAME, REFLECTION_ASK_NAME };

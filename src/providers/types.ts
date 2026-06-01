@@ -23,12 +23,37 @@ export type ToolCall = {
   arguments: string; // JSON string
 };
 
+/**
+ * A provider-native reasoning/thinking block. Captured from the model response
+ * and replayed verbatim on subsequent turns (required by Anthropic extended
+ * thinking when tools are involved — the `signature` must round-trip intact).
+ */
+export type ReasoningBlock = {
+  type: "thinking" | "redacted_thinking";
+  /** Plain-text thinking content (absent for redacted blocks). */
+  text?: string;
+  /** Cryptographic signature Anthropic requires to be echoed back verbatim. */
+  signature?: string;
+  /** Opaque payload for redacted_thinking blocks. */
+  data?: string;
+};
+
+/** Captured reasoning payload attached to assistant turns / responses. */
+export type ReasoningPayload = {
+  /** Verbatim provider blocks to replay on the next turn. */
+  blocks?: ReasoningBlock[];
+  /** Human-readable reasoning summary, when the provider exposes one. */
+  summary?: string;
+};
+
 export type UnifiedMessage = {
   role: MessageRole;
   content: string | ContentPart[];
   name?: string;
   toolCalls?: ToolCall[];
   toolCallId?: string; // for tool result messages
+  /** Native reasoning blocks to replay verbatim (Anthropic/Bedrock thinking). */
+  reasoning?: ReasoningPayload;
 };
 
 // ─── Tool Definition ─────────────────────────────────────────────────────────
@@ -120,6 +145,8 @@ export type ChatCompletionResponse = {
   toolCalls: ToolCall[];
   usage: TokenUsage;
   finishReason: FinishReason;
+  /** Native reasoning blocks + summary captured from the response, if any. */
+  reasoning?: ReasoningPayload;
   raw: any; // Original provider response
 };
 
@@ -131,6 +158,8 @@ export type ChatCompletionChunk = {
   delta: {
     content?: string;
     toolCalls?: Partial<ToolCall>[];
+    /** Incremental reasoning text / signature deltas (Anthropic thinking). */
+    reasoning?: ReasoningPayload;
   };
   usage?: TokenUsage;
   finishReason?: FinishReason;

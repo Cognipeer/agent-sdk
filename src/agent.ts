@@ -221,13 +221,17 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     }
 
     // Forward resolved native reasoning into ctx so agentCore picks it up and
-    // adapters map it to provider-specific body fields.
-    if (resolvedReasoning?.native) {
+    // adapters map it to provider-specific body fields. We (re)apply this on
+    // every invoke so a resumed run cannot inherit a stale `__reasoning` value
+    // from a previous config — and we clear it when native reasoning is off.
+    if (resolvedReasoning) {
       const ctx: any = { ...(state.ctx || {}) };
-      if (!ctx.__reasoning) {
+      if (resolvedReasoning.native) {
         ctx.__reasoning = resolvedReasoning.native;
-        state = { ...state, ctx } as AgentState;
+      } else {
+        delete ctx.__reasoning;
       }
+      state = { ...state, ctx: Object.keys(ctx).length > 0 ? ctx : undefined } as AgentState;
     }
     const mergedLimits = {
       ...(opts.limits || {}),
@@ -278,6 +282,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return { breached: false };
     };
     let iterations = 0;
+    // Run-scoped reflection counter. `state.reflections` accumulates across the
+    // whole (possibly resumed) conversation, so it cannot back `maxPerRun`.
+    let reflectionsThisRun = 0;
     const onStateChange = config?.onStateChange;
     const checkpointReason = config?.checkpointReason;
     let pausedStage: string | null = null;
@@ -327,6 +334,29 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       pausedStage = stage;
       return true;
     };
+
+    // R1: "initial_then_after_tool" cadence reflects once up-front (a planning
+    // note) before the first model call, then behaves like "after_tool" inside
+    // the loop. Only fire on a fresh run (no assistant turn yet, not resuming).
+    if (
+      reflectNode &&
+      resolvedReasoning?.reflection.enabled &&
+      resolvedReasoning.reflection.cadence === "initial_then_after_tool" &&
+      resumeStage === null &&
+      !state.ctx?.__awaitingApproval &&
+      !state.ctx?.__awaitingUserQuestion &&
+      !(state.messages as any[]).some((m) => m?.role === "assistant")
+    ) {
+      try {
+        const patch = await reflectNode(state as any, "initial_then_after_tool");
+        if (patch && Object.keys(patch).length > 0) {
+          state = { ...state, ...patch } as AgentState;
+          reflectionsThisRun++;
+        }
+      } catch {
+        // never fail the run due to reflection errors
+      }
+    }
 
     while (iterations < iterationLimit) {
       iterations++;
@@ -546,16 +576,26 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (reflectNode && resolvedReasoning?.reflection.enabled) {
         const cadence = resolvedReasoning.reflection.cadence;
         const refl = resolvedReasoning.reflection;
-        const reflectionsSoFar = ((state as any).reflections?.length ?? 0) as number;
+        // Single source of truth for throttling:
+        //  - maxPerRun caps reflections within THIS invoke (run-scoped counter).
+        //  - everyNTurns is enforced once, here, against the last reflection's turn.
+        //  - shouldRunReflection only decides cadence-shape (after_tool/on_branch/…).
         const lastTurn = ((state as any).reflections?.at(-1)?.turn ?? -Infinity) as number;
         const currentTurn = state.toolCallCount || 0;
-        const budgetExceeded = typeof refl.maxPerRun === "number" && reflectionsSoFar >= refl.maxPerRun;
-        const cadenceGap = currentTurn - (Number.isFinite(lastTurn) ? lastTurn : -refl.everyNTurns) < refl.everyNTurns;
-        if (!budgetExceeded && !cadenceGap && shouldRunReflection(cadence, state as any, true)) {
+        const budgetExceeded = typeof refl.maxPerRun === "number" && reflectionsThisRun >= refl.maxPerRun;
+        const sinceLast = currentTurn - (Number.isFinite(lastTurn) ? lastTurn : -refl.everyNTurns);
+        const cadenceGap = sinceLast < refl.everyNTurns;
+        // R2: a custom shouldReflect predicate overrides the built-in cadence
+        // decision (throttles still apply on top).
+        const cadenceWantsIt = refl.shouldReflect
+          ? !!refl.shouldReflect({ state: state as any, turn: currentTurn, trigger: cadence, ranToolsThisTurn: true })
+          : shouldRunReflection(cadence, state as any, true);
+        if (!budgetExceeded && !cadenceGap && cadenceWantsIt) {
           try {
             const patch = await reflectNode(state as any, cadence);
             if (patch && Object.keys(patch).length > 0) {
               state = { ...state, ...patch } as AgentState;
+              reflectionsThisRun++;
             }
           } catch {
             // never fail the run due to reflection errors

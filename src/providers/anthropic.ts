@@ -12,6 +12,7 @@ import {
   type TokenUsage,
   type UnifiedMessage,
   type ToolDefinition,
+  type ReasoningBlock,
   type AnthropicProviderConfig,
   type ProviderType,
   ProviderError,
@@ -59,6 +60,8 @@ export class AnthropicProvider extends BaseProvider {
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
     const currentToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+    // Accumulate thinking blocks by content-block index so we can replay them.
+    const reasoningBlocks = new Map<number, ReasoningBlock>();
 
     for await (const event of parseSSEStream(res.body)) {
       let data: any;
@@ -92,6 +95,10 @@ export class AnthropicProvider extends BaseProvider {
               name: block.name ?? "",
               arguments: "",
             });
+          } else if (block?.type === "thinking") {
+            reasoningBlocks.set(idx, { type: "thinking", text: block.thinking ?? "", signature: block.signature });
+          } else if (block?.type === "redacted_thinking") {
+            reasoningBlocks.set(idx, { type: "redacted_thinking", data: block.data });
           }
           break;
         }
@@ -106,6 +113,19 @@ export class AnthropicProvider extends BaseProvider {
               model,
               delta: { content: delta.text },
             };
+          } else if (delta?.type === "thinking_delta" && delta.thinking) {
+            const blk = reasoningBlocks.get(idx) ?? { type: "thinking", text: "" };
+            blk.text = (blk.text ?? "") + delta.thinking;
+            reasoningBlocks.set(idx, blk);
+            yield {
+              id,
+              model,
+              delta: { reasoning: { summary: delta.thinking } },
+            };
+          } else if (delta?.type === "signature_delta" && delta.signature) {
+            const blk = reasoningBlocks.get(idx) ?? { type: "thinking", text: "" };
+            blk.signature = (blk.signature ?? "") + delta.signature;
+            reasoningBlocks.set(idx, blk);
           } else if (delta?.type === "input_json_delta" && delta.partial_json) {
             const tc = currentToolCalls.get(idx);
             if (tc) {
@@ -141,10 +161,13 @@ export class AnthropicProvider extends BaseProvider {
             cachedOutputTokens: 0,
             reasoningTokens: 0,
           };
+          const blocks = [...reasoningBlocks.values()].filter(
+            (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
+          );
           yield {
             id,
             model,
-            delta: {},
+            delta: blocks.length > 0 ? { reasoning: { blocks } } : {},
             finishReason,
             usage,
           };
@@ -261,9 +284,12 @@ export class AnthropicProvider extends BaseProvider {
       };
     }
 
-    // Assistant with tool calls
+    // Assistant with tool calls. Anthropic requires the original thinking
+    // blocks (with their `signature`) to be replayed verbatim *before* the
+    // text/tool_use blocks whenever extended thinking was used in that turn.
     if (m.role === "assistant" && m.toolCalls?.length) {
       const content: any[] = [];
+      appendReasoningBlocks(content, m.reasoning?.blocks);
       if (typeof m.content === "string" && m.content) {
         content.push({ type: "text", text: m.content });
       }
@@ -275,6 +301,15 @@ export class AnthropicProvider extends BaseProvider {
           input: safeJsonParse(tc.arguments),
         });
       }
+      return { role: "assistant", content };
+    }
+
+    // Assistant text-only turn that nonetheless carried thinking blocks.
+    if (m.role === "assistant" && m.reasoning?.blocks?.length) {
+      const content: any[] = [];
+      appendReasoningBlocks(content, m.reasoning.blocks);
+      const text = typeof m.content === "string" ? m.content : "";
+      if (text) content.push({ type: "text", text });
       return { role: "assistant", content };
     }
 
@@ -341,10 +376,21 @@ export class AnthropicProvider extends BaseProvider {
   private parseResponse(json: any): ChatCompletionResponse {
     const textParts: string[] = [];
     const toolCalls: ToolCall[] = [];
+    const reasoningBlocks: ReasoningBlock[] = [];
+    const summaryParts: string[] = [];
 
     for (const block of json.content ?? []) {
       if (block.type === "text") {
         textParts.push(block.text);
+      } else if (block.type === "thinking") {
+        reasoningBlocks.push({
+          type: "thinking",
+          text: block.thinking ?? "",
+          signature: block.signature,
+        });
+        if (block.thinking) summaryParts.push(block.thinking);
+      } else if (block.type === "redacted_thinking") {
+        reasoningBlocks.push({ type: "redacted_thinking", data: block.data });
       } else if (block.type === "tool_use") {
         toolCalls.push({
           id: block.id,
@@ -362,6 +408,9 @@ export class AnthropicProvider extends BaseProvider {
       cachedInputTokens: usage.cache_read_input_tokens ?? 0,
       cachedWriteTokens: usage.cache_creation_input_tokens ?? 0,
       cachedOutputTokens: 0,
+      // Anthropic bills thinking tokens inside `output_tokens` and does not
+      // expose a separate count, so reasoningTokens stays 0 here (cost is still
+      // captured via outputTokens). See docs for the limitation.
       reasoningTokens: 0,
     };
 
@@ -372,6 +421,9 @@ export class AnthropicProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapAnthropicStopReason(json.stop_reason),
+      reasoning: reasoningBlocks.length > 0
+        ? { blocks: reasoningBlocks, summary: summaryParts.join("\n").trim() || undefined }
+        : undefined,
       raw: json,
     };
   }
@@ -398,5 +450,23 @@ function safeJsonParse(str: string): any {
     return JSON.parse(str);
   } catch {
     return {};
+  }
+}
+
+/** Pushes captured thinking blocks back into an Anthropic assistant content
+ * array. `thinking` blocks must include their original `signature`; redacted
+ * blocks carry an opaque `data` payload. Blocks missing required fields are
+ * skipped (Anthropic rejects malformed thinking blocks).
+ */
+function appendReasoningBlocks(content: any[], blocks: ReasoningBlock[] | undefined): void {
+  if (!blocks?.length) return;
+  for (const b of blocks) {
+    if (b.type === "redacted_thinking") {
+      if (b.data) content.push({ type: "redacted_thinking", data: b.data });
+    } else if (b.type === "thinking") {
+      if (b.signature) {
+        content.push({ type: "thinking", thinking: b.text ?? "", signature: b.signature });
+      }
+    }
   }
 }

@@ -11,6 +11,7 @@ import {
   type ToolCall,
   type TokenUsage,
   type UnifiedMessage,
+  type ContentPart,
   type ToolDefinition,
   type OpenAIProviderConfig,
   type ProviderType,
@@ -38,7 +39,18 @@ export class OpenAIProvider extends BaseProvider {
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
+  /** True when the request targets a reasoning model (o-series / gpt-5) so we
+   * should route through the Responses API, which exposes `reasoning.effort`
+   * and reasoning summaries. Chat Completions silently drops these. */
+  protected useResponsesApi(request: ChatCompletionRequest): boolean {
+    if (!request.reasoning) return false;
+    return isReasoningModel(request.model || this.defaultModel);
+  }
+
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    if (this.useResponsesApi(request)) {
+      return this.completeResponses(request);
+    }
     const body = this.buildRequestBody(request, false);
     const res = await this.doFetch(body);
     const json = await res.json();
@@ -46,6 +58,24 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    if (this.useResponsesApi(request)) {
+      // Responses streaming uses a distinct SSE event protocol; for reasoning
+      // models we issue a single non-streaming call and emit one final chunk
+      // so reasoning summary + usage are preserved.
+      const response = await this.completeResponses(request);
+      yield {
+        id: response.id,
+        model: response.model,
+        delta: {
+          content: response.content ?? undefined,
+          toolCalls: response.toolCalls.length > 0 ? response.toolCalls : undefined,
+          reasoning: response.reasoning,
+        },
+        usage: response.usage,
+        finishReason: response.finishReason,
+      };
+      return;
+    }
     const body = this.buildRequestBody(request, true);
     const res = await this.doFetch(body);
 
@@ -169,6 +199,191 @@ export class OpenAIProvider extends BaseProvider {
     return body;
   }
 
+  // ─── Responses API (reasoning models) ──────────────────────────────────────
+
+  protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    const body = this.buildResponsesBody(request);
+    const res = await this.responsesFetch(body);
+    const json = await res.json();
+    return this.parseResponsesResponse(json, request.model || this.defaultModel);
+  }
+
+  protected buildResponsesBody(request: ChatCompletionRequest): Record<string, any> {
+    const body: Record<string, any> = {
+      model: request.model || this.defaultModel,
+      input: request.messages.map((m) => this.toResponsesInput(m)),
+    };
+
+    if (request.maxTokens != null) body.max_output_tokens = request.maxTokens;
+    if (request.topP != null) body.top_p = request.topP;
+    // Reasoning models reject `temperature`; omit it intentionally.
+
+    if (request.tools?.length) {
+      // Responses tools are flat function objects (not nested under `function`).
+      body.tools = request.tools.map((t) => ({
+        type: "function",
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+        ...(t.strict ? { strict: true } : {}),
+      }));
+    }
+
+    if (request.toolChoice != null && request.tools?.length) {
+      if (typeof request.toolChoice === "string") {
+        body.tool_choice = request.toolChoice;
+      } else {
+        body.tool_choice = { type: "function", name: request.toolChoice.name };
+      }
+    }
+
+    if (request.responseFormat) {
+      if (request.responseFormat.type === "json_schema") {
+        body.text = {
+          format: {
+            type: "json_schema",
+            name: request.responseFormat.name ?? "response",
+            schema: request.responseFormat.schema,
+            strict: true,
+          },
+        };
+      } else if (request.responseFormat.type === "json_object") {
+        body.text = { format: { type: "json_object" } };
+      }
+    }
+
+    if (request.extra) Object.assign(body, request.extra);
+
+    // reasoning.effort + reasoning.summary
+    applyOpenAIReasoning(body, request.reasoning, "responses");
+
+    return body;
+  }
+
+  /** Maps a unified message to a Responses API `input` item. */
+  protected toResponsesInput(m: UnifiedMessage): Record<string, any> {
+    // Tool result → function_call_output
+    if (m.role === "tool" && m.toolCallId) {
+      const output = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      return { type: "function_call_output", call_id: m.toolCallId, output };
+    }
+
+    // Assistant with tool calls → emit function_call items. The Responses API
+    // expects each call as its own input item; when there is also text we keep
+    // it as a separate message item.
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      // Caller flattens arrays; return the function_call list wrapped so the
+      // body builder can splice. We return a single item array marker instead.
+      // To keep the 1:1 map contract, encode tool calls as a message with an
+      // attached __calls field that buildResponsesBody expands.
+      return {
+        __assistantWithCalls: true,
+        text: typeof m.content === "string" ? m.content : "",
+        calls: m.toolCalls.map((tc) => ({
+          type: "function_call",
+          call_id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
+        })),
+      };
+    }
+
+    const role = m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user";
+    const textType = role === "assistant" ? "output_text" : "input_text";
+    if (typeof m.content === "string") {
+      return { role, content: [{ type: textType, text: m.content }] };
+    }
+    const content = (m.content as ContentPart[]).map((part) => {
+      if (part.type === "text") return { type: textType, text: part.text };
+      if (part.type === "image") {
+        const src = part.source;
+        const url = src.type === "url" ? src.url : `data:${src.mediaType};base64,${src.data}`;
+        return { type: "input_image", image_url: url };
+      }
+      return { type: textType, text: "" };
+    });
+    return { role, content };
+  }
+
+  protected async responsesFetch(body: Record<string, any>): Promise<Response> {
+    // Expand assistant-with-calls markers into discrete input items.
+    body.input = expandResponsesInput(body.input);
+    const url = `${this.baseURL}/responses`;
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      ...this.defaultHeaders,
+    };
+    const payload = JSON.stringify(body);
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderError(
+        `OpenAI Responses API error ${res.status}: ${text}`,
+        this.providerName,
+        res.status,
+        text,
+      );
+    }
+    return res;
+  }
+
+  protected parseResponsesResponse(json: any, modelId: string): ChatCompletionResponse {
+    const textParts: string[] = [];
+    const toolCalls: ToolCall[] = [];
+    const summaryParts: string[] = [];
+
+    for (const item of json.output ?? []) {
+      if (item.type === "message") {
+        for (const c of item.content ?? []) {
+          if (c.type === "output_text" && typeof c.text === "string") textParts.push(c.text);
+        }
+      } else if (item.type === "function_call") {
+        toolCalls.push({
+          id: item.call_id ?? item.id ?? "",
+          name: item.name ?? "",
+          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
+        });
+      } else if (item.type === "reasoning") {
+        for (const s of item.summary ?? []) {
+          if (typeof s.text === "string") summaryParts.push(s.text);
+        }
+      }
+    }
+
+    // Fallback: top-level output_text convenience field.
+    if (textParts.length === 0 && typeof json.output_text === "string") {
+      textParts.push(json.output_text);
+    }
+
+    const usage = json.usage ?? {};
+    const reasoningTokens = usage.output_tokens_details?.reasoning_tokens ?? 0;
+    const tokenUsage: TokenUsage = {
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      totalTokens: usage.total_tokens ?? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
+      cachedInputTokens: usage.input_tokens_details?.cached_tokens ?? 0,
+      cachedWriteTokens: 0,
+      cachedOutputTokens: 0,
+      reasoningTokens,
+    };
+
+    const finishReason: ChatCompletionResponse["finishReason"] = toolCalls.length > 0
+      ? "tool_calls"
+      : json.status === "incomplete" ? "length" : "stop";
+
+    return {
+      id: json.id ?? "",
+      model: json.model ?? modelId,
+      content: textParts.join("") || null,
+      toolCalls,
+      usage: tokenUsage,
+      finishReason,
+      reasoning: summaryParts.length > 0 ? { summary: summaryParts.join("\n").trim() || undefined } : undefined,
+      raw: json,
+    };
+  }
+
   protected toOpenAIMessage(m: UnifiedMessage): Record<string, any> {
     const msg: Record<string, any> = { role: m.role };
 
@@ -276,6 +491,32 @@ export class OpenAIProvider extends BaseProvider {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Detects OpenAI reasoning models (o-series and gpt-5 family). */
+export function isReasoningModel(model: string | undefined): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  return /(^|[/_-])o[0-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
+    || m.includes("gpt-5") || m.includes("gpt5");
+}
+
+/** Expands assistant-with-tool-call markers produced by toResponsesInput into
+ * the flat Responses `input` item list (optional message text + function_call
+ * items in order). */
+function expandResponsesInput(input: any[]): any[] {
+  const out: any[] = [];
+  for (const item of input) {
+    if (item && item.__assistantWithCalls) {
+      if (item.text) {
+        out.push({ role: "assistant", content: [{ type: "output_text", text: item.text }] });
+      }
+      for (const call of item.calls) out.push(call);
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
+}
 
 function mapFinishReason(reason: string | null | undefined): ChatCompletionResponse["finishReason"] {
   switch (reason) {

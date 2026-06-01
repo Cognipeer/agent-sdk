@@ -72,6 +72,7 @@ export function fromNativeProvider(
       let fullContent = "";
       let allToolCalls: ToolCall[] = [];
       let lastUsage: TokenUsage | undefined;
+      let reasoningBlocks: import("./types.js").ReasoningBlock[] | undefined;
       const toolCallBuffers = new Map<string, ToolCall>();
 
       for await (const chunk of provider.completeStream(request)) {
@@ -79,6 +80,11 @@ export function fromNativeProvider(
         if (chunk.delta.content) {
           fullContent += chunk.delta.content;
           yield chunk.delta.content;
+        }
+
+        // Capture final reasoning blocks (emitted near end of stream).
+        if (chunk.delta.reasoning?.blocks?.length) {
+          reasoningBlocks = chunk.delta.reasoning.blocks;
         }
 
         // Accumulate tool calls
@@ -105,6 +111,9 @@ export function fromNativeProvider(
       // Yield final assembled message
       allToolCalls = [...toolCallBuffers.values()];
       const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage);
+      if (reasoningBlocks?.length) {
+        (finalMessage as any).reasoning = { blocks: reasoningBlocks };
+      }
       yield finalMessage;
     },
 
@@ -192,6 +201,13 @@ function toUnifiedMessage(msg: BaseChatMessage): UnifiedMessage {
       name: tc.function?.name ?? tc.name ?? "",
       arguments: tc.function?.arguments ?? tc.arguments ?? "{}",
     }));
+  }
+
+  // Carry native reasoning blocks back so providers can replay them verbatim
+  // (Anthropic/Bedrock extended thinking requires the signed blocks intact).
+  const reasoning = (msg as any).reasoning;
+  if (reasoning && (reasoning.blocks?.length || reasoning.summary)) {
+    unified.reasoning = reasoning;
   }
 
   return unified;
@@ -447,6 +463,10 @@ function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
     }));
+  }
+
+  if (response.reasoning && (response.reasoning.blocks?.length || response.reasoning.summary)) {
+    (msg as any).reasoning = response.reasoning;
   }
 
   return msg;

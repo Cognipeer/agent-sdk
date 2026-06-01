@@ -150,12 +150,45 @@ const agent = createSmartAgent({
     level: "medium",
     reflection: {
       cadence: "after_tool",
-      maxPerRun: 5,        // hard cap
+      maxPerRun: 5,        // hard cap per invoke (run-scoped)
       everyNTurns: 3,      // reflect every 3 tool turns
     },
   },
 });
 ```
+
+### Cadence options
+
+| Cadence | Fires |
+| --- | --- |
+| `off` | Never. |
+| `every_turn` | Every loop turn. |
+| `after_tool` | After any turn that ran tools. |
+| `on_branch` | After a tool turn whose tool-name set differs from the previous tool turn (a genuine strategy change). |
+| `initial_then_after_tool` | Once up-front as a planning note, then like `after_tool`. Default for `level: "medium"` / `"high"`. |
+
+`level: "minimal"` selects native `effort: "minimal"` and disables reflection; `"low"` defaults to the `on_branch` cadence.
+
+### Hooks and routing
+
+Reflection exposes lifecycle hooks and an optional destination for the note:
+
+```ts
+reflection: {
+  cadence: "after_tool",
+  // Override the cadence decision entirely (throttles still apply on top).
+  shouldReflect: ({ turn, ranToolsThisTurn }) => ranToolsThisTurn && turn % 2 === 0,
+  // Customize the prompt body sent to the model.
+  buildPrompt: ({ defaultPrompt, maxChars }) => `${defaultPrompt}\nKeep it under ${maxChars} chars.`,
+  // Side-effect hook after each reflection record is produced.
+  onReflection: (record) => myTimeline.push(record),
+  // Route the note: "memory" (low-confidence MemoryFact), "plan" (plan.lastReflection), or "none".
+  feedTo: "memory",
+}
+```
+
+Near-identical consecutive reflections are suppressed automatically so the prompt does not accumulate restated insights.
+
 
 ## 8. Delegation: dispatch work to sub-agents safely
 

@@ -385,11 +385,17 @@ export class VertexProvider extends BaseProvider {
 
     const textParts: string[] = [];
     const toolCalls: ToolCall[] = [];
+    const thoughtParts: string[] = [];
     let toolCallIdx = 0;
 
     for (const part of parts) {
       if (part.text) {
-        textParts.push(part.text);
+        // Gemini marks reasoning summary parts with thought:true.
+        if (part.thought === true) {
+          thoughtParts.push(part.text);
+        } else {
+          textParts.push(part.text);
+        }
       } else if (part.functionCall) {
         toolCalls.push({
           id: `call_${toolCallIdx++}`,
@@ -417,6 +423,7 @@ export class VertexProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapGeminiFinishReason(candidate?.finishReason),
+      reasoning: thoughtParts.length > 0 ? { summary: thoughtParts.join("\n").trim() || undefined } : undefined,
       raw: json,
     };
   }
@@ -428,7 +435,11 @@ export class VertexProvider extends BaseProvider {
 
     for (const part of parts) {
       if (part.text) {
-        delta.content = (delta.content ?? "") + part.text;
+        if (part.thought === true) {
+          delta.reasoning = { summary: (delta.reasoning?.summary ?? "") + part.text };
+        } else {
+          delta.content = (delta.content ?? "") + part.text;
+        }
       } else if (part.functionCall) {
         if (!delta.toolCalls) delta.toolCalls = [];
         delta.toolCalls.push({
