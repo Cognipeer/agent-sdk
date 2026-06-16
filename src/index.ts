@@ -12,6 +12,7 @@ export { setTokenCounter, getTokenCounter, defaultTokenCounter } from "./utils/u
 export type { TokenCounter } from "./utils/utilTokens.js";
 export * from "./contextTools.js";
 export * from "./smart/index.js";
+export * from "./smart/skills/index.js";
 export * from "./smart/eval.js";
 export * from "./smart/memory.js";
 export * from "./smart/runtimeConfig.js";
