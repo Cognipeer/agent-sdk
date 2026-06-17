@@ -24,6 +24,7 @@ function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartA
 - `summarization`, `context`, `toolResponses`: context pressure handling
 - `memory`: fact read/write policy
 - `delegation`: child-agent behavior (depth, child-call budget, context policy — enforced at runtime)
+- `skills`, `skillPolicy`: progressive capability disclosure for large or optional tool catalogs
 - `tracing`: execution telemetry
 - `outputSchema`: deterministic structured output
 - `limits`: budget surfaces — see [Limits & Tokens](/limits-tokens/) for the full list including `maxTotalOutputTokens`, `maxCostUsd`, `maxWallClockMs`
@@ -41,6 +42,27 @@ function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartA
 - `schemaValidation` controls whether Zod-based tool input validation fails fast or only warns.
 
 Resolution order at summarization time: critical tool &rarr; per-tool override &rarr; default policy. The full payload is always recoverable through `get_tool_response` using the execution id embedded in the placeholder.
+
+### Skills and progressive disclosure
+
+`createSmartAgent(...)` accepts a `skills` catalog when the agent has many possible capabilities but only needs a small subset per task:
+
+```ts
+const agent = createSmartAgent({
+  model,
+  skills: [pdfSkill, jiraSkill],
+  skillPolicy: {
+    maxOpenSkills: 2,
+    maxBoundToolsPerSkill: 8,
+    maxBoundToolsTotal: 24,
+    modelTier: "large",
+  },
+});
+```
+
+When `skills` is non-empty, the smart runtime injects an `<available_skills>` header block and registers `open_skill` / `bind_skill_tools`. Small skills bind all tools when opened; large skills return a tool index and bind only selected tools.
+
+Use direct `tools` for always-on primitives and `skills` for optional, large, or integration-scoped capability bundles. See [Guide → Skills](../guide/skills.md) and [API → Skills](./skills.md) for the full contract.
 
 ### Example
 

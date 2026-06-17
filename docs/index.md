@@ -24,6 +24,8 @@ features:
     details: Smart planning is aimed at agents that own multi-step work. The durable plan lives on result.state.plan instead of being trapped in transient UI events.
   - title: Summarization With Recovery Paths
     details: Long-running agents can compact tool-heavy history without going blind. Archived outputs remain recoverable through get_tool_response when the agent needs raw evidence again.
+  - title: Skills For Large Tool Catalogs
+    details: Expose cheap capability headers first, then let the model open skills and bind only the tools it needs for the current task.
   - title: State, Resume, And Human Control
     details: Pause execution, snapshot state, restore later, and gate risky tools through approvals without losing the agent's working context.
   - title: Tracing, Debugging, And Evaluation
@@ -37,7 +39,8 @@ If you are integrating the SDK for the first time, read the docs in this order:
 1. [Getting Started](/guide/getting-started) to get a working agent into your app fast.
 2. [Native Providers](/guide/native-providers) to connect to OpenAI, Anthropic, Azure, Bedrock, Vertex, or any compatible endpoint without additional dependencies.
 3. [Core Concepts](/guide/core-concepts) to understand what actually lives in state, what is emitted as an event, and what gets summarized.
-4. [Architecture](/guide/architecture) to understand the smart wrapper, the base loop, and where runtime decisions are made.
+4. [Skills & Progressive Disclosure](/guide/skills) if your agent has a large or optional tool catalog.
+5. [Architecture](/guide/architecture) to understand the smart wrapper, the base loop, and where runtime decisions are made.
 
 ## Quick Start
 

@@ -36,6 +36,7 @@ Highlights:
 - **Planning mode** – adaptive system prompt + TODO tool supports full plan writes and version-safe partial updates.
 - **Unified reasoning surface** – one `reasoning` config controls provider-native reasoning and post-tool plain-text reflections.
 - **Structured output** – provide a Zod schema and the agent injects a finalize tool to capture JSON deterministically.
+- **Skills / progressive disclosure** – expose cheap capability headers first, then bind skill tools on demand with `open_skill` and `bind_skill_tools`.
 - **Multi-agent and handoffs** – wrap agents as tools or transfer control mid-run with `asTool` / `asHandoff`.
 - **Human-in-the-loop** – `needsApproval` tools pause for review; `humanInTheLoop.askUser` enables a built-in `ask_user_question` tool that pauses with a structured multi-choice prompt and resumes from the user's answer.
 - **Usage + events** – normalize provider usage, surface `tool_call`, `tool_approval`, `user_question`, `plan`, `summarization`, `reflection`, `metadata`, and `handoff` events.
@@ -165,7 +166,33 @@ Tool-response retention is lazy and summarizer-driven:
 - `criticalTools` are never reduced. The built-in list covers `response`, `manage_todo_list`, and `get_tool_response`.
 - `maxToolResponseChars` / `maxToolResponseTokens` only drive an eager hard-cap truncation when a single tool output is big enough to blow up the very next model call. The truncated head always points at `get_tool_response` for recovery.
 
-The smart wrapper now supports runtime presets (`fast`, `balanced`, `deep`, `research`), custom profiles layered on top of a base preset, structured summarization, hybrid context compaction, configurable tool-response retention, in-memory fact storage, delegation limits, and an eval harness via `runSmartAgentEvalHarness(...)`.
+The smart wrapper now supports runtime presets (`fast`, `balanced`, `deep`, `research`), custom profiles layered on top of a base preset, structured summarization, hybrid context compaction, skill-based progressive disclosure, configurable tool-response retention, in-memory fact storage, delegation limits, and an eval harness via `runSmartAgentEvalHarness(...)`.
+
+For large or optional tool catalogs, pass `skills` instead of binding every tool directly:
+
+```ts
+import { createSmartAgent, type Skill } from "@cognipeer/agent-sdk";
+
+const pdfSkill: Skill = {
+  key: "builtin:pdf",
+  title: "PDF",
+  header: "read and summarize PDF files when the user references a PDF",
+  prompt: "Use pdf_read before pdf_summarize and preserve file ids in the answer.",
+  listToolIndex: () => [
+    { name: "pdf_read", description: "Extract PDF text by file id" },
+    { name: "pdf_summarize", description: "Summarize extracted PDF text" },
+  ],
+  bindTools: (names) => bindPdfTools(names),
+};
+
+const agent = createSmartAgent({
+  model,
+  skills: [pdfSkill],
+  skillPolicy: { maxOpenSkills: 2, maxBoundToolsPerSkill: 8, maxBoundToolsTotal: 24 },
+});
+```
+
+The model sees the skill header first. It calls `open_skill` to load the skill prompt and either bind a small skill immediately or get a tool index for `bind_skill_tools`.
 
 You can also define a custom profile by extending a built-in preset and overriding only the knobs you need:
 

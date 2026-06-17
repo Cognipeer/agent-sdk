@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Documentation for smart-agent skills / progressive disclosure, including the `Skill` and `SkillPolicy` API, `open_skill` / `bind_skill_tools`, VitePress navigation, and tool-heavy agent guidance.
+
 ## [0.6.5]
 
 ### Added

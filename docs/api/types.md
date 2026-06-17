@@ -187,6 +187,66 @@ type ReflectionEvent = {
 
 `SmartAgentEvent` includes `ReflectionEvent` alongside plan, tool-call, summarization, handoff, and final-answer events.
 
+## `Skill`
+
+`Skill` is the progressive disclosure primitive used by `createSmartAgent({ skills })`.
+
+```ts
+type SkillToolHeader = {
+  name: string;
+  description?: string;
+};
+
+type Skill = {
+  key: string;
+  title: string;
+  header: string;
+  prompt: string | (() => Promise<string> | string);
+  needsSandbox?: boolean;
+  minModelTier?: "small" | "large";
+  isAvailable?: () => boolean | Promise<boolean>;
+  listToolIndex: () => Promise<SkillToolHeader[]> | SkillToolHeader[];
+  bindTools: (names?: string[]) => Promise<ToolInterface[]> | ToolInterface[];
+  rankToolHeaders?: (
+    query: string,
+    headers: SkillToolHeader[],
+  ) => Promise<SkillToolHeader[]> | SkillToolHeader[];
+  defaultBindNames?: string[];
+};
+```
+
+The model sees only `key` and `header` until it calls `open_skill`. The runtime then returns the skill `prompt`, binds tools for small skills, or returns a tool index for large skills.
+
+## `SkillPolicy`
+
+```ts
+type SkillPolicy = {
+  maxOpenSkills: number;
+  maxBoundToolsPerSkill: number;
+  maxBoundToolsTotal: number;
+  modelTier?: "small" | "large";
+};
+```
+
+Default exports:
+
+```ts
+DEFAULT_SKILL_POLICY = {
+  maxOpenSkills: 4,
+  maxBoundToolsPerSkill: 12,
+  maxBoundToolsTotal: 40,
+};
+
+SMALL_TIER_SKILL_POLICY = {
+  maxOpenSkills: 1,
+  maxBoundToolsPerSkill: 6,
+  maxBoundToolsTotal: 18,
+  modelTier: "small",
+};
+```
+
+The skill registry is per invoke. Tool executions from bound skill tools still appear in `state.toolHistory`, but opened skill keys and bound tool lists are not durable application state.
+
 ## `PlanStepRecord`
 
 ```ts

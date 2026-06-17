@@ -81,7 +81,15 @@ Profiles are not marketing labels. They bundle tradeoffs around limits, summariz
 
 This separation matters because not every tool result should stay live in the model-facing context.
 
-## 8. Events are observability signals, not your data model
+## 8. Skills are lazy capability bundles
+
+Skills let a smart agent see a short catalog of possible capabilities without binding every tool up front.
+
+The model first sees skill headers in `<available_skills>`. It can then call `open_skill` to load a skill's prompt and bind small skills immediately, or call `bind_skill_tools` to attach a selected subset from a large skill.
+
+This matters for MCP-heavy or integration-heavy products: the runtime can keep the model's active tool set small while still making large capability catalogs discoverable. The skill registry is per invoke, while actual tool executions still land in normal `state.toolHistory`.
+
+## 9. Events are observability signals, not your data model
 
 The runtime can emit events such as `tool_call`, `plan`, `summarization`, `reflection`, `metadata`, `handoff`, and `finalAnswer`.
 

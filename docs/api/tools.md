@@ -108,6 +108,7 @@ You can also pass objects that expose `invoke`, `call`, `run`, or `func`. This i
 
 - `manage_todo_list`
 - `get_tool_response`
+- `open_skill` and `bind_skill_tools` when `skills` are configured
 - `response` when `outputSchema` is active
 
 ### `manage_todo_list`
@@ -122,6 +123,15 @@ This is the planning tool for autonomous multi-step work.
 ### `get_tool_response`
 
 This is the recovery tool for summarized history. Use it when a large tool output has been archived and you need the raw execution payload again.
+
+### `open_skill` and `bind_skill_tools`
+
+These are the progressive disclosure meta-tools registered by `createSmartAgent({ skills })`.
+
+- `open_skill({ skillKey, query? })` loads a skill's prompt. Small skills bind all tools immediately; large skills return a tool index and optional default bindings.
+- `bind_skill_tools({ skillKey, toolNames })` binds a selected subset from an already-open large skill.
+
+Bound skill tools are appended to the live runtime tool set for later turns in the same invoke. See [Guide → Skills](../guide/skills.md) for authoring guidance.
 
 ### `response`
 

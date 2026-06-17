@@ -44,7 +44,39 @@ const agent = createSmartAgent({
 
 Approval-required tools still run sequentially so the first pending approval can short-circuit the turn. Order of tool results is preserved (Bedrock / Anthropic strict-pairing safe).
 
-## 3. Idempotent reads: opt into tool caching
+## 3. Tool catalog size: use skills for progressive disclosure
+
+When an agent has dozens or hundreds of possible tools, the tool catalog itself becomes part of the cost and quality problem. Put optional or domain-specific bundles behind skills so the model sees a cheap header first and binds concrete tools only when needed.
+
+```ts
+import { createSmartAgent, type Skill } from "@cognipeer/agent-sdk";
+
+const jiraSkill: Skill = {
+  key: "mcp:jira",
+  title: "Jira",
+  header: "search and update Jira issues when project work involves tickets",
+  prompt: "Prefer read-only tools first. Use write tools only when the user asks to change Jira.",
+  listToolIndex: () => jiraToolHeaders,
+  bindTools: (names) => bindJiraTools(names),
+  rankToolHeaders: (query, headers) => rankJiraTools(query, headers),
+  defaultBindNames: ["jira_search_issues", "jira_get_issue"],
+};
+
+const agent = createSmartAgent({
+  model,
+  skills: [jiraSkill],
+  skillPolicy: {
+    maxOpenSkills: 2,
+    maxBoundToolsPerSkill: 8,
+    maxBoundToolsTotal: 24,
+    modelTier: "large",
+  },
+});
+```
+
+Small skills bind all tools on `open_skill`. Large skills return a ranked tool index and require `bind_skill_tools` for the selected subset. See [Skills & Progressive Disclosure](./skills) for the full contract.
+
+## 4. Idempotent reads: opt into tool caching
 
 If the agent re-reads the same file, fetches the same URL, or looks up the same id within a single invoke, the cache pays for itself:
 
@@ -62,7 +94,7 @@ Cached hits are recorded with `fromCache: true` on `state.toolHistory` so you ca
 
 Do NOT enable `cache` for non-deterministic tools (live API state, time-sensitive lookups). The agent will not see fresh results.
 
-## 4. Resilience: retry policies
+## 5. Resilience: retry policies
 
 External APIs flake. Declare retry directly on the tool:
 
@@ -83,7 +115,7 @@ const search = createTool({
 
 Provider-level retries (429 / 5xx) are already automatic — see [Native Providers](./native-providers).
 
-## 5. Safety: budget enforcement
+## 6. Safety: budget enforcement
 
 Always set hard ceilings on production agents. They cost roughly the same to declare as they save when things go wrong.
 
@@ -113,7 +145,7 @@ const agent = createSmartAgent({
 
 A breach emits a `metadata` event with `limitBreached: string` and exits the loop cleanly. `result.content` and `result.state` still contain whatever the agent managed to produce.
 
-## 6. Context survival: summarization
+## 7. Context survival: summarization
 
 Tool-heavy agents accumulate massive payloads. Configure summarization so the model can keep thinking when context pressure builds:
 
@@ -137,7 +169,7 @@ const agent = createSmartAgent({
 
 When context is compacted, the raw payload remains recoverable via `get_tool_response` — the runtime injects that tool automatically once a recovery marker appears in the transcript.
 
-## 7. Reflection budget
+## 8. Reflection budget
 
 If you enable `reasoning.reflection` to give the agent a post-tool think-pause, cap it so a 50-turn run does not produce 50 extra model calls:
 
@@ -190,7 +222,7 @@ reflection: {
 Near-identical consecutive reflections are suppressed automatically so the prompt does not accumulate restated insights.
 
 
-## 8. Delegation: dispatch work to sub-agents safely
+## 9. Delegation: dispatch work to sub-agents safely
 
 For multi-agent workflows, runtime delegation policy is enforced — not just documented in the prompt:
 
@@ -218,7 +250,7 @@ const parent = createSmartAgent({
 
 Refused delegations (depth/budget exceeded, `mode: "off"`) return a structured error to the parent model instead of silently looping.
 
-## 9. Concurrency-safe agents
+## 10. Concurrency-safe agents
 
 The runtime now creates per-invoke plan / todo / tool-history references, so the same `agent` instance can serve many concurrent users without state crosstalk:
 
@@ -231,7 +263,7 @@ await Promise.all([
 ]);
 ```
 
-## 10. Observability
+## 11. Observability
 
 Always enable tracing for long-running agents. The structured event stream and trace session are how you debug "why did this run cost $4?":
 
