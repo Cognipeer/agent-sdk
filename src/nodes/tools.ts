@@ -558,6 +558,23 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const durationMs = Date.now() - start;
         const executionId = nanoid();
 
+        // Progressive disclosure: a tool may inject additional runtime tools
+        // (e.g. open_skill / bind_skill_tools) so later model turns in THIS same
+        // loop can call them. Unlike __handoff this does not replace the agent or
+        // return early — it appends to the live tool set and falls through to the
+        // normal tool-result push (the marker is stripped before serialization).
+        if (output && typeof output === "object" && Array.isArray((output as any).__runtimeToolsDelta)) {
+          const delta = (output as any).__runtimeToolsDelta as Array<{ name?: string }>;
+          delete (output as any).__runtimeToolsDelta;
+          const currentRuntime: any = state.agent || runtime;
+          const currentTools: any[] = (currentRuntime?.tools as any[]) ?? [];
+          const present = new Set(currentTools.map((tool) => tool?.name));
+          const additions = delta.filter((tool) => tool && (tool as any).name && !present.has((tool as any).name));
+          if (additions.length > 0 && currentRuntime) {
+            state.agent = { ...currentRuntime, tools: [...currentTools, ...additions] };
+          }
+        }
+
         if (output && typeof output === "object" && output.__handoff && output.__handoff.runtime) {
           toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
           push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });

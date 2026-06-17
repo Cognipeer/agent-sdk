@@ -12,6 +12,9 @@ import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "
 import { StructuredOutputManager } from "../structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resolver.js";
 import { extractMessageText } from "../utils/content.js";
+import { createSkillRegistryRef, DEFAULT_SKILL_POLICY, type Skill, type SkillPolicy } from "./skills/types.js";
+import { createSkillTools } from "./skills/skillTools.js";
+import { buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -54,6 +57,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     factoryToolsWithoutRecovery.push(createAskUserQuestionTool(factoryStateRef, askUserConfig));
   }
 
+  // Progressive capability disclosure: when `skills` are supplied, the model
+  // sees cheap skill headers and opens them on demand to bind their tools.
+  const skills: Skill[] = ((opts as any).skills as Skill[] | undefined) ?? [];
+  const skillPolicy: SkillPolicy = ((opts as any).skillPolicy as SkillPolicy | undefined) ?? DEFAULT_SKILL_POLICY;
+  const skillsEnabled = skills.length > 0;
+
   // Pre-resolve the structured-output manager so we can plug the `response`
   // finalize tool into the smart runtime's tool set (state.agent.tools).
   // Otherwise the smart agent would override base agent's tools without the
@@ -70,17 +79,43 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     stateRef: any;
     toolsWithoutRecovery: any[];
     toolsWithRecovery: any[];
+    skillRegistryRef?: any;
   };
   const buildInvokeToolSet = (): InvokeToolSet => {
     const ref: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
     const ctxTools = createContextTools(ref, { planningEnabled, includeGetToolResponse: false });
     const recoveryTool = createGetToolResponseTool(ref);
-    const base = [...userTools, ...ctxTools];
-    if (responseFinalizeTool) base.push(responseFinalizeTool);
-    if (askUserConfig) base.push(createAskUserQuestionTool(ref, askUserConfig));
-    const without = base;
-    const withRec = [...without, recoveryTool];
-    return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec };
+    const coreBase = [...userTools, ...ctxTools];
+    if (responseFinalizeTool) coreBase.push(responseFinalizeTool);
+    if (askUserConfig) coreBase.push(createAskUserQuestionTool(ref, askUserConfig));
+
+    if (!skillsEnabled) {
+      const without = coreBase;
+      const withRec = [...without, recoveryTool];
+      return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec };
+    }
+
+    // Skill mode: open_skill/bind_skill_tools mutate a per-invoke registry and
+    // call __onToolsChanged, which rebuilds BOTH tool-set variants with fresh
+    // references so syncRuntimeTools' identity-swap propagates the newly-bound
+    // tools (and the recovery variant can never drop them).
+    const toolSet: InvokeToolSet = { stateRef: ref, toolsWithoutRecovery: [], toolsWithRecovery: [] };
+    const skillRegistryRef = createSkillRegistryRef();
+    const skillMetaTools = createSkillTools({ registryRef: skillRegistryRef, skills, policy: skillPolicy });
+    const baseWithMeta = [...coreBase, ...skillMetaTools];
+    const rebuild = () => {
+      const composed = composeToolSets({
+        base: baseWithMeta,
+        boundSkillTools: skillRegistryRef.boundSkillTools,
+        recoveryTool,
+      });
+      toolSet.toolsWithoutRecovery = composed.toolsWithoutRecovery;
+      toolSet.toolsWithRecovery = composed.toolsWithRecovery;
+    };
+    skillRegistryRef.__onToolsChanged = rebuild;
+    toolSet.skillRegistryRef = skillRegistryRef;
+    rebuild();
+    return toolSet;
   };
 
   // Compose base agent – pass summarization config so createAgent's token-budget
@@ -150,9 +185,9 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     };
   }
 
-  function systemMessage(): any {
+  function systemMessage(extraBlock?: string): any {
     const sys = buildSystemPrompt(
-      [opts.systemPrompt, runtimeHint, structuredOutputHint].filter(Boolean).join("\n"),
+      [opts.systemPrompt, runtimeHint, structuredOutputHint, extraBlock].filter(Boolean).join("\n"),
       planningEnabled,
       opts.name || "Agent",
       opts.todoListPrompt,
@@ -221,9 +256,17 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
       const syncPlanFromRef = (state: SmartState) => syncPlanStateWith(stateRef, state);
 
+      // Resolve which skills are usable this invoke (availability + tier gating)
+      // and surface their headers in the system prompt so the model knows what
+      // it can open. open_skill re-checks availability at call time.
+      const availableSkills = skillsEnabled
+        ? await resolveAvailableSkills(skills, { modelTier: skillPolicy.modelTier })
+        : [];
+      const skillBlock = availableSkills.length > 0 ? buildSkillHeaderBlock(availableSkills) : undefined;
+
       // Prepend a single system message once
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
-      const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(), ...(input.messages || [])];
+      const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(skillBlock), ...(input.messages || [])];
       let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       let rawMessages = [...seedMessages];

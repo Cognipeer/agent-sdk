@@ -80,17 +80,20 @@ export function createOpenSkillTool(deps: SkillToolDeps): ToolInterface {
           prompt,
           needsSandbox: Boolean(skill.needsSandbox),
           boundTools: added.map((t) => t.name),
+          // Inject the bound tools into the live runtime for this loop.
+          __runtimeToolsDelta: added,
         };
       }
 
       // Fat skill: optionally bind a deterministic default floor (so a weak
       // model that can't pick still gets a working set), then return the index.
       let defaultBound: string[] = [];
+      let defaultAdded: ToolInterface[] = [];
       if ((!query || query.trim().length < 3) && skill.defaultBindNames?.length) {
         const bound = await skill.bindTools(skill.defaultBindNames.slice(0, policy.maxBoundToolsPerSkill));
-        const added = appendBoundTools(ref, bound, policy);
-        if (added.length > 0) ref.__onToolsChanged?.();
-        defaultBound = added.map((t) => t.name);
+        defaultAdded = appendBoundTools(ref, bound, policy);
+        if (defaultAdded.length > 0) ref.__onToolsChanged?.();
+        defaultBound = defaultAdded.map((t) => t.name);
       }
 
       const headers =
@@ -105,6 +108,7 @@ export function createOpenSkillTool(deps: SkillToolDeps): ToolInterface {
         boundTools: defaultBound,
         toolIndex: headers.slice(0, MAX_RETURNED_INDEX).map((h) => ({ name: h.name, description: h.description })),
         hint: "Call bind_skill_tools(skillKey, toolNames) with only the tools you need.",
+        ...(defaultAdded.length > 0 ? { __runtimeToolsDelta: defaultAdded } : {}),
       };
     },
   });
@@ -144,6 +148,7 @@ export function createBindSkillToolsTool(deps: SkillToolDeps): ToolInterface {
         boundTools: added.map((t) => t.name),
         requested: capped.length,
         truncated: toolNames.length > capped.length,
+        ...(added.length > 0 ? { __runtimeToolsDelta: added } : {}),
       };
     },
   });
