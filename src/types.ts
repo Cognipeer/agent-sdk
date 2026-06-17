@@ -560,6 +560,15 @@ export type SmartAgentOptions = {
   costEstimator?: AgentOptions["costEstimator"];
   /** See AgentOptions.humanInTheLoop. */
   humanInTheLoop?: HumanInTheLoopOptions;
+  /**
+   * Progressive capability disclosure. When provided, the agent exposes cheap
+   * skill headers in its system prompt and binds a skill's tools on demand via
+   * the built-in open_skill / bind_skill_tools tools. Keeps the bound-tool count
+   * per step small. An empty array is a no-op.
+   */
+  skills?: import("./smart/skills/types.js").Skill[];
+  /** Caps/tiering for skill disclosure. Defaults to DEFAULT_SKILL_POLICY. */
+  skillPolicy?: import("./smart/skills/types.js").SkillPolicy;
 };
 
 // Runtime representation of an agent (used inside state.agent)
