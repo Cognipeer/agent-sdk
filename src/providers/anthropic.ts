@@ -193,7 +193,7 @@ export class AnthropicProvider extends BaseProvider {
 
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
-      messages: messages.map((m) => this.toAnthropicMessage(m)),
+      messages: this.toAnthropicMessages(messages),
       max_tokens: request.maxTokens ?? 4096,
       stream,
     };
@@ -268,22 +268,49 @@ export class AnthropicProvider extends BaseProvider {
     };
   }
 
-  private toAnthropicMessage(m: UnifiedMessage): Record<string, any> {
-    // Tool result messages
-    if (m.role === "tool" && m.toolCallId) {
-      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-      return {
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: m.toolCallId,
-            content,
-          },
-        ],
-      };
+  /**
+   * Converts unified messages to Anthropic format, coalescing consecutive
+   * tool-result messages into a single `user` turn.
+   *
+   * The unified message list carries one `role: "tool"` entry per tool call
+   * (mirroring OpenAI's shape). Anthropic's Messages API expects every
+   * `tool_result` block answering a single assistant turn's `tool_use`
+   * block(s) to be batched into ONE `user` message rather than sent as
+   * separate consecutive `user` messages.
+   */
+  private toAnthropicMessages(messages: UnifiedMessage[]): Record<string, any>[] {
+    const result: Record<string, any>[] = [];
+    let mergingToolResults = false;
+
+    for (const m of messages) {
+      if (m.role === "tool" && m.toolCallId) {
+        const toolResult = this.toAnthropicToolResult(m);
+        if (mergingToolResults) {
+          result[result.length - 1].content.push(toolResult);
+        } else {
+          result.push({ role: "user", content: [toolResult] });
+          mergingToolResults = true;
+        }
+        continue;
+      }
+
+      mergingToolResults = false;
+      result.push(this.toAnthropicMessage(m));
     }
 
+    return result;
+  }
+
+  private toAnthropicToolResult(m: UnifiedMessage): Record<string, any> {
+    const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    return {
+      type: "tool_result",
+      tool_use_id: m.toolCallId,
+      content,
+    };
+  }
+
+  private toAnthropicMessage(m: UnifiedMessage): Record<string, any> {
     // Assistant with tool calls. Anthropic requires the original thinking
     // blocks (with their `signature`) to be replayed verbatim *before* the
     // text/tool_use blocks whenever extended thinking was used in that turn.

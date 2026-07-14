@@ -190,6 +190,7 @@ export class VertexProvider extends BaseProvider {
   private buildContents(messages: UnifiedMessage[]): { system: string | undefined; contents: any[] } {
     const systemParts: string[] = [];
     const contents: any[] = [];
+    let mergingToolResults = false;
 
     for (const m of messages) {
       if (m.role === "system") {
@@ -200,6 +201,23 @@ export class VertexProvider extends BaseProvider {
         continue;
       }
 
+      // Gemini expects every functionResponse part answering a single model
+      // turn's (possibly multiple) functionCall parts to be batched into ONE
+      // turn. The unified message list carries one `role: "tool"` entry per
+      // tool call (mirroring OpenAI's shape), so consecutive tool messages
+      // here are coalesced into a single content entry.
+      if (m.role === "tool" && m.toolCallId) {
+        const part = this.toGeminiFunctionResponsePart(m);
+        if (mergingToolResults) {
+          contents[contents.length - 1].parts.push(part);
+        } else {
+          contents.push({ role: "user", parts: [part] });
+          mergingToolResults = true;
+        }
+        continue;
+      }
+
+      mergingToolResults = false;
       contents.push(this.toGeminiContent(m));
     }
 
@@ -209,29 +227,23 @@ export class VertexProvider extends BaseProvider {
     };
   }
 
-  private toGeminiContent(m: UnifiedMessage): Record<string, any> {
-    // Tool result → user message with functionResponse
-    if (m.role === "tool" && m.toolCallId) {
-      const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-      let response: any;
-      try {
-        response = JSON.parse(text);
-      } catch {
-        response = { result: text };
-      }
-      return {
-        role: "user",
-        parts: [
-          {
-            functionResponse: {
-              name: m.name ?? m.toolCallId,
-              response,
-            },
-          },
-        ],
-      };
+  private toGeminiFunctionResponsePart(m: UnifiedMessage): Record<string, any> {
+    const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    let response: any;
+    try {
+      response = JSON.parse(text);
+    } catch {
+      response = { result: text };
     }
+    return {
+      functionResponse: {
+        name: m.name ?? m.toolCallId,
+        response,
+      },
+    };
+  }
 
+  private toGeminiContent(m: UnifiedMessage): Record<string, any> {
     // Assistant with tool calls
     if (m.role === "assistant" && m.toolCalls?.length) {
       const parts: any[] = [];
