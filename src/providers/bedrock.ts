@@ -81,7 +81,7 @@ export class BedrockProvider extends BaseProvider {
     const { system, messages } = this.splitSystemMessages(request.messages);
 
     const body: Record<string, any> = {
-      messages: messages.map((m) => this.toBedrockMessage(m)),
+      messages: this.toBedrockMessages(messages),
     };
 
     if (system.length > 0) {
@@ -149,24 +149,52 @@ export class BedrockProvider extends BaseProvider {
     return { system, messages: rest };
   }
 
-  private toBedrockMessage(m: UnifiedMessage): Record<string, any> {
-    // Tool result → user message with toolResult content
-    if (m.role === "tool" && m.toolCallId) {
-      const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-      return {
-        role: "user",
-        content: [
-          {
-            toolResult: {
-              toolUseId: m.toolCallId,
-              content: [{ text }],
-              status: "success",
-            },
-          },
-        ],
-      };
+  /**
+   * Converts unified messages to Bedrock Converse format, coalescing
+   * consecutive tool-result messages into a single `user` turn.
+   *
+   * The unified message list carries one `role: "tool"` entry per tool call
+   * (mirroring OpenAI's shape). Bedrock's Converse API requires every
+   * `toolResult` block answering a single assistant turn's `toolUse`
+   * block(s) to be batched into ONE `user` message — sending them as
+   * separate consecutive `user` messages triggers: "Expected toolResult
+   * blocks at messages.N.content for the following Ids: ...".
+   */
+  private toBedrockMessages(messages: UnifiedMessage[]): Record<string, any>[] {
+    const result: Record<string, any>[] = [];
+    let mergingToolResults = false;
+
+    for (const m of messages) {
+      if (m.role === "tool" && m.toolCallId) {
+        const toolResult = this.toBedrockToolResult(m);
+        if (mergingToolResults) {
+          result[result.length - 1].content.push(toolResult);
+        } else {
+          result.push({ role: "user", content: [toolResult] });
+          mergingToolResults = true;
+        }
+        continue;
+      }
+
+      mergingToolResults = false;
+      result.push(this.toBedrockMessage(m));
     }
 
+    return result;
+  }
+
+  private toBedrockToolResult(m: UnifiedMessage): Record<string, any> {
+    const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    return {
+      toolResult: {
+        toolUseId: m.toolCallId,
+        content: [{ text }],
+        status: "success",
+      },
+    };
+  }
+
+  private toBedrockMessage(m: UnifiedMessage): Record<string, any> {
     // Assistant with tool calls
     if (m.role === "assistant" && m.toolCalls?.length) {
       const content: any[] = [];

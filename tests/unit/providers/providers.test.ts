@@ -421,6 +421,48 @@ describe("AnthropicProvider", () => {
     expect(toolResultMsg.content[0].tool_use_id).toBe("toolu_1");
   });
 
+  it("should coalesce multiple tool results from a parallel tool-call turn into one user message", async () => {
+    const apiResponse = {
+      id: "msg_790",
+      content: [{ type: "text", text: "Here you go" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 30, output_tokens: 5 },
+    };
+
+    globalThis.fetch = mockFetch(apiResponse);
+    await provider.complete({
+      model: "claude-sonnet-4-20250514",
+      messages: [
+        { role: "user", content: "What's the weather in London and Paris?" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "toolu_1", name: "get_weather", arguments: '{"city":"London"}' },
+            { id: "toolu_2", name: "get_weather", arguments: '{"city":"Paris"}' },
+          ],
+        },
+        { role: "tool", content: '{"temp":22}', toolCallId: "toolu_1" },
+        { role: "tool", content: '{"temp":25}', toolCallId: "toolu_2" },
+      ],
+    });
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+
+    // Both tool results must be batched into a single user message, not
+    // sent as two separate consecutive user messages (which Anthropic
+    // expects for a parallel tool-call turn).
+    expect(body.messages).toHaveLength(3);
+    const toolResultMsg = body.messages[2];
+    expect(toolResultMsg.role).toBe("user");
+    expect(toolResultMsg.content).toHaveLength(2);
+    expect(toolResultMsg.content[0].type).toBe("tool_result");
+    expect(toolResultMsg.content[0].tool_use_id).toBe("toolu_1");
+    expect(toolResultMsg.content[1].type).toBe("tool_result");
+    expect(toolResultMsg.content[1].tool_use_id).toBe("toolu_2");
+  });
+
   it("should convert tool choice correctly", async () => {
     const apiResponse = {
       id: "msg_tc",
@@ -602,6 +644,53 @@ describe("BedrockProvider", () => {
     expect(JSON.parse(result.toolCalls[0].arguments)).toEqual({ city: "Paris" });
   });
 
+  it("should coalesce multiple tool results from a parallel tool-call turn into one user message", async () => {
+    const provider = new BedrockProvider({
+      provider: "bedrock",
+      region: "us-east-1",
+      accessKeyId: "AKID",
+      secretAccessKey: "secret",
+    });
+
+    const apiResponse = {
+      output: { message: { role: "assistant", content: [{ text: "Here you go" }] } },
+      stopReason: "end_turn",
+      usage: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
+    };
+
+    globalThis.fetch = mockFetch(apiResponse);
+    await provider.complete({
+      model: "anthropic.claude-sonnet-4-20250514-v1:0",
+      messages: [
+        { role: "user", content: "What's the weather in London and Paris?" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "tooluse_1", name: "get_weather", arguments: '{"city":"London"}' },
+            { id: "tooluse_2", name: "get_weather", arguments: '{"city":"Paris"}' },
+          ],
+        },
+        { role: "tool", content: '{"temp":22}', toolCallId: "tooluse_1" },
+        { role: "tool", content: '{"temp":25}', toolCallId: "tooluse_2" },
+      ],
+    });
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+
+    // Both toolResult blocks must be batched into a single user message.
+    // Sending them as two separate consecutive user messages is what causes
+    // Bedrock's "Expected toolResult blocks at messages.N.content for the
+    // following Ids: ..." 400 error.
+    expect(body.messages).toHaveLength(3);
+    const toolResultMsg = body.messages[2];
+    expect(toolResultMsg.role).toBe("user");
+    expect(toolResultMsg.content).toHaveLength(2);
+    expect(toolResultMsg.content[0].toolResult.toolUseId).toBe("tooluse_1");
+    expect(toolResultMsg.content[1].toolResult.toolUseId).toBe("tooluse_2");
+  });
+
   it("should throw when credentials are missing", () => {
     const originalEnv = { ...process.env };
     delete process.env.AWS_ACCESS_KEY_ID;
@@ -707,6 +796,51 @@ describe("VertexProvider", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0].name).toBe("get_weather");
     expect(JSON.parse(result.toolCalls[0].arguments)).toEqual({ city: "Tokyo" });
+  });
+
+  it("should coalesce multiple tool results from a parallel tool-call turn into one content entry", async () => {
+    const provider = new VertexProvider({
+      provider: "vertex",
+      projectId: "my-project",
+      accessToken: "token",
+    });
+
+    const apiResponse = {
+      candidates: [
+        { content: { role: "model", parts: [{ text: "Here you go" }] }, finishReason: "STOP" },
+      ],
+      usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 10, totalTokenCount: 30 },
+    };
+
+    globalThis.fetch = mockFetch(apiResponse);
+    await provider.complete({
+      model: "gemini-2.0-flash",
+      messages: [
+        { role: "user", content: "What's the weather in Tokyo and Osaka?" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}' },
+            { id: "call_2", name: "get_weather", arguments: '{"city":"Osaka"}' },
+          ],
+        },
+        { role: "tool", content: '{"temp":22}', toolCallId: "call_1", name: "get_weather" },
+        { role: "tool", content: '{"temp":25}', toolCallId: "call_2", name: "get_weather" },
+      ],
+    });
+
+    const call = (globalThis.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+
+    // Both functionResponse parts must be batched into a single content
+    // entry rather than sent as two separate consecutive turns.
+    expect(body.contents).toHaveLength(3);
+    const toolResultContent = body.contents[2];
+    expect(toolResultContent.role).toBe("user");
+    expect(toolResultContent.parts).toHaveLength(2);
+    expect(toolResultContent.parts[0].functionResponse.name).toBe("get_weather");
+    expect(toolResultContent.parts[1].functionResponse.name).toBe("get_weather");
   });
 });
 
