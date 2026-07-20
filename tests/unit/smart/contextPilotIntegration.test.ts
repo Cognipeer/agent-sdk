@@ -630,4 +630,611 @@ describe("ContextPilot / profile-based aggressiveness", () => {
     // deep: targetRatio 0.5  -> ceil(40*0.5)=20 kept + 1 marker = 21
     expect(fastKeptCount).toBeLessThan(deepKeptCount);
   });
+
+  it("keeps more items with each successive built-in profile (fast < balanced < deep < research)", async () => {
+    const runWithProfile = async (runtimeProfile: "fast" | "balanced" | "deep" | "research") => {
+      const searchItems = createTool({
+        name: "search_items",
+        description: "Search a large product catalog.",
+        schema: z.object({ query: z.string() }),
+        func: async () => buildFortyItemCatalog(),
+      });
+      const model = createDeterministicModel();
+      const agent = createSmartAgent({
+        name: `ContextPilotProfileAgent-${runtimeProfile}`,
+        model,
+        tools: [searchItems],
+        limits: { maxToolCalls: 4 },
+        runtimeProfile,
+      });
+      const result = await agent.invoke({
+        messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+      });
+      const entry = (result.state?.toolHistory || [])[0];
+      expect(entry.contextPilot?.applied).toBe(true);
+      return (entry.output as any[]).length;
+    };
+
+    const fastCount = await runWithProfile("fast");
+    const balancedCount = await runWithProfile("balanced");
+    const deepCount = await runWithProfile("deep");
+    const researchCount = await runWithProfile("research");
+
+    expect(fastCount).toBeLessThan(balancedCount);
+    expect(balancedCount).toBeLessThan(deepCount);
+    expect(deepCount).toBeLessThan(researchCount);
+  });
+});
+
+describe("ContextPilot / relevance scoring drives retention (Faz 1)", () => {
+  it("keeps the item matching the *current* query rather than a fixed position, across two distinct queries", async () => {
+    // Special items are placed near the end (indices 28/29 of 30) so that the
+    // "first 10 original-order" tie-broken fillers (always indices 0-9, see
+    // relevance.ts's stable sort over 0-scored items) never accidentally
+    // include the *other* query's target item.
+    function buildCatalog(): Array<{ id: number; title: string }> {
+      return Array.from({ length: 30 }, (_, i) => {
+        if (i === 28) return { id: i, title: "alpha-widget-77 rare component" };
+        if (i === 29) return { id: i, title: "beta-sensor-13 rare component" };
+        return { id: i, title: `unrelated filler product ${i}` };
+      });
+    }
+
+    const runWithQuery = async (query: string) => {
+      const searchItems = createTool({
+        name: "search_items",
+        description: "Search a large product catalog.",
+        schema: z.object({ query: z.string() }),
+        func: async () => buildCatalog(),
+      });
+      let turn = 0;
+      const model: DeterministicModel = {
+        modelName: "deterministic-relevance-model",
+        bindTools() { return model; },
+        async invoke(): Promise<Message> {
+          turn += 1;
+          if (turn === 1) {
+            return {
+              role: "assistant",
+              content: "",
+              tool_calls: [{
+                id: "call_search",
+                type: "function",
+                name: "search_items",
+                args: { query },
+                function: { name: "search_items", arguments: JSON.stringify({ query }) },
+              }],
+            };
+          }
+          return { role: "assistant", content: `Found ${query}.` };
+        },
+      };
+      const agent = createSmartAgent({
+        name: "ContextPilotRelevanceAgent",
+        model,
+        tools: [searchItems],
+        limits: { maxToolCalls: 4 },
+      });
+      const result = await agent.invoke({ messages: [{ role: "user", content: `Find ${query} in the catalog.` }] });
+      const entry = (result.state?.toolHistory || [])[0];
+      expect(entry.contextPilot?.applied).toBe(true);
+      return entry.output as Array<{ title: string }>;
+    };
+
+    const alphaKept = await runWithQuery("alpha-widget-77");
+    expect(alphaKept.some((item) => item?.title?.includes("alpha-widget-77"))).toBe(true);
+    expect(alphaKept.some((item) => item?.title?.includes("beta-sensor-13"))).toBe(false);
+
+    const betaKept = await runWithQuery("beta-sensor-13");
+    expect(betaKept.some((item) => item?.title?.includes("beta-sensor-13"))).toBe(true);
+    expect(betaKept.some((item) => item?.title?.includes("alpha-widget-77"))).toBe(false);
+  });
+});
+
+describe("ContextPilot / CCR store lifecycle (Faz 2)", () => {
+  it("expires a stored original once its TTL elapses", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    const model = createDeterministicModel();
+    const agent = createSmartAgent({
+      name: "ContextPilotTtlAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { ttlMs: 30 } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    const ccrHash = entry.contextPilot?.ccrHash;
+    const ccrStore = (result.state?.ctx as any)?.__contextPilot?.ccrStore;
+    expect(ccrHash).toBeTruthy();
+    expect(ccrStore.retrieve(ccrHash)).toEqual(entry.rawOutput);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(ccrStore.retrieve(ccrHash)).toBeUndefined();
+  });
+
+  it("evicts the oldest CCR entry once maxEntries is exceeded, across two turns sharing the same ctx", async () => {
+    const buildVariant = (label: string) => Array.from({ length: 25 }, (_, i) => ({
+      id: i,
+      title: i === 12 ? `target-${label}-unique-marker` : `${label} filler product ${i}`,
+    }));
+
+    const searchA = createTool({
+      name: "search_a",
+      description: "Search catalog A.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildVariant("alpha"),
+    });
+    const searchB = createTool({
+      name: "search_b",
+      description: "Search catalog B.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildVariant("beta"),
+    });
+
+    type Phase = "call_a" | "final_a" | "call_b" | "final_b";
+    let phase: Phase = "call_a";
+    const model: DeterministicModel = {
+      modelName: "deterministic-eviction-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        if (phase === "call_a") {
+          phase = "final_a";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_a1",
+              type: "function",
+              name: "search_a",
+              args: { query: "alpha" },
+              function: { name: "search_a", arguments: JSON.stringify({ query: "alpha" }) },
+            }],
+          };
+        }
+        if (phase === "final_a") {
+          phase = "call_b";
+          return { role: "assistant", content: "Found alpha results." };
+        }
+        if (phase === "call_b") {
+          phase = "final_b";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_b1",
+              type: "function",
+              name: "search_b",
+              args: { query: "beta" },
+              function: { name: "search_b", arguments: JSON.stringify({ query: "beta" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found beta results." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotEvictionAgent",
+      model,
+      tools: [searchA, searchB],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { maxEntries: 1 } },
+    });
+
+    const firstResult = await agent.invoke({ messages: [{ role: "user", content: "Search catalog A." }] });
+    const entryA = (firstResult.state?.toolHistory || []).find((t: any) => t.toolName === "search_a");
+    expect(entryA?.contextPilot?.applied).toBe(true);
+    const hashA = entryA.contextPilot.ccrHash;
+    const ccrStore = (firstResult.state?.ctx as any)?.__contextPilot?.ccrStore;
+    expect(ccrStore.retrieve(hashA)).toEqual(entryA.rawOutput);
+
+    const secondResult = await agent.invoke({
+      messages: [...firstResult.messages, { role: "user", content: "Now search catalog B." }],
+      toolHistory: firstResult.state?.toolHistory,
+      toolHistoryArchived: firstResult.state?.toolHistoryArchived,
+      ctx: firstResult.state?.ctx,
+    } as any);
+
+    const entryB = (secondResult.state?.toolHistory || []).find((t: any) => t.toolName === "search_b");
+    expect(entryB?.contextPilot?.applied).toBe(true);
+    const hashB = entryB.contextPilot.ccrHash;
+
+    // maxEntries: 1 means storing hashB must evict the older hashA entry (LRU).
+    expect(ccrStore.retrieve(hashB)).toEqual(entryB.rawOutput);
+    expect(ccrStore.retrieve(hashA)).toBeUndefined();
+  });
+});
+
+describe("ContextPilot / JSON compressor custom configuration (Faz 3)", () => {
+  it("respects a custom targetRatio and minItems override", async () => {
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      id: i,
+      title: i === 0 ? "target-widget-42 exact match" : `unrelated filler product ${i}`,
+    }));
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    const model = createDeterministicModel();
+    const agent = createSmartAgent({
+      name: "ContextPilotJsonConfigAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { compression: { json: { targetRatio: 0.1, minItems: 10 } } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    // ceil(50 * 0.1) = 5 kept items + 1 marker entry = 6
+    expect((entry.output as any[]).length).toBe(6);
+    expect((entry.output as any[]).some((item: any) => item?.title?.includes("target-widget-42"))).toBe(true);
+  });
+});
+
+describe("ContextPilot / format-compressor custom configuration (Faz 4)", () => {
+  it("respects a smaller diff.contextLines override", async () => {
+    const contextLine = (n: number) => ` unchanged context line ${n} with extra padding text to increase overall length`;
+    const lines = [
+      "diff --git a/file.txt b/file.txt",
+      "--- a/file.txt",
+      "+++ b/file.txt",
+      "@@ -1,42 +1,42 @@",
+      ...Array.from({ length: 40 }, (_, i) => contextLine(i)),
+      "-old line that was removed",
+      "+new line that was added",
+    ];
+    const diffText = lines.join("\n");
+
+    const getDiff = createTool({
+      name: "get_diff",
+      description: "Return a large git diff.",
+      schema: z.object({ ref: z.string() }),
+      func: async () => diffText,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-diff-config-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_diff",
+              type: "function",
+              name: "get_diff",
+              args: { ref: "HEAD" },
+              function: { name: "get_diff", arguments: JSON.stringify({ ref: "HEAD" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Reviewed the diff." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotDiffConfigAgent",
+      model,
+      tools: [getDiff],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { compression: { diff: { contextLines: 1 } } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Review the latest diff." }] });
+    const entry = (result.state?.toolHistory || [])[0];
+
+    expect(entry.contextPilot?.applied).toBe(true);
+    // Exclude the trailing ContextPilot note line, which also mentions the
+    // phrase "unchanged context line(s)" in its explanatory text.
+    const contextLineCount = (entry.output as string)
+      .split("\n")
+      .filter((line: string) => line.startsWith(" unchanged context line")).length;
+    expect(contextLineCount).toBe(1);
+    expect(entry.output as string).toContain("-old line that was removed");
+    expect(entry.output as string).toContain("+new line that was added");
+  });
+
+  it("respects a smaller log.maxLines override while still preserving the ERROR line", async () => {
+    const logLines: string[] = ["INFO job-runner: batch job started"];
+    for (let i = 1; i <= 88; i += 1) {
+      logLines.push(i === 5 ? "ERROR job-runner: item 5 failed validation" : `INFO job-runner: processing item ${i}`);
+    }
+    logLines.push("INFO job-runner: batch job finished");
+    const logText = logLines.join("\n");
+
+    const getLogs = createTool({
+      name: "get_logs",
+      description: "Return a large log file.",
+      schema: z.object({ jobId: z.string() }),
+      func: async () => logText,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-log-config-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_logs",
+              type: "function",
+              name: "get_logs",
+              args: { jobId: "job-1" },
+              function: { name: "get_logs", arguments: JSON.stringify({ jobId: "job-1" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found the failure at item 5." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotLogConfigAgent",
+      model,
+      tools: [getLogs],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { compression: { log: { maxLines: 20 } } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Why did job-1 fail?" }] });
+    const entry = (result.state?.toolHistory || [])[0];
+
+    expect(entry.contextPilot?.applied).toBe(true);
+    expect(entry.output as string).toContain("ERROR job-runner: item 5 failed validation");
+    const keptLogLines = (entry.output as string).split("\n").filter((line: string) => line.startsWith("INFO") || line.startsWith("ERROR"));
+    expect(keptLogLines.length).toBeLessThanOrEqual(20);
+  });
+
+  it("respects a smaller search.maxMatches override", async () => {
+    const matchLines = Array.from(
+      { length: 50 },
+      (_, i) => `src/file${i % 5}.ts:${i + 1}:matched token at occurrence ${i}`,
+    );
+    const searchText = matchLines.join("\n");
+
+    const grep = createTool({
+      name: "grep_search",
+      description: "Return large grep-style search results.",
+      schema: z.object({ pattern: z.string() }),
+      func: async () => searchText,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-search-config-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_grep",
+              type: "function",
+              name: "grep_search",
+              args: { pattern: "token" },
+              function: { name: "grep_search", arguments: JSON.stringify({ pattern: "token" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found matches across multiple files." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotSearchConfigAgent",
+      model,
+      tools: [grep],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { compression: { search: { maxMatches: 8 } } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Search for token usages." }] });
+    const entry = (result.state?.toolHistory || [])[0];
+
+    expect(entry.contextPilot?.applied).toBe(true);
+    const keptMatchLines = (entry.output as string).split("\n").filter((line: string) => line.startsWith("src/file"));
+    expect(keptMatchLines.length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("ContextPilot / dedup & cache-alignment configuration (Faz 5)", () => {
+  it("does not flag cross-turn duplicates when dedup.enabled is false", async () => {
+    const uniqueReport =
+      "Status report: warehouse zone 7 inventory count reconciled successfully with no discrepancies found this cycle.";
+    const paddedReport = `${uniqueReport} `.repeat(6).trim();
+
+    const fetchStatus = createTool({
+      name: "fetch_status_report",
+      description: "Fetch a fixed status report.",
+      schema: z.object({ zone: z.string() }),
+      func: async () => paddedReport,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-dedup-disabled-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1 || turn === 2) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: `call_status_${turn}`,
+              type: "function",
+              name: "fetch_status_report",
+              args: { zone: "7" },
+              function: { name: "fetch_status_report", arguments: JSON.stringify({ zone: "7" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Zone 7 is reconciled." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotDedupDisabledAgent",
+      model,
+      tools: [fetchStatus],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { dedup: { enabled: false } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Check zone 7 status twice." }] });
+    const toolHistory = (result.state?.toolHistory || []).filter((t: any) => t.toolName === "fetch_status_report");
+
+    expect(toolHistory.length).toBe(2);
+    expect(toolHistory[0].contextPilot).toBeUndefined();
+    expect(toolHistory[1].contextPilot).toBeUndefined();
+    expect(toolHistory[1].output as string).toBe(paddedReport);
+  });
+
+  it("suppresses the cache-alignment metadata event when cacheAlignment.enabled is false", async () => {
+    const events: any[] = [];
+    const model: DeterministicModel = {
+      modelName: "deterministic-no-tool-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        return { role: "assistant", content: "Acknowledged." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotCacheAlignmentDisabledAgent",
+      model,
+      tools: [],
+      systemPrompt:
+        "Session token sk-abcdefghijklmnopqrstuvwxyz123456 issued at 2026-07-20T10:00:00Z for request 123e4567-e89b-12d3-a456-426614174000.",
+      contextPilot: { cacheAlignment: { enabled: false } },
+    });
+
+    await agent.invoke(
+      { messages: [{ role: "user", content: "Hello" }] },
+      { onEvent: (event: any) => events.push(event) },
+    );
+
+    const cacheEvent = events.find((e) => e.type === "metadata" && e.reason === "context_pilot_cache_alignment");
+    expect(cacheEvent).toBeUndefined();
+  });
+});
+
+describe("ContextPilot / get_tool_response not-found handling (Faz 6)", () => {
+  it("reports a clear not-found message when a marker's executionId has since expired from the CCR store", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    type Phase = "await_search_call" | "await_final_after_search" | "await_recovery_call" | "await_final";
+    let phase: Phase = "await_search_call";
+    let capturedHash: string | undefined;
+    const model: DeterministicModel = {
+      modelName: "deterministic-expired-recovery-model",
+      bindTools() { return model; },
+      async invoke(messages: Message[]): Promise<Message> {
+        if (phase === "await_search_call") {
+          phase = "await_final_after_search";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query: "target-widget-42" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "target-widget-42" }) },
+            }],
+          };
+        }
+        if (phase === "await_final_after_search") {
+          phase = "await_recovery_call";
+          return { role: "assistant", content: "Here are the top matching items (list may be partial)." };
+        }
+        if (phase === "await_recovery_call") {
+          const lastSearchToolMessage = [...messages].reverse().find((m: any) => m.role === "tool" && m.name === "search_items");
+          capturedHash = extractCcrHash((lastSearchToolMessage as any)?.content);
+          expect(capturedHash).toBeTruthy();
+          phase = "await_final";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_recover",
+              type: "function",
+              name: "get_tool_response",
+              args: { executionId: capturedHash },
+              function: { name: "get_tool_response", arguments: JSON.stringify({ executionId: capturedHash }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Could not recover the expired entry." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotExpiredRecoveryAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { ttlMs: 30 } },
+    });
+
+    const firstResult = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    // Let the CCR entry's short TTL elapse before the model attempts recovery.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const secondResult = await agent.invoke({
+      messages: [
+        ...firstResult.messages,
+        { role: "user", content: "Actually, I need the full unfiltered list. Please retrieve it." },
+      ],
+      toolHistory: firstResult.state?.toolHistory,
+      toolHistoryArchived: firstResult.state?.toolHistoryArchived,
+      ctx: firstResult.state?.ctx,
+    } as any);
+
+    const toolHistory = secondResult.state?.toolHistory || [];
+    const recoveryEntry = toolHistory.find((t: any) => t.toolName === "get_tool_response");
+
+    expect(recoveryEntry).toBeTruthy();
+    expect(recoveryEntry.args.executionId).toBe(capturedHash);
+    expect(recoveryEntry.output).toBe("Execution not found. Please check the executionId.");
+    expect(secondResult.content).toContain("Could not recover the expired entry.");
+  });
 });
