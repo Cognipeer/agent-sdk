@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-20
+
+### Fixed
+- **Restore provider tool-result coalescing dropped in 0.8.0.** The published `0.8.0` was built from the feature branch before the Anthropic / Bedrock / Vertex tool-result coalescing (shipped in `0.7.3`) was merged, so `0.8.0` regressed it. `0.8.1` combines both: the skills / sub-agents / ask-user work **and** the coalescing of multiple `tool_result` blocks into a single user message per provider request. Upgrade `0.8.0 → 0.8.1` to regain correct strict tool_use/tool_result pairing on tool-heavy turns.
+
 ## [0.8.0] - 2026-07-20
 
 ### Changed (BREAKING)
