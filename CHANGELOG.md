@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Changed (BREAKING)
 - **Default runtime-profile values modernized for frontier models.** All four built-in profiles (`fast`, `balanced`, `deep`, `research`) had their numeric defaults rescaled for 2026-era models (Claude 4.x, GPT-4o, Gemini 2.x). The previous defaults were tuned for 8k–16k context windows and now leave too much headroom unused. Headline changes per profile:
   - `fast`: `maxToolCalls 4→8`, `maxParallelTools 1→3`, `maxContextTokens 12000→32000`, summarization trigger `9000→24000`, `maxToolResponseChars 8k→16k`.
@@ -16,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Migration:** if you depend on the old conservative caps (e.g., running against an 8k-window model, strict cost ceilings, or a deliberate "tight loop" agent), pass explicit `limits`, `summarization`, `context`, and `toolResponses` overrides — or build a `customProfile` extending the desired base and clamp the values you care about. Behavioral defaults (planning still `off`, `summaryMode: incremental`, `memory.writePolicy: auto_important`, `context.policy: hybrid`) are unchanged.
 
 ### Added
+- **ContextPilot: native, deterministic context/token optimization layer.** Runs at tool-execution time (no extra model calls) to shrink large tool outputs before they enter the transcript, while keeping every original payload recoverable. Enabled by default via `contextPilot` on `createSmartAgent` (see `docs/guide/context-pilot.md`). Highlights:
+  - **Format-aware compression.** BM25-lite relevance scoring drives `jsonCrusher` (large arrays), `textCrusher` (long plain text, sentence-level), plus dedicated `diffCompressor` (unified diffs), `logCompressor` (ERROR/WARN-prioritized log lines), and `searchCompressor` (grep/search matches with per-file diversity caps).
+  - **Reversible Compress-Cache-Retrieve (CCR) store.** Every dropped/compressed payload is kept in an in-memory, TTL/LRU-bounded store keyed by a content hash; the compressed output carries a retrieval note, and the model can call the built-in `get_tool_response` tool with that `executionId` to get the full original data back.
+  - **Cross-turn duplicate detection (`dedup`).** Byte-identical tool outputs seen again later in the same session are replaced with a lightweight `DUPLICATE_TOOL_RESPONSE` pointer instead of being resent in full.
+  - **Cache alignment warnings.** Optional scan of the system prompt for volatile substrings (UUIDs, ISO/Unix timestamps, JWTs, hex hashes, API keys) that would defeat provider-side prompt caching; emits a one-time `context_pilot_cache_alignment` metadata event instead of rewriting the prompt.
+  - **`excludeTools`** to opt specific tools out entirely.
+  - **Runtime-profile aware defaults**: `fast`/`balanced`/`deep`/`research` scale `compression.json`/`text` `targetRatio` and `ccr.ttlMs`/`maxEntries` alongside the existing limit/context defaults.
+  - Real-model A/B benchmarks (real pre-ContextPilot commit vs this branch, via `examples/context-pilot-comparison/`) measured **29–48% prompt-token reduction** across catalog lookups, repeat-query dedup, multi-tool incident investigations, and long multi-turn sessions, with no loss of answer correctness and full data recoverability confirmed via `get_tool_response`.
 - **Native reasoning round-trip (thinking blocks).** Provider responses now surface a normalized `reasoning` payload (`{ blocks, summary }`). Anthropic and Bedrock thinking / redacted-thinking blocks (with signatures) are captured on the assistant message and replayed verbatim on the next request, satisfying the providers' signed-thinking requirement. Vertex/Gemini `thought` parts and reasoning token counts are surfaced as a summary. OpenAI o-series / gpt-5 now route through the Responses API (`completeResponses`) when reasoning is requested, exposing the reasoning summary and `reasoning_tokens`; Azure OpenAI gets the same via its `/openai/responses` route. Reasoning mappers raise `max_tokens` above the thinking budget, clamp the budget below it, and strip sampling params (`temperature`/`top_p`/`top_k`) that thinking mode forbids.
 - **`reasoning.level: "minimal"`.** A fourth, cheapest reasoning preset (`effort: "minimal"`, reflection off).
 - **`initial_then_after_tool` reflection cadence.** Reflects once up-front as a planning note, then like `after_tool`. New default for `level: "medium"` / `"high"`. `on_branch` now fires on an actual tool-name-set change between turns rather than a turn-count heuristic.

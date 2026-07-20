@@ -73,6 +73,8 @@ Every compression is reversible. Dropped items are stored in an in-memory `CCRSt
 
 If the model later needs the full data, it calls the built-in `get_tool_response` tool with that `executionId`, and the agent returns the original, uncompressed value — as long as the entry hasn't expired (`ccr.ttlMs`) or been evicted (`ccr.maxEntries`, LRU).
 
+**Important timing detail:** `get_tool_response` is only added to the model's available tools once a recovery marker (`DUPLICATE_TOOL_RESPONSE`, `ARCHIVED_TOOL_RESPONSE`, a CCR retrieval note, etc.) is already present in the *input* messages at the start of a turn. If a marker is produced *during* the current turn (e.g. the model repeats a tool call and immediately gets back a dedup pointer), the model cannot call `get_tool_response` in that same turn — it has to ask again on a subsequent turn, by which point the marker is visible in history and the tool becomes available. Design multi-turn recovery flows with this in mind.
+
 ## Cache alignment
 
 If `cacheAlignment.enabled` is true, ContextPilot scans the system prompt for volatile substrings (UUIDs, ISO timestamps, Unix timestamps, JWTs, hex hashes, API keys). If any are found, it emits a single `metadata` event (`reason: "context_pilot_cache_alignment"`) once per run — it never rewrites the prompt, it only warns so you can move volatile values out of the cached prefix (useful for provider-side prompt caching).
@@ -84,3 +86,20 @@ If the exact same tool output (byte-identical, after serialization) is produced 
 ## Excluding tools
 
 Add a tool name to `contextPilot.excludeTools` to guarantee ContextPilot never compresses, dedups, or touches its output at all.
+
+## Real-model benchmarks
+
+`examples/context-pilot-comparison/` contains real-API-key A/B benchmarks comparing a genuine pre-ContextPilot commit against the current branch (not just a config-flag toggle — two separately built SDK versions):
+
+| Scenario | Reduction |
+|---|---:|
+| Catalog lookup (50 items) | 41% |
+| Search + full-list follow-up | 28% |
+| diff + log + grep investigation | 41% |
+| Repeat query (cross-turn dedup) | 29% |
+| diff + grep + excluded field | 31% |
+| 7-tool incident investigation (heavy) | 48% |
+| 4-turn long session (cumulative) | 30–43% |
+
+Across the main 5 scenarios, real prompt-token usage dropped **36%** (11532 → 7425 tokens) with no loss of answer correctness. See the folder's `README.md` for the full methodology, setup, and run commands.
+
