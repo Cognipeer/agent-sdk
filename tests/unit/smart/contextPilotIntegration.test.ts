@@ -1238,3 +1238,389 @@ describe("ContextPilot / get_tool_response not-found handling (Faz 6)", () => {
     expect(secondResult.content).toContain("Could not recover the expired entry.");
   });
 });
+
+describe("ContextPilot / deep relevance-scoring battery (Faz 1)", () => {
+  it("prefers items matching more distinct query terms over items matching fewer (multi-term BM25 preference)", async () => {
+    // 17 zero-overlap filler items + 3 graded-relevance items placed at the
+    // end (so the "first N zero-score" tie-broken fillers never collide with
+    // them — see the earlier relevance test for why index position matters).
+    const items = [
+      ...Array.from({ length: 17 }, (_, i) => ({ id: i, title: `unrelated filler product ${i}` })),
+      { id: 17, title: "red leather wallet premium edition" }, // matches all 3 query terms
+      { id: 18, title: "red wallet basic edition" }, // matches 2 query terms
+      { id: 19, title: "leather bag basic edition" }, // matches 1 query term
+    ];
+    expect(items.length).toBe(20);
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-multiterm-relevance-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query: "red leather wallet" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "red leather wallet" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found the best matching wallet." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotMultiTermRelevanceAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      // 20 items, minItems 10, targetRatio 0.1 -> keepCount = ceil(20*0.1) = 2.
+      contextPilot: { compression: { json: { targetRatio: 0.1, minItems: 10 } } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find a red leather wallet." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    const keptTitles = (entry.output as Array<{ title?: string }>)
+      .map((item) => item?.title)
+      .filter((title): title is string => typeof title === "string");
+
+    // Top-2 by BM25 score must be the 3-term and 2-term matches; the
+    // 1-term match ("leather bag") must be dropped in favor of them.
+    expect(keptTitles.some((title) => title.includes("red leather wallet premium"))).toBe(true);
+    expect(keptTitles.some((title) => title.includes("red wallet basic"))).toBe(true);
+    expect(keptTitles.some((title) => title.includes("leather bag basic"))).toBe(false);
+  });
+
+  it("scores relevance against the latest user message in a resumed conversation, ignoring an earlier stale question", async () => {
+    const items = [
+      ...Array.from({ length: 26 }, (_, i) => ({ id: i, title: `unrelated filler product ${i}` })),
+      { id: 26, title: "red-gadget-1 legacy item" }, // matches the *stale* first question
+      { id: 27, title: "blue-widget-99 current item" }, // matches the *latest* question
+    ];
+    expect(items.length).toBe(28);
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-latest-query-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query: "blue widget" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "blue widget" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found blue-widget-99." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotLatestQueryAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+    });
+
+    // Seed a resumed conversation: an earlier (now stale) question about
+    // "red gadgets" is already in history, followed by a newer question
+    // about "blue widgets" that the model actually acts on.
+    const result = await agent.invoke({
+      messages: [
+        { role: "user", content: "Tell me about red gadgets." },
+        { role: "assistant", content: "Sure, let me check that for you." },
+        { role: "user", content: "Actually, forget that — find blue widgets instead." },
+      ],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    const keptTitles = (entry.output as Array<{ title?: string }>)
+      .map((item) => item?.title)
+      .filter((title): title is string => typeof title === "string");
+
+    expect(keptTitles.some((title) => title.includes("blue-widget-99"))).toBe(true);
+    expect(keptTitles.some((title) => title.includes("red-gadget-1"))).toBe(false);
+  });
+
+  it("ignores stopwords in the query so a filler item repeating them isn't spuriously boosted", async () => {
+    const items = [
+      ...Array.from({ length: 26 }, (_, i) => ({ id: i, title: `unrelated filler product ${i}` })),
+      // Repeats stopwords ("the", "for", "of") many times but shares no real
+      // content words with the query — must NOT be favored by scoring. Placed
+      // near the end (like the query-target item) so it never collides with
+      // the "first N zero-score" tie-broken fillers that always fill out the
+      // remaining kept slots.
+      { id: 26, title: "the for of the of the for the of filler item" },
+      { id: 27, title: "red-gadget-home-special exact match" },
+    ];
+    expect(items.length).toBe(28);
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-stopword-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          const query = "the red gadget for the of home";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query },
+              function: { name: "search_items", arguments: JSON.stringify({ query }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found red-gadget-home-special." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotStopwordAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "the red gadget for the of home" }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    const keptTitles = (entry.output as Array<{ title?: string }>)
+      .map((item) => item?.title)
+      .filter((title): title is string => typeof title === "string");
+
+    expect(keptTitles.some((title) => title.includes("red-gadget-home-special"))).toBe(true);
+    expect(keptTitles.some((title) => title.startsWith("the for of the of the"))).toBe(false);
+  });
+});
+
+describe("ContextPilot / full pipeline grand integration (Faz 7)", () => {
+  it("wires relevance scoring, JSON+log compression, cross-turn dedup, cache alignment, and CCR recovery together across two invokes sharing one runtime", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    const logLines: string[] = ["INFO job-runner: batch job started"];
+    for (let i = 1; i <= 88; i += 1) {
+      logLines.push(i === 5 ? "ERROR job-runner: item 5 failed validation" : `INFO job-runner: processing item ${i}`);
+    }
+    logLines.push("INFO job-runner: batch job finished");
+    const logText = logLines.join("\n");
+
+    const getLogs = createTool({
+      name: "get_logs",
+      description: "Return a large log file.",
+      schema: z.object({ jobId: z.string() }),
+      func: async () => logText,
+    });
+
+    type Phase =
+      | "call_search"
+      | "call_logs"
+      | "final_first_invoke"
+      | "call_search_duplicate"
+      | "call_recover"
+      | "final_second_invoke";
+    let phase: Phase = "call_search";
+    let capturedSearchHash: string | undefined;
+    const model: DeterministicModel = {
+      modelName: "deterministic-grand-pipeline-model",
+      bindTools() { return model; },
+      async invoke(messages: Message[]): Promise<Message> {
+        if (phase === "call_search") {
+          phase = "call_logs";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search_1",
+              type: "function",
+              name: "search_items",
+              args: { query: "target-widget-42" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "target-widget-42" }) },
+            }],
+          };
+        }
+        if (phase === "call_logs") {
+          // Capture the CCR hash now, while exactly one (non-duplicate)
+          // search_items tool message exists in history — by the later
+          // recovery phase a second (duplicate-pointer) search_items tool
+          // message will also be present, so re-scanning then would be
+          // ambiguous about which "executionId" it points to.
+          const searchToolMessage = messages.find((m: any) => m.role === "tool" && m.name === "search_items");
+          capturedSearchHash = extractCcrHash((searchToolMessage as any)?.content);
+          expect(capturedSearchHash).toBeTruthy();
+          phase = "final_first_invoke";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_logs_1",
+              type: "function",
+              name: "get_logs",
+              args: { jobId: "job-1" },
+              function: { name: "get_logs", arguments: JSON.stringify({ jobId: "job-1" }) },
+            }],
+          };
+        }
+        if (phase === "final_first_invoke") {
+          phase = "call_search_duplicate";
+          return { role: "assistant", content: "Found target-widget-42 and the item-5 log failure." };
+        }
+        if (phase === "call_search_duplicate") {
+          phase = "call_recover";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search_2",
+              type: "function",
+              name: "search_items",
+              args: { query: "target-widget-42" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "target-widget-42" }) },
+            }],
+          };
+        }
+        if (phase === "call_recover") {
+          expect(capturedSearchHash).toBeTruthy();
+          phase = "final_second_invoke";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_recover_1",
+              type: "function",
+              name: "get_tool_response",
+              args: { executionId: capturedSearchHash },
+              function: { name: "get_tool_response", arguments: JSON.stringify({ executionId: capturedSearchHash }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Session complete: retrieved the full catalog." };
+      },
+    };
+
+    const events: any[] = [];
+    const agent = createSmartAgent({
+      name: "ContextPilotGrandPipelineAgent",
+      model,
+      tools: [searchItems, getLogs],
+      limits: { maxToolCalls: 6 },
+      systemPrompt:
+        "Session token sk-abcdefghijklmnopqrstuvwxyz123456 issued at 2026-07-20T10:00:00Z for request 123e4567-e89b-12d3-a456-426614174000.",
+    });
+
+    // --- First invoke: search_items (JSON crush) + get_logs (log compress) ---
+    const firstResult = await agent.invoke(
+      { messages: [{ role: "user", content: "Find target-widget-42, then check job-1's logs." }] },
+      { onEvent: (event: any) => events.push(event) },
+    );
+
+    const firstToolHistory = firstResult.state?.toolHistory || [];
+    expect(firstToolHistory.length).toBe(2);
+
+    const searchEntry = firstToolHistory.find((t: any) => t.toolName === "search_items");
+    expect(searchEntry?.contextPilot?.applied).toBe(true);
+    expect(searchEntry?.contextPilot?.compressorUsed).toBe("jsonCrusher");
+    expect((searchEntry.output as any[]).some((item: any) => item?.title?.includes("target-widget-42"))).toBe(true);
+
+    const logsEntry = firstToolHistory.find((t: any) => t.toolName === "get_logs");
+    expect(logsEntry?.contextPilot?.applied).toBe(true);
+    expect(logsEntry?.contextPilot?.compressorUsed).toBe("logCompressor");
+    expect(logsEntry.output as string).toContain("ERROR job-runner: item 5 failed validation");
+
+    // --- Second invoke: duplicate search (dedup) + CCR recovery ---
+    const secondResult = await agent.invoke(
+      {
+        messages: [
+          ...firstResult.messages,
+          { role: "user", content: "Search target-widget-42 again, then retrieve the full unfiltered list." },
+        ],
+        toolHistory: firstResult.state?.toolHistory,
+        toolHistoryArchived: firstResult.state?.toolHistoryArchived,
+        ctx: firstResult.state?.ctx,
+      } as any,
+      { onEvent: (event: any) => events.push(event) },
+    );
+
+    const secondToolHistory = secondResult.state?.toolHistory || [];
+    expect(secondToolHistory.length).toBe(4);
+
+    const duplicateSearchEntry = secondToolHistory[2];
+    expect(duplicateSearchEntry.toolName).toBe("search_items");
+    expect(duplicateSearchEntry.contextPilot?.applied).toBe(true);
+    expect(duplicateSearchEntry.contextPilot?.duplicateOf).toBe(searchEntry.executionId);
+    expect(duplicateSearchEntry.output as string).toContain("DUPLICATE_TOOL_RESPONSE");
+
+    const recoveryEntry = secondToolHistory[3];
+    expect(recoveryEntry.toolName).toBe("get_tool_response");
+    expect(recoveryEntry.args.executionId).toBe(searchEntry.contextPilot.ccrHash);
+    expect(recoveryEntry.output).toEqual(searchEntry.rawOutput);
+    expect((recoveryEntry.output as any[]).length).toBe(25);
+    expect(secondResult.content).toContain("Session complete: retrieved the full catalog.");
+
+    // --- Cross-cutting integrity checks ---
+    // The cache-alignment warning must fire exactly once across the whole
+    // two-invoke session (not once per invoke), since the "already warned"
+    // flag is carried on the shared, forwarded ctx.
+    const cacheEvents = events.filter((e) => e.type === "metadata" && e.reason === "context_pilot_cache_alignment");
+    expect(cacheEvents.length).toBe(1);
+
+    // The CCR store and dedup tracker are the *same* runtime instance across
+    // both invokes, proving ContextPilot's state is truly wired end-to-end
+    // rather than reconstructed per turn.
+    const firstRuntime = (firstResult.state?.ctx as any)?.__contextPilot;
+    const secondRuntime = (secondResult.state?.ctx as any)?.__contextPilot;
+    expect(secondRuntime.ccrStore).toBe(firstRuntime.ccrStore);
+    expect(secondRuntime.dedupTracker).toBe(firstRuntime.dedupTracker);
+  });
+});
