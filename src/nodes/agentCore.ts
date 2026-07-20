@@ -1,6 +1,8 @@
 import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../types.js";
 import { normalizeUsage } from "../utils/usage.js";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
+import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
+import { detectVolatileContent } from "../smart/contextPilot/index.js";
 
 // Minimal agent node: no system prompt injection. Invokes model with messages as-is.
 export function createAgentCoreNode(opts: SmartAgentOptions) {
@@ -138,6 +140,49 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const streamingEnabled = Boolean((state.ctx as any)?.__streaming);
     const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
     const abortSignal = (state.ctx as any)?.__abortSignal as AbortSignal | undefined;
+
+    // ContextPilot cache alignment: one-time-per-run warning when the system
+    // prompt contains volatile substrings (UUIDs, timestamps, JWTs, hashes,
+    // API keys) that would defeat provider-side prompt caching by changing on
+    // every request. Detection-only — the system prompt is never rewritten.
+    const resolvedForCachePilot = getResolvedSmartConfig(opts, runtime as any);
+    if (resolvedForCachePilot.contextPilot.enabled && resolvedForCachePilot.contextPilot.cacheAlignment.enabled) {
+      const ctxForCacheWarning = (state.ctx = state.ctx || {});
+      if (!ctxForCacheWarning.__contextPilotCacheWarned) {
+        const systemMessages = (state.messages || []).filter((m: any) => m?.role === "system");
+        const systemText = systemMessages
+          .map((m: any) => (typeof m.content === "string" ? m.content : ""))
+          .join("\n");
+        const findings = detectVolatileContent(systemText);
+        if (findings.length > 0) {
+          ctxForCacheWarning.__contextPilotCacheWarned = true;
+          if (resolvedForCachePilot.contextPilot.cacheAlignment.warnOnVolatilePrompt) {
+            const patternCounts = findings.reduce((acc: Record<string, number>, finding) => {
+              acc[finding.pattern] = (acc[finding.pattern] || 0) + 1;
+              return acc;
+            }, {});
+            onEvent?.({
+              type: "metadata",
+              reason: "context_pilot_cache_alignment",
+              message: "Volatile content detected in system prompt; this may defeat provider-side prompt caching.",
+              patternCounts,
+            } as any);
+            recordTraceEvent(traceSession, {
+              type: "metadata",
+              label: "ContextPilot: volatile system prompt content",
+              actor: { scope: "agent", name: actorName, role: "agent" },
+              sections: [
+                {
+                  kind: "metadata",
+                  label: "Volatile content findings",
+                  data: { patternCounts, totalFindings: findings.length },
+                },
+              ],
+            });
+          }
+        }
+      }
+    }
 
     // Native structured output: pass response_format to model invocation if set
     const responseFormat = (runtime as any).responseFormat as Record<string, any> | undefined;

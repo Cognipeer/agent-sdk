@@ -1,6 +1,7 @@
 // LangChain specific types are removed from core; we define lightweight internal shapes.
 // If the user uses LangChain, they can still pass LC message objects; we treat them opaquely.
 import type { ZodSchema } from "zod";
+import type { ContextPilotConfig, ContextPilotCompressionStats, ResolvedContextPilotConfig } from "./smart/contextPilot/types.js";
 
 // Image and content part types for multimodal messages
 export type ImageURL =
@@ -243,6 +244,13 @@ export type AgentOptions = {
    * questions for the host application to answer.
    */
   humanInTheLoop?: HumanInTheLoopOptions;
+  /**
+   * ContextPilot: native, deterministic context/token optimization layer.
+   * Compresses large tool outputs (JSON arrays, logs, diffs, search results,
+   * long text) at execution time using relevance scoring, while keeping every
+   * original payload recoverable via `get_tool_response`. Enabled by default.
+   */
+  contextPilot?: ContextPilotConfig;
 };
 
 // ─── Reasoning + Reflection ──────────────────────────────────────────────────
@@ -496,6 +504,7 @@ export type SmartAgentCustomProfileConfig = {
   memory?: SmartAgentMemoryConfig;
   delegation?: SmartAgentDelegationConfig;
   toolResponses?: SmartAgentToolResponseConfig;
+  contextPilot?: ContextPilotConfig;
 };
 
 export type ProfileConfig = {
@@ -506,6 +515,7 @@ export type ProfileConfig = {
   memory: Required<Omit<SmartAgentMemoryConfig, "store">> & { store?: MemoryStore };
   delegation: Required<SmartAgentDelegationConfig>;
   toolResponses: Required<SmartAgentToolResponseConfig>;
+  contextPilot: ResolvedContextPilotConfig;
 };
 
 export type ResolvedSmartAgentConfig = ProfileConfig & {
@@ -535,6 +545,11 @@ export type SmartAgentOptions = {
   planning?: SmartAgentPlanningConfig;
   delegation?: SmartAgentDelegationConfig;
   toolResponses?: SmartAgentToolResponseConfig;
+  /**
+   * ContextPilot: native, deterministic context/token optimization layer.
+   * See `AgentOptions.contextPilot` for details. Enabled by default.
+   */
+  contextPilot?: ContextPilotConfig;
   // System prompt configuration
   systemPrompt?: string; // Plain string system prompt to append to defaults
   // Optional override for the built-in todo list planning instructions.
@@ -840,6 +855,8 @@ export type AgentState = {
     archiveId?: string;
     summary?: string;
     status?: "success" | "error" | "rejected" | "handoff";
+    /** Set when ContextPilot compressed this tool's output before it entered the transcript. */
+    contextPilot?: ContextPilotCompressionStats;
   }>;
   toolCache?: Record<string, any>;
   toolCallCount?: number;

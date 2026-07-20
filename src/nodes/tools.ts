@@ -16,6 +16,8 @@ import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "..
 import { extractToolItems, summarizeToolOutput } from "../utils/traceSections.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolResponses.js";
+import { compressToolOutput, extractLatestUserQuery } from "../smart/contextPilot/index.js";
+import type { ContextPilotCompressionStats, ContextPilotRuntime } from "../smart/contextPilot/index.js";
 
 function normalizeMaxExecutionsPerRun(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -175,6 +177,27 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       outputSchema: (opts as any)?.outputSchema,
     } as AgentRuntimeConfig;
     const resolved = getResolvedSmartConfig(opts || ({} as SmartAgentOptions), runtime as any);
+    const contextPilotRuntime = (state.ctx as any)?.__contextPilot as ContextPilotRuntime | undefined;
+    const contextPilotQuery = contextPilotRuntime ? extractLatestUserQuery(state.messages as any) : "";
+    const maybeCompressToolOutput = (
+      toolNameForCompression: string,
+      rawValue: any,
+      executionIdForCompression: string,
+    ): { output: any; stats?: ContextPilotCompressionStats } => {
+      if (!contextPilotRuntime || !resolved.contextPilot.enabled) return { output: rawValue };
+      if (resolved.toolResponses.criticalTools.includes(toolNameForCompression)) return { output: rawValue };
+      const result = compressToolOutput({
+        toolName: toolNameForCompression,
+        output: rawValue,
+        query: contextPilotQuery,
+        executionId: executionIdForCompression,
+        config: resolved.contextPilot,
+        runtime: contextPilotRuntime,
+      });
+      if (!result.applied) return { output: rawValue };
+      const { output: compressedValue, ...stats } = result;
+      return { output: compressedValue, stats };
+    };
     const activeTools: Array<ToolInterface<any, any, any>> = runtime.tools as any;
     const toolByName = new Map<string, ToolInterface>();
     for (const tool of activeTools) toolByName.set((tool as any).name, tool);
@@ -460,12 +483,13 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         if (cachedHit !== undefined) {
           // Short-circuit: serve from cache without re-invoking the tool.
           const executionId = nanoid();
-          const responsePolicy = applyToolResponseHardCap(toolName, cachedHit, executionId, resolved);
+          const { output: compressedCachedHit, stats: cachedContextPilotStats } = maybeCompressToolOutput(toolName, cachedHit, executionId);
+          const responsePolicy = applyToolResponseHardCap(toolName, compressedCachedHit, executionId, resolved);
           toolHistory.push({
             executionId,
             toolName,
             args,
-            output: cachedHit,
+            output: compressedCachedHit,
             rawOutput: cachedHit,
             timestamp: new Date().toISOString(),
             tool_call_id: tc.id,
@@ -475,6 +499,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             retentionPolicy: "keep_full",
             fromCache: true,
             status: "success",
+            contextPilot: cachedContextPilotStats,
           });
           push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: cachedHit, durationMs: 0 });
@@ -508,6 +533,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
               originalTokenCount: responsePolicy.tokenCount,
               truncated: responsePolicy.truncated,
               fromCache: true,
+              contextPilot: cachedContextPilotStats,
             },
           });
           toolCount += 1;
@@ -637,14 +663,15 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           state.ctx.__finalizedDueToStructuredOutput = true;
         }
 
-        const responsePolicy = applyToolResponseHardCap(toolName, output, executionId, resolved);
+        const { output: compressedOutput, stats: contextPilotStats } = maybeCompressToolOutput(toolName, output, executionId);
+        const responsePolicy = applyToolResponseHardCap(toolName, compressedOutput, executionId, resolved);
         const timestamp = new Date().toISOString();
 
         toolHistory.push({
           executionId,
           toolName,
           args,
-          output,
+          output: compressedOutput,
           rawOutput: output,
           timestamp,
           tool_call_id: tc.id,
@@ -655,6 +682,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           summary: undefined,
           archiveId: undefined,
           status: "success",
+          contextPilot: contextPilotStats,
         });
 
         push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
@@ -696,6 +724,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             retentionPolicy: "keep_full",
             originalTokenCount: responsePolicy.tokenCount,
             truncated: responsePolicy.truncated,
+            contextPilot: contextPilotStats,
           },
         });
         toolCount += 1;

@@ -16,6 +16,7 @@ export * from "./smart/skills/index.js";
 export * from "./smart/eval.js";
 export * from "./smart/memory.js";
 export * from "./smart/runtimeConfig.js";
+export * from "./smart/contextPilot/index.js";
 export * from "./guardrails/index.js";
 export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
