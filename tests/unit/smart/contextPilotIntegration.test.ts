@@ -1,13 +1,27 @@
 /**
  * ContextPilot end-to-end integration test: exercises the real wiring
- * through createSmartAgent -> tools node -> toolHistory, using only default
- * ContextPilot configuration (nothing explicitly enabled by the caller).
+ * through createSmartAgent -> tools node -> toolHistory.
+ *
+ * ContextPilot is opt-in (`contextPilot.enabled` defaults to `false` on
+ * `createSmartAgent`, see "opt-in by default" tests below). Every test in
+ * this file that exercises ContextPilot's actual compression behavior goes
+ * through the local `createSmartAgent` wrapper below, which explicitly
+ * passes `contextPilot: { enabled: true }` (while still letting individual
+ * tests override any nested option, including `enabled: false` itself).
  */
 
 import { describe, it, expect } from "vitest";
-import { createSmartAgent, createTool } from "../../../src/index.js";
+import { createSmartAgent as createRealSmartAgent, createTool } from "../../../src/index.js";
 import { z } from "zod";
 import type { Message } from "../../../src/types.js";
+
+/** Test helper: same as `createSmartAgent`, but opts into ContextPilot by default. */
+function createSmartAgent(opts: any) {
+  return createRealSmartAgent({
+    ...opts,
+    contextPilot: { enabled: true, ...opts?.contextPilot },
+  });
+}
 
 function buildLargeSearchResults(): Array<{ id: number; title: string }> {
   return Array.from({ length: 25 }, (_, i) => ({
@@ -50,8 +64,35 @@ function createDeterministicModel(): DeterministicModel {
   return model;
 }
 
+describe("ContextPilot / opt-in by default", () => {
+  it("does NOT compress tool output when contextPilot is not explicitly enabled (real createSmartAgent, no wrapper)", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    const model = createDeterministicModel();
+    const agent = createRealSmartAgent({
+      name: "ContextPilotOptInDefaultAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot).toBeUndefined();
+    expect((entry.output as any[]).length).toBe(25);
+  });
+});
+
 describe("ContextPilot end-to-end wiring", () => {
-  it("compresses a large tool output by default and keeps it recoverable via the CCR store", async () => {
+  it("compresses a large tool output when explicitly enabled and keeps it recoverable via the CCR store", async () => {
     const searchItems = createTool({
       name: "search_items",
       description: "Search a large product catalog.",
@@ -854,6 +895,118 @@ describe("ContextPilot / CCR store lifecycle (Faz 2)", () => {
     // maxEntries: 1 means storing hashB must evict the older hashA entry (LRU).
     expect(ccrStore.retrieve(hashB)).toEqual(entryB.rawOutput);
     expect(ccrStore.retrieve(hashA)).toBeUndefined();
+  });
+});
+
+describe("ContextPilot / ccr.enabled: false honored (no dead recovery references)", () => {
+  it("skips drop-based compression entirely when ccr.enabled is false, instead of emitting an unrecoverable marker", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    const model = createDeterministicModel();
+    const agent = createSmartAgent({
+      name: "ContextPilotCcrDisabledAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { enabled: false } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    // No compression should have been applied at all — the array is returned
+    // in full, rather than compressed with a `get_tool_response` marker that
+    // could never be resolved because CCR storage is disabled.
+    expect(entry.contextPilot?.applied).toBeFalsy();
+    expect((entry.output as any[]).length).toBe(25);
+    expect(JSON.stringify(entry.output)).not.toContain("get_tool_response");
+  });
+
+  it("skips drop-based compression when ccr.maxEntries is 0, instead of storing-then-immediately-evicting and emitting a dead reference", async () => {
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => buildLargeSearchResults(),
+    });
+
+    const model = createDeterministicModel();
+    const agent = createSmartAgent({
+      name: "ContextPilotZeroMaxEntriesAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { maxEntries: 0 } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "Find target-widget-42 in the catalog." }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBeFalsy();
+    expect((entry.output as any[]).length).toBe(25);
+    expect(JSON.stringify(entry.output)).not.toContain("get_tool_response");
+  });
+
+  it("leaves cross-turn dedup unaffected by ccr.enabled: false, since dedup pointers reference transcript history, not the CCR store", async () => {
+    const uniqueReport =
+      "Status report: warehouse zone 7 inventory count reconciled successfully with no discrepancies found this cycle.";
+    const paddedReport = `${uniqueReport} `.repeat(6).trim();
+
+    const fetchStatus = createTool({
+      name: "fetch_status_report",
+      description: "Fetch a fixed status report.",
+      schema: z.object({ zone: z.string() }),
+      func: async () => paddedReport,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-dedup-ccr-disabled-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1 || turn === 2) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: `call_status_${turn}`,
+              type: "function",
+              name: "fetch_status_report",
+              args: { zone: "7" },
+              function: { name: "fetch_status_report", arguments: JSON.stringify({ zone: "7" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Zone 7 is reconciled." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotDedupCcrDisabledAgent",
+      model,
+      tools: [fetchStatus],
+      limits: { maxToolCalls: 4 },
+      contextPilot: { ccr: { enabled: false } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Check zone 7 status twice." }] });
+    const toolHistory = (result.state?.toolHistory || []).filter((t: any) => t.toolName === "fetch_status_report");
+
+    expect(toolHistory.length).toBe(2);
+    expect(toolHistory[0].contextPilot).toBeUndefined();
+    expect(toolHistory[1].contextPilot?.applied).toBe(true);
+    expect(toolHistory[1].contextPilot?.duplicateOf).toBe(toolHistory[0].executionId);
+    expect(toolHistory[1].output as string).toContain("DUPLICATE_TOOL_RESPONSE");
   });
 });
 

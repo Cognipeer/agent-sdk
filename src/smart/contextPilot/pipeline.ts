@@ -70,6 +70,16 @@ export function compressToolOutput(params: CompressToolOutputParams): ContextPil
   const { toolName, output, query, executionId, config, runtime } = params;
   if (!config.enabled || config.excludeTools.includes(toolName)) return notApplied(output);
 
+  // Drop-based compressors (json/text/diff/log/search) rely on the CCR store
+  // to keep dropped/trimmed content recoverable via `get_tool_response`. If
+  // the caller disabled CCR (`ccr.enabled: false`) or configured it to retain
+  // nothing (`maxEntries: 0`), a stored hash would be evicted immediately —
+  // producing a `get_tool_response` marker that can never be resolved. In
+  // that case, skip all drop-based compression entirely rather than emit a
+  // dead recovery reference; cross-turn dedup (which points at another
+  // still-present transcript message, not the CCR store) is unaffected.
+  const ccrAvailable = config.ccr.enabled && config.ccr.maxEntries > 0;
+
   if (config.dedup.enabled) {
     const serialized = typeof output === "string" ? output : safeStringify(output);
     if (serialized.length >= config.dedup.minChars) {
@@ -90,7 +100,7 @@ export function compressToolOutput(params: CompressToolOutputParams): ContextPil
   }
 
   if (typeof output !== "string") {
-    if (config.compression.json.enabled) {
+    if (ccrAvailable && config.compression.json.enabled) {
       const result = compressJsonOutput(output, query, config.compression.json, runtime.ccrStore);
       if (result.applied) return result;
     }
@@ -98,18 +108,18 @@ export function compressToolOutput(params: CompressToolOutputParams): ContextPil
   }
 
   const format = detectTextFormat(output);
-  if (format === "diff" && config.compression.diff.enabled) {
+  if (ccrAvailable && format === "diff" && config.compression.diff.enabled) {
     const result = compressDiffOutput(output, config.compression.diff, runtime.ccrStore);
     if (result.applied) return result;
-  } else if (format === "log" && config.compression.log.enabled) {
+  } else if (ccrAvailable && format === "log" && config.compression.log.enabled) {
     const result = compressLogOutput(output, config.compression.log, runtime.ccrStore);
     if (result.applied) return result;
-  } else if (format === "search" && config.compression.search.enabled) {
+  } else if (ccrAvailable && format === "search" && config.compression.search.enabled) {
     const result = compressSearchOutput(output, config.compression.search, runtime.ccrStore);
     if (result.applied) return result;
   }
 
-  if (config.compression.text.enabled) {
+  if (ccrAvailable && config.compression.text.enabled) {
     const result = compressTextOutput(output, query, config.compression.text, runtime.ccrStore);
     if (result.applied) return result;
   }

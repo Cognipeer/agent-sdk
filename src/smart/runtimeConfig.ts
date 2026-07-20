@@ -66,7 +66,11 @@ const BASE_DEFAULTS: ProfileConfig = {
     schemaValidation: "strict",
   },
   contextPilot: {
-    enabled: true,
+    // Opt-in: ContextPilot never alters tool output unless the caller
+    // explicitly passes `contextPilot: { enabled: true }` (or sets `enabled`
+    // via `customProfile`/profile overrides). This preserves backward
+    // compatibility for every existing `createSmartAgent(...)` call site.
+    enabled: false,
     compression: {
       json: { enabled: true, targetRatio: 0.35, minItems: 20 },
       text: { enabled: true, targetRatio: 0.5, minChars: 1200 },

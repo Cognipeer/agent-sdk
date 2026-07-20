@@ -2,7 +2,7 @@
 
 ContextPilot is a native, zero-dependency context/token optimization layer that runs at tool-execution time. It shrinks large tool outputs before they enter the transcript, while keeping every original payload recoverable later through `get_tool_response`. It never calls the model to do this — every decision is deterministic (BM25 relevance scoring, format sniffing, regex-based detection).
 
-It is enabled by default. You don't need to opt in; you only need to override it if the defaults don't fit your workload.
+It is **opt-in**: pass `contextPilot: { enabled: true }` (or set any nested option) on `createSmartAgent` to turn it on. A plain `createSmartAgent({ model, tools })` call never compresses tool output.
 
 ## Quick example
 
@@ -31,13 +31,13 @@ const agent = createSmartAgent({
 
 | Key | Fields | Notes |
 |---|---|---|
-| `enabled` | `boolean` | Master switch. `false` disables the whole layer. |
+| `enabled` | `boolean` | Master switch. **Defaults to `false`** — ContextPilot is opt-in; set `true` to turn it on. |
 | `compression.json` | `enabled`, `targetRatio`, `minItems` | Compresses large arrays via BM25 relevance ranking. |
 | `compression.text` | `enabled`, `targetRatio`, `minChars` | Extractive sentence compression for long plain text. |
 | `compression.diff` | `enabled`, `contextLines` | Keeps unified-diff headers and `+`/`-` lines verbatim; trims unchanged context. |
 | `compression.log` | `enabled`, `maxLines` | Always keeps the first/last line and ERROR/WARN-scored lines. |
 | `compression.search` | `enabled`, `maxMatches` | Keeps grep/search matches with per-file diversity caps. |
-| `ccr` | `enabled`, `ttlMs`, `maxEntries` | Reversible Compress-Cache-Retrieve store (see below). |
+| `ccr` | `enabled`, `ttlMs`, `maxEntries` | Reversible Compress-Cache-Retrieve store (see below). **If `enabled: false` or `maxEntries: 0`, all drop-based compressors (json/text/diff/log/search) are skipped entirely** — ContextPilot never produces a `get_tool_response` marker it can't actually resolve. |
 | `cacheAlignment` | `enabled`, `warnOnVolatilePrompt` | Detects volatile content (UUIDs, timestamps, JWTs, API keys) in the system prompt. |
 | `dedup` | `enabled`, `minChars` | Cross-turn duplicate detection. |
 | `excludeTools` | `string[]` | Tool names ContextPilot never touches. |
@@ -72,6 +72,8 @@ Every compression is reversible. Dropped items are stored in an in-memory `CCRSt
 ```
 
 If the model later needs the full data, it calls the built-in `get_tool_response` tool with that `executionId`, and the agent returns the original, uncompressed value — as long as the entry hasn't expired (`ccr.ttlMs`) or been evicted (`ccr.maxEntries`, LRU).
+
+**`ccr.enabled: false` / `ccr.maxEntries: 0` disable drop-based compression, not just recovery.** Since json/text/diff/log/search compressors only ever drop content because the original stays recoverable via CCR, ContextPilot treats "no CCR storage" as "no safe compression to do here" and leaves the tool output untouched instead of emitting a marker that references a hash which was never stored (or was evicted the instant it was written). Cross-turn dedup is unaffected by this, since its pointers reference an earlier message still present in the transcript rather than the CCR store.
 
 **Important timing detail:** `get_tool_response` is only added to the model's available tools once a recovery marker (`DUPLICATE_TOOL_RESPONSE`, `ARCHIVED_TOOL_RESPONSE`, a CCR retrieval note, etc.) is already present in the *input* messages at the start of a turn. If a marker is produced *during* the current turn (e.g. the model repeats a tool call and immediately gets back a dedup pointer), the model cannot call `get_tool_response` in that same turn — it has to ask again on a subsequent turn, by which point the marker is visible in history and the tool becomes available. Design multi-turn recovery flows with this in mind.
 

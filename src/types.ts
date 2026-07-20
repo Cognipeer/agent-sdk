@@ -248,7 +248,9 @@ export type AgentOptions = {
    * ContextPilot: native, deterministic context/token optimization layer.
    * Compresses large tool outputs (JSON arrays, logs, diffs, search results,
    * long text) at execution time using relevance scoring, while keeping every
-   * original payload recoverable via `get_tool_response`. Enabled by default.
+   * original payload recoverable via `get_tool_response`. **Opt-in** — disabled
+   * unless `contextPilot: { enabled: true }` (or an equivalent override) is
+   * passed explicitly.
    */
   contextPilot?: ContextPilotConfig;
 };
@@ -547,7 +549,7 @@ export type SmartAgentOptions = {
   toolResponses?: SmartAgentToolResponseConfig;
   /**
    * ContextPilot: native, deterministic context/token optimization layer.
-   * See `AgentOptions.contextPilot` for details. Enabled by default.
+   * See `AgentOptions.contextPilot` for details. **Opt-in** — disabled by default.
    */
   contextPilot?: ContextPilotConfig;
   // System prompt configuration
