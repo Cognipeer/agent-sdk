@@ -15,6 +15,7 @@
     "example:handoff": "tsx handoff/handoff.ts",
     "example:mcp-tavily": "tsx mcp-tavily/mcp_tavily.ts",
     "example:multi-agent": "tsx multi-agent/multi-agent.ts",
+    "example:sub-agents": "tsx sub-agents/sub-agents.ts",
     "example:pause-resume": "tsx pause-resume/pause-resume.ts",
     "example:rewrite-summary": "tsx rewrite-summary/rewrite-summary.ts",
     "example:structured-output": "tsx structured-output/structured-output.ts",

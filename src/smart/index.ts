@@ -14,7 +14,11 @@ import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resol
 import { extractMessageText } from "../utils/content.js";
 import { createSkillRegistryRef, DEFAULT_SKILL_POLICY, type Skill, type SkillPolicy } from "./skills/types.js";
 import { createSkillTools } from "./skills/skillTools.js";
-import { buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
+import { appendBoundTools, buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
+import { createSubagentRegistryRef, DEFAULT_SUBAGENT_POLICY, type SubagentDef, type SubagentPolicy } from "./subagents/types.js";
+import { buildSubagentCatalogBlock, resolveAvailableSubagents } from "./subagents/registry.js";
+import { createSubagentTools, type BuildChildConfig, type SubagentToolDeps } from "./subagents/subagentTools.js";
+import type { PromptHooks, ToolInterface } from "../types.js";
 
 // SmartAgent on top of core createAgent: adds system prompt, optional planning context tools, and token-aware summarization.
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
@@ -63,6 +67,54 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   const skillPolicy: SkillPolicy = ((opts as any).skillPolicy as SkillPolicy | undefined) ?? DEFAULT_SKILL_POLICY;
   const skillsEnabled = skills.length > 0;
 
+  // Sub-agents: dynamic problem decomposition (registry + ad-hoc + parallel).
+  // OPT-IN: the spawn tools + <available_subagents> catalog are only wired when
+  // the caller explicitly passes `subagents` or `subagentPolicy`. Without either,
+  // a plain createSmartAgent stays sub-agent-free.
+  const subagentsProvided = (opts as any).subagents !== undefined || (opts as any).subagentPolicy !== undefined;
+  const subagents: SubagentDef[] = ((opts as any).subagents as SubagentDef[] | undefined) ?? [];
+  const subagentPolicy: SubagentPolicy = ((opts as any).subagentPolicy as SubagentPolicy | undefined) ?? DEFAULT_SUBAGENT_POLICY;
+  const subagentsEnabled = subagentsProvided && subagentPolicy.mode !== "off" && (subagents.length > 0 || subagentPolicy.mode === "registry_and_adhoc");
+  const promptHooks: PromptHooks | undefined = (opts as any).promptHooks as PromptHooks | undefined;
+
+  // DI factory so the sub-agent tools can build child agents without importing
+  // createSmartAgent (avoids a circular module dependency). Children inherit the
+  // parent's HITL/reasoning/token wiring but NOT its sub-agents (depth-guarded).
+  const buildChild = (cfg: BuildChildConfig): SmartAgentInstance => createSmartAgent({
+    name: cfg.name,
+    model: cfg.model,
+    tools: cfg.tools,
+    systemPrompt: cfg.systemPrompt,
+    outputSchema: cfg.outputSchema,
+    limits: cfg.limits,
+    runtimeProfile: resolved.runtimeProfile,
+    humanInTheLoop: (opts as any).humanInTheLoop,
+    reasoning: (opts as any).reasoning,
+    tokenCounter: (opts as any).tokenCounter,
+    costEstimator: (opts as any).costEstimator,
+    promptHooks,
+    // Sub-agents are single-level by design: a child never gets its own spawn
+    // tools, so it cannot delegate further. This keeps decomposition bounded and
+    // is why the depth guard mainly governs `asTool`-composed nesting (which seeds
+    // __delegationDepth externally) rather than sub-agent-of-sub-agent recursion.
+    subagents: [],
+    subagentPolicy: { ...subagentPolicy, mode: "off" },
+  } as any);
+
+  // Apply description overrides uniformly to any tool (clones the few user/skill
+  // tools that have an override so shared tool objects are never mutated).
+  const decorateToolDescriptions = (tools: ToolInterface[]): ToolInterface[] => {
+    const overrides = promptHooks?.toolDescriptions;
+    if (!overrides) return tools;
+    return tools.map((tool) => {
+      const override = overrides[(tool as any)?.name];
+      if (override === undefined) return tool;
+      const next = typeof override === "function" ? override((tool as any).description || "") : override;
+      if (next === (tool as any).description) return tool;
+      return { ...(tool as any), description: next } as ToolInterface;
+    });
+  };
+
   // Pre-resolve the structured-output manager so we can plug the `response`
   // finalize tool into the smart runtime's tool set (state.agent.tools).
   // Otherwise the smart agent would override base agent's tools without the
@@ -80,6 +132,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     toolsWithoutRecovery: any[];
     toolsWithRecovery: any[];
     skillRegistryRef?: any;
+    subagentRegistryRef?: any;
   };
   const buildInvokeToolSet = (): InvokeToolSet => {
     const ref: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
@@ -89,17 +142,34 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     if (responseFinalizeTool) coreBase.push(responseFinalizeTool);
     if (askUserConfig) coreBase.push(createAskUserQuestionTool(ref, askUserConfig));
 
+    // Sub-agent tools share one per-invoke registry ref (spawn budget/results).
+    let subagentRegistryRef: any;
+    if (subagentsEnabled) {
+      subagentRegistryRef = createSubagentRegistryRef();
+      const deps: SubagentToolDeps = {
+        registryRef: subagentRegistryRef,
+        subagents,
+        policy: subagentPolicy,
+        buildChild,
+        // NOTE: promptHooks.toolDescriptions overrides for the sub-agent tools are
+        // applied uniformly (and only) by decorateToolDescriptions below, so the
+        // function form of an override receives the real DEFAULT_* string. Baking
+        // them in here as well would double-apply and stringify the function.
+      };
+      coreBase.push(...createSubagentTools(deps));
+    }
+
     if (!skillsEnabled) {
-      const without = coreBase;
-      const withRec = [...without, recoveryTool];
-      return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec };
+      const without = decorateToolDescriptions(coreBase);
+      const withRec = decorateToolDescriptions([...coreBase, recoveryTool]);
+      return { stateRef: ref, toolsWithoutRecovery: without, toolsWithRecovery: withRec, subagentRegistryRef };
     }
 
     // Skill mode: open_skill/bind_skill_tools mutate a per-invoke registry and
     // call __onToolsChanged, which rebuilds BOTH tool-set variants with fresh
     // references so syncRuntimeTools' identity-swap propagates the newly-bound
     // tools (and the recovery variant can never drop them).
-    const toolSet: InvokeToolSet = { stateRef: ref, toolsWithoutRecovery: [], toolsWithRecovery: [] };
+    const toolSet: InvokeToolSet = { stateRef: ref, toolsWithoutRecovery: [], toolsWithRecovery: [], subagentRegistryRef };
     const skillRegistryRef = createSkillRegistryRef();
     const skillMetaTools = createSkillTools({ registryRef: skillRegistryRef, skills, policy: skillPolicy });
     const baseWithMeta = [...coreBase, ...skillMetaTools];
@@ -109,14 +179,45 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         boundSkillTools: skillRegistryRef.boundSkillTools,
         recoveryTool,
       });
-      toolSet.toolsWithoutRecovery = composed.toolsWithoutRecovery;
-      toolSet.toolsWithRecovery = composed.toolsWithRecovery;
+      toolSet.toolsWithoutRecovery = decorateToolDescriptions(composed.toolsWithoutRecovery);
+      toolSet.toolsWithRecovery = decorateToolDescriptions(composed.toolsWithRecovery);
     };
     skillRegistryRef.__onToolsChanged = rebuild;
     toolSet.skillRegistryRef = skillRegistryRef;
     rebuild();
     return toolSet;
   };
+
+  // Skill state is per-invoke, so a resumed run (after any pause) would otherwise
+  // rebuild the skill registry empty and drop every opened/bound skill tool. We
+  // persist the opened keys + bound tool names on ctx.__skillState and rehydrate
+  // by re-binding on the next invoke, so bound skill tools survive pause/resume.
+  type PersistedSkillState = { openedSkillKeys: string[]; boundToolNames: string[] };
+  async function rehydrateSkillRegistry(ref: any, persisted: PersistedSkillState | undefined): Promise<boolean> {
+    if (!persisted) return false;
+    const opened = Array.isArray(persisted.openedSkillKeys) ? persisted.openedSkillKeys : [];
+    const boundNames = new Set(Array.isArray(persisted.boundToolNames) ? persisted.boundToolNames : []);
+    if (opened.length === 0) return false;
+    let changed = false;
+    for (const key of opened) {
+      if (!ref.openedSkillKeys.includes(key)) ref.openedSkillKeys.push(key);
+      const skill = skills.find((s) => s.key === key);
+      if (!skill) continue;
+      let bound;
+      try { bound = await skill.bindTools(); } catch { continue; }
+      const wanted = (bound as any[]).filter((t) => boundNames.has(t.name));
+      const added = appendBoundTools(ref, wanted, skillPolicy);
+      if (added.length > 0) changed = true;
+    }
+    return changed;
+  }
+  function skillStateFromRegistry(ref: any): PersistedSkillState | undefined {
+    if (!ref || !Array.isArray(ref.openedSkillKeys) || ref.openedSkillKeys.length === 0) return undefined;
+    return {
+      openedSkillKeys: [...ref.openedSkillKeys],
+      boundToolNames: (ref.boundSkillTools || []).map((t: any) => t.name),
+    };
+  }
 
   // Compose base agent – pass summarization config so createAgent's token-budget
   // guard and __needsSummarization throw know summarization is handled externally.
@@ -186,12 +287,20 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   }
 
   function systemMessage(extraBlock?: string): any {
-    const sys = buildSystemPrompt(
+    let sys = buildSystemPrompt(
       [opts.systemPrompt, runtimeHint, structuredOutputHint, extraBlock].filter(Boolean).join("\n"),
       planningEnabled,
       opts.name || "Agent",
       opts.todoListPrompt,
     );
+    // Prompt-override hook: let callers intercept the otherwise-static prompt.
+    if (promptHooks?.transformSystemPrompt) {
+      try {
+        sys = promptHooks.transformSystemPrompt(sys, { agentName: opts.name || "Agent" });
+      } catch (err) {
+        console.warn('[agent-sdk] promptHooks.transformSystemPrompt error:', err);
+      }
+    }
     return { role: 'system', content: sys } as any;
   }
 
@@ -254,6 +363,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       stateRef.planVersion = input.planVersion || input.plan?.version || 0;
       stateRef.adherenceScore = input.plan?.adherenceScore || 0;
 
+      // Rehydrate previously opened/bound skills so a resumed run keeps its skill
+      // tools (they were bound in an earlier invoke's per-invoke registry).
+      if (skillsEnabled && toolSet.skillRegistryRef) {
+        const changed = await rehydrateSkillRegistry(toolSet.skillRegistryRef, (input as any).ctx?.__skillState);
+        if (changed) toolSet.skillRegistryRef.__onToolsChanged?.();
+      }
+
       const syncPlanFromRef = (state: SmartState) => syncPlanStateWith(stateRef, state);
 
       // Resolve which skills are usable this invoke (availability + tier gating)
@@ -264,9 +380,26 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         : [];
       const skillBlock = availableSkills.length > 0 ? buildSkillHeaderBlock(availableSkills) : undefined;
 
+      // Surface the sub-agent catalog so the model knows what it can delegate to.
+      let subagentBlock: string | undefined;
+      if (subagentsEnabled) {
+        const availableSubagents = await resolveAvailableSubagents(subagents);
+        let block = buildSubagentCatalogBlock(availableSubagents, subagentPolicy, {
+          delegate: "delegate_to",
+          spawn: "spawn_subagent",
+          parallel: "spawn_subagents_parallel",
+        });
+        if (promptHooks?.subagentCatalog) {
+          try { block = promptHooks.subagentCatalog(block, availableSubagents); }
+          catch (err) { console.warn('[agent-sdk] promptHooks.subagentCatalog error:', err); }
+        }
+        subagentBlock = block;
+      }
+      const disclosureBlock = [skillBlock, subagentBlock].filter(Boolean).join("\n\n") || undefined;
+
       // Prepend a single system message once
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
-      const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(skillBlock), ...(input.messages || [])];
+      const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(disclosureBlock), ...(input.messages || [])];
       let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       let rawMessages = [...seedMessages];
@@ -369,6 +502,15 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         }
       } else if (lastResult.state) {
         lastResult = { ...lastResult, state: { ...lastResult.state, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, messages: rawMessages } };
+      }
+
+      // Persist opened/bound skills so a resumed run can rehydrate them.
+      if (skillsEnabled && lastResult.state) {
+        const persisted = skillStateFromRegistry(toolSet.skillRegistryRef);
+        if (persisted) {
+          const prevCtx = (lastResult.state as any).ctx || {};
+          lastResult = { ...lastResult, state: { ...lastResult.state, ctx: { ...prevCtx, __skillState: persisted } } as SmartState };
+        }
       }
 
       return lastResult as AgentInvokeResult<TOutput>;

@@ -31,6 +31,7 @@
     "test:ui": "vitest --ui",
     "test:real": "vitest run tests/integration/realOpenAI.integration.test.ts",
     "test:critical": "vitest run tests/integration/criticalFeatures.integration.test.ts",
+    "test:matrix": "vitest run tests/integration/providerMatrix.integration.test.ts",
     "lint": "eslint 'src/**/*.{ts,tsx}'",
     "prepublishOnly": "npm run build",
     "docs:dev": "vitepress dev docs",

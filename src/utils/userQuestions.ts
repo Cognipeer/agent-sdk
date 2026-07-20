@@ -133,16 +133,32 @@ export function resolveUserQuestionState(
 
   pending[matchIndex] = entry;
 
+  // A sub-agent surfaces a CHILD question to the parent. The parent transcript
+  // has no matching tool_call for it, so we must NOT inject a tool message at
+  // the parent level and must KEEP `__resumeStage = "tools"` so the parent
+  // re-runs the delegating sub-agent tool, which feeds the answer into the
+  // child and resumes it.
+  const isSubagentQuestion = Boolean((entry.metadata as any)?.__subagent);
+
   const ctx = { ...(state.ctx || {}) };
   delete ctx.__awaitingUserQuestion;
   // The original tool call set `__resumeStage = "tools"` so the runtime would
-  // re-enter the tools node on resume; for ask_user we already injected the
-  // answer as a tool message, so the loop should run the agent (not the
-  // tools node) first on the next invoke.
-  if (ctx.__resumeStage === "tools") {
+  // re-enter the tools node on resume; for a parent-level ask_user we already
+  // injected the answer as a tool message, so the loop should run the agent
+  // (not the tools node) first on the next invoke. For a sub-agent question we
+  // keep it so the delegating tool re-runs.
+  if (ctx.__resumeStage === "tools" && !isSubagentQuestion) {
     delete ctx.__resumeStage;
   }
   ctx.__userQuestionResolved = { id: entry.id, status: entry.status };
+
+  if (isSubagentQuestion) {
+    return {
+      ...state,
+      pendingUserQuestions: pending,
+      ctx,
+    };
+  }
 
   const toolMessage: Message = {
     role: "tool",

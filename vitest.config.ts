@@ -12,11 +12,16 @@ export default defineConfig({
       reportsDirectory: './coverage',
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/index.ts'],
+      // Gradual ratchet: kept ~4-5pt below current actuals (stmts ~72, branch
+      // ~60, funcs ~79, lines ~75) so the floor enforces real coverage without
+      // being brittle. Remaining headroom is mostly in `src/providers`
+      // streaming/request-build paths (per-provider buildRequestBody, Vertex/
+      // Bedrock completeStream) — raise further as those gain tests.
       thresholds: {
-        lines: 30,
-        functions: 30,
-        branches: 20,
-        statements: 30,
+        lines: 70,
+        functions: 75,
+        branches: 56,
+        statements: 68,
       },
     },
     testTimeout: 30000,

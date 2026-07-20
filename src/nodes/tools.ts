@@ -18,6 +18,7 @@ import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolResponses.js";
 import { compressToolOutput, extractLatestUserQuery } from "../smart/contextPilot/index.js";
 import type { ContextPilotCompressionStats, ContextPilotRuntime } from "../smart/contextPilot/index.js";
+import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
 
 function normalizeMaxExecutionsPerRun(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -237,13 +238,14 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
     }
 
-    const last = state.messages[state.messages.length - 1] as any;
+    // Process the owning assistant turn's UNRESOLVED tool_calls. On the normal
+    // path this equals the last assistant message's tool_calls; on resume after a
+    // sub-agent human-input pause it skips already-completed sibling tool_calls
+    // (which have tool results) and re-runs only the still-pending delegating tool.
     let toolCount = state.toolCallCount || 0;
-    const toolCalls: Array<{ id?: string; name: string; args: any }> = Array.isArray(last?.tool_calls)
-      ? last.tool_calls
-          .map((toolCall: any) => normalizeToolCall(toolCall))
-          .filter((toolCall: { id?: string; name: string; args: any } | null): toolCall is { id?: string; name: string; args: any } => toolCall !== null)
-      : [];
+    const toolCalls: Array<{ id?: string; name: string; args: any }> = selectPendingToolCalls(state.messages)
+      .map((toolCall: any) => normalizeToolCall(toolCall))
+      .filter((toolCall: { id?: string; name: string; args: any } | null): toolCall is { id?: string; name: string; args: any } => toolCall !== null);
     const toolHistory = state.toolHistory || [];
     const toolHistoryArchived = state.toolHistoryArchived || [];
     const remaining = Math.max(0, limits.maxToolCalls - toolCount);

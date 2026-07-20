@@ -584,6 +584,47 @@ export type SmartAgentOptions = {
   skills?: import("./smart/skills/types.js").Skill[];
   /** Caps/tiering for skill disclosure. Defaults to DEFAULT_SKILL_POLICY. */
   skillPolicy?: import("./smart/skills/types.js").SkillPolicy;
+  /**
+   * Sub-agents for dynamic problem decomposition. When provided (or when
+   * `subagentPolicy.mode` enables ad-hoc spawning), the agent exposes
+   * `delegate_to` / `spawn_subagent` / `spawn_subagents_parallel` tools and a
+   * `<available_subagents>` catalog in its system prompt. Children inherit the
+   * parent model (unless a `SubagentDef.model` override is given), and the
+   * parent's event/streaming/cancellation/trace wiring.
+   */
+  subagents?: import("./smart/subagents/types.js").SubagentDef[];
+  /** Caps/modes for sub-agent spawning. Defaults to DEFAULT_SUBAGENT_POLICY. */
+  subagentPolicy?: import("./smart/subagents/types.js").SubagentPolicy;
+  /**
+   * Hooks to intercept/override the SDK's otherwise-static prompt surfaces:
+   * the composed system prompt, built-in tool descriptions, and the sub-agent
+   * catalog block. See {@link PromptHooks}.
+   */
+  promptHooks?: PromptHooks;
+};
+
+/**
+ * Override points for the SDK's built-in (otherwise static) prompt surfaces.
+ * Every hook is optional and additive — when omitted the defaults are used.
+ */
+export type PromptHooks = {
+  /**
+   * Transform the fully-composed system prompt right before it is sent. Receives
+   * the default prompt and returns the prompt to use.
+   */
+  transformSystemPrompt?: (prompt: string, ctx: { agentName: string }) => string;
+  /**
+   * Override built-in tool descriptions by tool name (e.g. `delegate_to`,
+   * `spawn_subagent`, `spawn_subagents_parallel`, `open_skill`,
+   * `ask_user_question`). A string replaces the description; a function receives
+   * the default and returns the replacement.
+   */
+  toolDescriptions?: Record<string, string | ((defaultDescription: string) => string)>;
+  /**
+   * Override the `<available_subagents>` catalog block. Receives the default
+   * block and the active sub-agent definitions.
+   */
+  subagentCatalog?: (defaultBlock: string, subagents: import("./smart/subagents/types.js").SubagentDef[]) => string;
 };
 
 // Runtime representation of an agent (used inside state.agent)
@@ -1236,7 +1277,43 @@ export type GuardrailEvent = {
   details?: Record<string, any>;
 };
 
-export type SmartAgentEvent =
+export type SubagentEvent = {
+  type: "subagent";
+  /** Lifecycle phase of a delegated sub-agent run. */
+  phase: "start" | "result" | "error" | "paused";
+  /** Sub-agent name (registry) or role (ad-hoc). */
+  name: string;
+  /** Unique per-spawn id. */
+  id: string;
+  mode: "registry" | "adhoc";
+  /** Parent tool_call id that owns this sub-agent. */
+  parentToolCallId?: string;
+  /** True when spawned inside `spawn_subagents_parallel`. */
+  parallel?: boolean;
+  /** Task input (on `start`). */
+  input?: string;
+  /** Final content (on `result`). */
+  content?: string;
+  error?: { message: string };
+  durationMs?: number;
+};
+
+/**
+ * Origin-stamp fields the runtime attaches to any event that was forwarded from
+ * a delegated child. Sub-agent children stamp `subagentId` / `subagentName`;
+ * `asTool` delegated children stamp `delegatedTo`. All optional and absent on a
+ * top-level agent's own events.
+ */
+export type DelegationEventStamp = {
+  /** Per-spawn id of the sub-agent that produced this forwarded event. */
+  subagentId?: string;
+  /** Sub-agent name / role that produced this forwarded event. */
+  subagentName?: string;
+  /** Name of the `asTool` child agent this forwarded event came from. */
+  delegatedTo?: string;
+};
+
+export type SmartAgentEvent = (
   | ToolCallEvent
   | ToolApprovalEvent
   | UserQuestionEvent
@@ -1249,7 +1326,9 @@ export type SmartAgentEvent =
   | ProgressEvent
   | StreamEvent
   | CancelledEvent
-  | ReflectionEvent;
+  | SubagentEvent
+  | ReflectionEvent
+) & DelegationEventStamp;
 
 export type ReflectionEvent = {
   type: "reflection";

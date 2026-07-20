@@ -41,6 +41,7 @@ export default defineConfig({
             { text: 'Planning for Autonomous Agents', link: '/guide/planning' },
             { text: 'Summarization & Context', link: '/guide/summarization' },
             { text: 'Skills & Progressive Disclosure', link: '/guide/skills' },
+            { text: 'Sub-Agents & Delegation', link: '/guide/sub-agents' },
             { text: 'Tool Development', link: '/guide/tool-development' },
             { text: 'Guardrails', link: '/guide/guardrails' },
             { text: 'State Management', link: '/guide/state-management' },
@@ -56,6 +57,7 @@ export default defineConfig({
             { text: 'Tool-Heavy & Long-Running Agents', link: '/guide/tool-heavy-agents' },
             { text: 'Limits & Tokens', link: '/guide/limits-tokens' },
             { text: 'Debugging & Tracing', link: '/guide/debugging' },
+            { text: 'Testing & Evaluation', link: '/guide/testing' },
             { text: 'FAQ', link: '/guide/faq' },
           ],
         },
@@ -113,6 +115,7 @@ export default defineConfig({
           text: 'Orchestration',
           items: [
             { text: 'Multi-Agent', link: '/examples/multi-agent' },
+            { text: 'Sub-Agents', link: '/examples/sub-agents' },
             { text: 'Handoff', link: '/examples/handoff' },
           ],
         },
