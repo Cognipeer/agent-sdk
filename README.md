@@ -38,8 +38,10 @@ Highlights:
 - **Structured output** – provide a Zod schema and the agent injects a finalize tool to capture JSON deterministically.
 - **Skills / progressive disclosure** – expose cheap capability headers first, then bind skill tools on demand with `open_skill` and `bind_skill_tools`.
 - **Multi-agent and handoffs** – wrap agents as tools or transfer control mid-run with `asTool` / `asHandoff`.
+- **Sub-agents / dynamic delegation** – let the orchestrator decompose problems with `delegate_to` (registry), `spawn_subagent` (ad-hoc), and `spawn_subagents_parallel` (fan-out); children are model-agnostic and inherit event/streaming/cancellation wiring. **Opt-in:** the spawn tools + `<available_subagents>` catalog appear only when you pass `subagents` and/or `subagentPolicy`.
+- **Prompt overrides** – intercept otherwise-static prompts with `promptHooks` (`transformSystemPrompt`, `toolDescriptions`, `subagentCatalog`).
 - **Human-in-the-loop** – `needsApproval` tools pause for review; `humanInTheLoop.askUser` enables a built-in `ask_user_question` tool that pauses with a structured multi-choice prompt and resumes from the user's answer.
-- **Usage + events** – normalize provider usage, surface `tool_call`, `tool_approval`, `user_question`, `plan`, `summarization`, `reflection`, `metadata`, and `handoff` events.
+- **Usage + events** – normalize provider usage, surface `tool_call`, `tool_approval`, `user_question`, `plan`, `summarization`, `reflection`, `metadata`, `handoff`, and `subagent` events.
 - **Structured tracing** – optional per-invoke JSON traces with metadata, payload capture, and pluggable sinks (file, HTTP, Cognipeer, custom).
 
 ## What’s inside
@@ -295,6 +297,7 @@ console.log(res.content);
 - **Planning discipline** – when planning is enabled the system prompt distinguishes full plan writes from incremental plan updates and emits `plan` events as todos change.
 - **Structured output** – supply `outputSchema` and the framework adds a hidden `response` finalize tool; parsed JSON is returned as `result.output`.
 - **Multi-agent orchestration** – reuse agents via `agent.asTool({ toolName })` or perform handoffs that swap runtimes mid-execution.
+- **Sub-agents** – pass `subagents` / `subagentPolicy` to give the orchestrator `delegate_to`, `spawn_subagent`, and `spawn_subagents_parallel`; children inherit the parent model + observability and surface human-in-the-loop pauses for transparent resume. See [Sub-Agents guide](docs/guide/sub-agents.md).
 - **Ask the user** – opt in with `humanInTheLoop: { askUser: true }` to give the model an `ask_user_question` tool that pauses the run; resume by calling `agent.resolveUserQuestion(state, { id, answers })`. The global `allowFreeText` flag controls whether "Other" / typed answers are allowed.
 - **MCP + LangChain tools** – any object satisfying the minimal tool interface works; LangChain’s `Tool` implementations plug in directly.
 - **Vision input** – message parts accept base64 or URL images for multimodal requests.
@@ -316,6 +319,7 @@ Examples live under `examples/` with per-folder READMEs. Build the package first
 | `rewrite-summary/` | Continue conversations after summaries are injected. |
 | `ask-user/` | Built-in `ask_user_question` tool, structured multi-choice prompt, resume with user's answer. |
 | `multi-agent/` | Delegating between agents via `asTool`. |
+| `sub-agents/` | Dynamic decomposition: `delegate_to`, `spawn_subagent`, `spawn_subagents_parallel`. |
 | `handoff/` | Explicit runtime handoffs. |
 | `mcp-tavily/` | MCP remote tool discovery. |
 | `vision/` | Text + image input using LangChain’s OpenAI bindings. |
@@ -424,6 +428,18 @@ npm run build
 ```
 
 From the repo root you can run `npm run build` (delegates to the package) or use `npm run example:<name>` scripts defined in `package.json`.
+
+### Testing
+
+```sh
+npm test               # all mock-based tests (no API key)
+npm run test:coverage  # v8 coverage + enforced thresholds
+npm run test:critical  # critical-feature integration suite
+npm run test:real      # real OpenAI  (OPENAI_API_KEY)
+npm run test:matrix    # real-provider matrix (per-provider keys; skips without)
+```
+
+The mock suite is deterministic and key-free. The opt-in **provider matrix** (`tests/integration/providerMatrix.integration.test.ts`) runs the same contract — tool-calling, structured output, streaming — against any provider whose credentials are present (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, Azure/Bedrock/Vertex vars) and skips the rest. The public **eval harness** (`runSmartAgentEvalHarness`) scores behavioural quality across runtime profiles. See the [Testing & Evaluation guide](docs/guide/testing.md) and [`tests/README.md`](tests/README.md).
 
 ### Publishing
 

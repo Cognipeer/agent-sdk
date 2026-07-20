@@ -13,6 +13,7 @@ export type { TokenCounter } from "./utils/utilTokens.js";
 export * from "./contextTools.js";
 export * from "./smart/index.js";
 export * from "./smart/skills/index.js";
+export * from "./smart/subagents/index.js";
 export * from "./smart/eval.js";
 export * from "./smart/memory.js";
 export * from "./smart/runtimeConfig.js";
@@ -174,6 +175,9 @@ export type {
 	StreamEvent,
 	CancelledEvent,
 	HandoffEvent,
+	SubagentEvent,
+	DelegationEventStamp,
+	PromptHooks,
 	// Smart Agent config sub-types
 	SummarizationMode,
 	ContextPolicy,

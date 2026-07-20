@@ -21,6 +21,8 @@ import { extractMessageText } from "./utils/content.js";
 import { StructuredOutputManager } from "./structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "./structuredOutput/resolver.js";
 import type { StructuredOutputError } from "./structuredOutput/types.js";
+import { seedChildMessages } from "./smart/subagents/registry.js";
+import { selectPendingToolCalls } from "./utils/pendingToolCalls.js";
 
 function getLastAssistantMessage(messages: any[]): any | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -507,7 +509,12 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
 
       const lastMsg: any = state.messages[state.messages.length - 1];
-      const toolCalls: any[] = Array.isArray(lastMsg?.tool_calls) ? lastMsg.tool_calls : [];
+      // Use the owning assistant turn's UNRESOLVED tool_calls, not literally the
+      // last message. On resume after a sub-agent human-input pause the last
+      // message can be a completed sibling tool result; reading its (absent)
+      // tool_calls would strand the paused delegating tool. selectPendingToolCalls
+      // is identical to lastMsg.tool_calls on the normal path.
+      const toolCalls: any[] = selectPendingToolCalls(state.messages);
       const toolCallCount = state.toolCallCount || 0;
 
       // Tool limit finalize gate
@@ -911,30 +918,33 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             };
           }
 
-          // Apply childContextPolicy when seeding the child agent.
-          let childMessages: any[];
-          switch (delegationPolicy.childContextPolicy) {
-            case "full":
-              childMessages = [...parentMessages, { role: "user", content: input } as any];
-              break;
-            case "scoped": {
-              // Last assistant message + last user task + the explicit delegation input.
-              const systemPrefix = parentMessages[0]?.role === "system" ? [parentMessages[0]] : [];
-              const lastUser = [...parentMessages].reverse().find((m) => m?.role === "user");
-              childMessages = [
-                ...systemPrefix,
-                ...(lastUser ? [lastUser] : []),
-                { role: "user", content: input } as any,
-              ];
-              break;
-            }
-            case "minimal":
-            default:
-              childMessages = [{ role: "user", content: input } as any];
-          }
+          // Apply childContextPolicy when seeding the child agent (shared with
+          // the sub-agent primitive via seedChildMessages).
+          const childMessages = seedChildMessages(
+            delegationPolicy.childContextPolicy as any,
+            parentMessages as any,
+            input,
+          );
 
           const childCtx = { __delegationDepth: currentDepth + 1 };
-          const res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any);
+          // Forward the parent's event/streaming/cancellation wiring so a
+          // delegated child surfaces its progress to the host (previously the
+          // child ran "dark"). Events are stamped with the child's name.
+          const childConfig = {
+            onEvent: parentCtx.__onEvent
+              ? (e: any) => {
+                  if (e?.type === "finalAnswer" || e?.type === "metadata") return;
+                  try { parentCtx.__onEvent({ ...e, delegatedTo: opts.name }); } catch { /* ignore */ }
+                }
+              : undefined,
+            onProgress: parentCtx.__onProgress,
+            onStream: parentCtx.__streaming && parentCtx.__onStream
+              ? (chunk: any) => { if (!chunk?.isFinal) parentCtx.__onStream(chunk); }
+              : undefined,
+            stream: Boolean(parentCtx.__streaming),
+            cancellationToken: parentCtx.__cancellationToken ?? parentCtx.__abortSignal,
+          };
+          const res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any, childConfig as any);
           return {
             content: res.content,
             output: res.output,

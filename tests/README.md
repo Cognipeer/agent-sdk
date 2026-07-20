@@ -4,46 +4,55 @@ Bu dizin, `@cognipeer/agent-sdk` için kapsamlı test yapısını içerir.
 
 ## Test Yapısı
 
+> Aşağıdaki ağaç temsilîdir (tam envanter değil). Co-located unit testler `src/**/*.test.ts` altında da bulunur (örn. `src/smart/subagents/registry.test.ts`).
+
 ```
 tests/
 ├── setup/                    # Test altyapısı ve yardımcı araçlar
-│   ├── mocks/               # Mock nesneler
-│   │   ├── mockModel.ts     # LLM model mock'u
-│   │   └── mockTools.ts     # Tool mock'ları koleksiyonu
-│   └── fixtures/            # Test verileri
-│       └── states.ts        # State factory fonksiyonları
-├── unit/                    # Unit testler
-│   ├── tool.test.ts         # createTool testleri
-│   ├── prompts.test.ts      # buildSystemPrompt testleri
-│   ├── utils/               # Utility testleri
-│   │   ├── stateSnapshot.test.ts
-│   │   ├── tokenManager.test.ts
-│   │   └── toolApprovals.test.ts
-│   ├── nodes/               # Node testleri
-│   │   ├── resolver.test.ts
-│   │   └── toolLimitFinalize.test.ts
-│   └── guardrails/          # Guardrail testleri
-│       └── engine.test.ts
-└── integration/             # Integration testler
-    ├── agent.integration.test.ts      # createAgent testleri
-    ├── smartAgent.integration.test.ts # createSmartAgent testleri
-    └── pauseResume.integration.test.ts # Pause/Resume testleri
+│   ├── mocks/                # mockModel.ts, mockTools.ts
+│   └── fixtures/             # states.ts (state factory fonksiyonları)
+├── unit/                     # Unit testler (mock model — hızlı, CI)
+│   ├── tool.test.ts · prompts.test.ts · parallelToolExecution.test.ts
+│   ├── delegation.test.ts            # asTool delegasyon guard'ları
+│   ├── subagents.test.ts             # delegate_to / spawn / parallel + nested HITL
+│   ├── subagentsIntersections.test.ts# sub-agent × structured-output/guardrail/borrowed-tool
+│   ├── subagentsResilience.test.ts   # snapshot round-trip, depth/cancel/fan-out hata izolasyonu
+│   ├── utils/                        # stateSnapshot, toolApprovals, ...
+│   ├── nodes/                        # resolver, toolLimitFinalize
+│   ├── providers/                    # promptCaching, providers, ...
+│   └── guardrails/                   # engine
+└── integration/              # Integration testler
+    ├── agent.integration.test.ts          # createAgent
+    ├── smartAgent.integration.test.ts     # createSmartAgent
+    ├── pauseResume.integration.test.ts    # pause/resume
+    ├── askUserQuestion.integration.test.ts# ask-user
+    ├── evalHarness.integration.test.ts    # eval harness regression (scripted, key gerekmez)
+    └── providerMatrix.integration.test.ts # gerçek-provider matrisi (OPT-IN, env key ile)
 ```
 
 ## Komutlar
 
 ```bash
-# Tüm testleri çalıştır
+# Tüm testleri çalıştır (mock — API key gerekmez)
 npm test
 
-# Watch modunda testleri çalıştır
+# Watch modunda
 npm run test:watch
 
-# Coverage raporu ile testleri çalıştır
+# Coverage raporu ile (eşikleri uygular)
 npm run test:coverage
 
-# Vitest UI ile testleri çalıştır
+# Vitest UI
 npm run test:ui
+
+# Sadece kritik özellik integration paketi
+npm run test:critical
+
+# Gerçek OpenAI ile (OPENAI_API_KEY gerekli)
+OPENAI_API_KEY=sk-... npm run test:real
+
+# Gerçek-provider matrisi (ilgili env key'ler varsa o provider çalışır)
+OPENAI_API_KEY=... ANTHROPIC_API_KEY=... npm run test:matrix
 ```
 
 ## Mock Kullanımı
@@ -170,15 +179,35 @@ const cleanState = {
 const snapshot = agent.snapshot(cleanState);
 ```
 
+## Gerçek-Provider Matrisi (opt-in)
+
+`tests/integration/providerMatrix.integration.test.ts` her provider için aynı sözleşmeyi doğrular: native tool-calling, structured output ve token streaming. Mock'ların kanıtlayamadığı çapraz-provider davranışı buradan gelir. **İlgili env key yoksa o provider bloğu `describe.skip` olur** — CI'da key olmadan no-op'tur.
+
+| Provider | Gerekli env değişkenleri |
+|---|---|
+| openai | `OPENAI_API_KEY` (`OPENAI_MODEL` ops.) |
+| anthropic | `ANTHROPIC_API_KEY` (`ANTHROPIC_MODEL` ops.) |
+| azure | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` |
+| bedrock | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (`AWS_SESSION_TOKEN`, `BEDROCK_MODEL` ops.) |
+| vertex | `GOOGLE_CLOUD_PROJECT` + (`GOOGLE_VERTEX_ACCESS_TOKEN` veya `GOOGLE_SERVICE_ACCOUNT_JSON`) |
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... npm run test:matrix   # sadece anthropic bloğu çalışır
+```
+
+## Eval Harness Regression
+
+`tests/integration/evalHarness.integration.test.ts`, public `runSmartAgentEvalHarness(...)` API'sini **scripted (deterministik) model** ile koşar; recall / obsolete-drop / trajectory / aggregate-score matematiği runtime değiştikçe bozulmasın diye. Gerçek model gerektirmez, CI'da çalışır. Davranışsal kalite ölçümü için aynı harness'i gerçek bir modelle de besleyebilirsiniz (bkz. [Testing & Evaluation guide](../docs/guide/testing.md)).
+
 ## Coverage
 
-Mevcut coverage hedefleri:
-- Lines: 30%
-- Functions: 30%
-- Branches: 20%
-- Statements: 30%
+Mevcut coverage eşikleri (`vitest.config.ts`), aktüel değerlerin (~stmts %72, lines %75, funcs %79, branch %60) ~4-5 puan altında — gerçek bir taban uygular ama kırılgan değildir:
+- Statements: 68%
+- Lines: 70%
+- Functions: 75%
+- Branches: 56%
 
-Bu değerler başlangıç için düşük tutulmuştur. Test coverage arttıkça bu değerler yükseltilebilir.
+`src/adapters`, `src/guardrails`, `src/utils/content`, `src/utils/traceSections` ve provider HTTP yolları (`tests/unit/providers/providerHttp.test.ts` — mock `fetch` ile `complete`/`completeStream`/hata + SSE parser + adapter köprüsü) artık testli. Kalan headroom çoğunlukla **provider streaming/request-build** yollarında (her provider'ın `buildRequestBody`'si, Vertex/Bedrock `completeStream`) — bunlar testlendikçe eşikler tekrar yükseltilmeli.
 
 ## Katkıda Bulunma
 

@@ -24,3 +24,11 @@ export {
   createSkillTools,
   type SkillToolDeps,
 } from "./skillTools.js";
+export {
+  loadSkillsFromDisk,
+  parseSkillFrontmatter,
+  type SkillFs,
+  type SkillExecutionContext,
+  type LoadSkillsOptions,
+  type SkillFrontmatter,
+} from "./markdownLoader.js";
