@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0]
+## [0.8.1]
 
 ### Changed (BREAKING)
 - **Default runtime-profile values modernized for frontier models.** All four built-in profiles (`fast`, `balanced`, `deep`, `research`) had their numeric defaults rescaled for 2026-era models (Claude 4.x, GPT-4o, Gemini 2.x). The previous defaults were tuned for 8k–16k context windows and now leave too much headroom unused. Headline changes per profile:

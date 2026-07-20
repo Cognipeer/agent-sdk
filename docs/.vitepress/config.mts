@@ -15,7 +15,7 @@ export default defineConfig({
       { text: 'API Reference', link: '/api/agent' },
       { text: 'Examples', link: '/examples/' },
       {
-        text: 'v0.8.0',
+        text: 'v0.8.1',
         items: [
           { text: 'Changelog', link: '/changelog' },
           { text: 'Contributing', link: '/contributing' },
