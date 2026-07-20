@@ -128,3 +128,58 @@ All correctness checks passed: YES.
   what a real duplicate-call situation looks like in practice (e.g. two
   independent user turns that happen to need the same lookup).
 
+## True branch-vs-branch variant (real pre-ContextPilot commit vs real feature/context-pilot commit)
+
+Every demo above compares the **same checked-out code** with
+`contextPilot.enabled` toggled on/off — a valid way to isolate the feature's
+effect, since `enabled: false` short-circuits every ContextPilot code path at
+the very top of `compressToolOutput()`. But it isn't literally running the
+code as it existed *before* this feature branch was written.
+
+`branch-real-comparison.ts` closes that gap: it dynamically imports **two
+separately built SDK versions** —
+
+- the real pre-ContextPilot code, built from the actual git commit where
+  `feature/context-pilot` diverged from `main` (found via
+  `git merge-base feature/context-pilot main`) — no `contextPilot` option
+  exists in that build at all, no CCR store, no dedup tracker, no
+  format-specific compressors;
+- the current `feature/context-pilot` branch, with `contextPilot: { enabled: true }`.
+
+Both runs use the exact same real model, same tool data, same prompts — the
+only variable is which actual commit's compiled SDK is executing.
+
+**One-time setup** (creates a sibling git worktree + builds it):
+
+```bash
+cd agent-sdk
+git worktree add --detach ../agent-sdk-baseline "$(git merge-base feature/context-pilot main)"
+cd ../agent-sdk-baseline && npm install && npm run build
+```
+
+**Run:**
+
+```bash
+npm run example:context-pilot-branch-comparison
+```
+
+Sample real run:
+
+```
+Phase       Scenario                                   Prompt tok (BEFORE)  Prompt tok (AFTER)  Reduction %  Follow-up (BEFORE)  Follow-up (AFTER)  Latency BEFORE (ms)  Latency AFTER (ms)
+Faz 1 + 3   Catalog lookup (50 items)                  1798                  1053                41%          -                    -                   4662                  4154
+Faz 2 + 6   Search + full-list follow-up (45 items)     1550                  1109                28%          1304                 2867                11944                 11445
+Faz 4       diff + log + grep investigation             4339                  2567                41%          -                    -                   8038                  9505
+Faz 5       Repeat lookup_order across 2 invokes        1605                  1146                29%          1605                 833                 8569                  8703
+Faz 7       diff + grep + excluded raw_status           2240                  1550                31%          -                    3813                6493                  16965
+
+Overall real prompt-token reduction, real pre-ContextPilot commit vs real feature/context-pilot commit: 36% (11532 -> 7425 tokens).
+All correctness checks passed: YES.
+```
+
+This **36%** reduction (real BEFORE-commit vs real AFTER-commit) closely
+matches the **35%** reduction from the config-toggle version above — the two
+independent measurement methods agree, which cross-validates the result: the
+token savings are a real effect of the ContextPilot feature itself, not an
+artifact of how the comparison was constructed.
+
