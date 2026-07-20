@@ -37,6 +37,7 @@ export default defineConfig({
           text: 'Features',
           items: [
             { text: 'Runtime Profiles', link: '/guide/runtime-profiles' },
+            { text: 'ContextPilot', link: '/guide/context-pilot' },
             { text: 'Planning for Autonomous Agents', link: '/guide/planning' },
             { text: 'Summarization & Context', link: '/guide/summarization' },
             { text: 'Skills & Progressive Disclosure', link: '/guide/skills' },
