@@ -71,3 +71,60 @@ WITH ContextPilot                 6316            2785           91             
   timestamp — because the log compressor always keeps ERROR/WARN lines
   regardless of the length budget.
 
+## Full real-model benchmark (all 7 Faz phases, real API keys)
+
+`full-real-benchmark.ts` covers all 7 ContextPilot phases in one run, using 5
+representative real-model scenarios (not a literal re-run of all 31 unit
+tests — pure-algorithm edge cases like BM25 scoring math or CCR TTL/eviction
+timing are caller-independent and don't need real-model re-verification; this
+benchmark instead re-validates every *caller-visible* behavior end-to-end
+against a real model):
+
+| Scenario | Phases covered |
+| --- | --- |
+| 1. `search_parts` exact-match lookup, custom JSON `targetRatio` | Faz 1 (relevance scoring) + Faz 3 (compression config) |
+| 2. `search_tickets`, then a fresh follow-up turn demanding the full unfiltered list | Faz 2 (CCR store) + Faz 6 (`get_tool_response` recovery) |
+| 3. `get_diff` + `search_logs` + `grep_codebase` root-cause investigation | Faz 4 (format-specific diff/log/grep compressors) |
+| 4. `lookup_order`, then a **fresh** follow-up turn asking the same question again | Faz 5 (cross-turn dedup + cache-alignment warning) |
+| 5. `get_diff` + `grep_codebase` + excluded `raw_status` tool, `runtimeProfile: "deep"` | Faz 7 (grand integration: exclude-list + recovery + profile scaling) |
+
+Each scenario runs twice (`contextPilot.enabled: false` vs `true`) against
+the real model, with real prompt-token counts read from
+`result.state.usage.totals`. Scenarios 2, 4 and 5 make a **second** real
+invoke (sharing `ctx`/`toolHistory` with the first) to exercise cross-turn
+recovery/dedup — that follow-up's token cost is reported in its own column so
+it doesn't unfairly inflate the "on" side of the primary reduction number
+(baseline only ever needs 1 invoke, since there's nothing to recover/dedup).
+
+```bash
+npm run example:context-pilot-full-benchmark
+```
+
+This makes ~50-60 real API calls (higher cost + latency than the other two
+demos — expect it to take a few minutes). Sample real run:
+
+```
+Phase       Scenario                                            Prompt tok (off)  Prompt tok (on)  Reduction %  Follow-up (on only)  Latency off (ms)  Latency on (ms)
+Faz 1 + 3   Relevance scoring + custom JSON targetRatio          1798              1053             41%          -                     6149              4577
+Faz 2 + 6   CCR store + real get_tool_response recovery          1550              1109             28%          2891                  4794              12864
+Faz 4       diff + log + grep format-specific compressors        4339              2567             41%          -                     8585              13429
+Faz 5       Cross-turn dedup + cache-alignment warning           1697              1238             27%          922                   7566              10243
+Faz 7       Grand integration: exclude-list + profile scaling    2240              1550             31%          3795                  6106              12328
+
+Overall real prompt-token reduction across all 5 phases: 35% (11624 -> 7517 tokens).
+All correctness checks passed: YES.
+```
+
+- **35% overall real prompt-token reduction** across all 7 Faz phases, using
+  only real API calls — no scripted/fake model anywhere in this file.
+- **All correctness checks passed**, including the two that are easy to get
+  wrong with a real model: cross-turn dedup only has something to catch if
+  the model genuinely re-calls the tool, and real models will happily answer
+  from their own conversational memory instead of re-invoking a tool if the
+  previous turn's transcript is replayed to them. Scenario 4 works around
+  this by giving the follow-up turn a **fresh** conversation (no assistant
+  memory of the previous answer, only `ctx`/`toolHistory` shared) so the
+  model has no choice but to call `lookup_order` again — which is exactly
+  what a real duplicate-call situation looks like in practice (e.g. two
+  independent user turns that happen to need the same lookup).
+
