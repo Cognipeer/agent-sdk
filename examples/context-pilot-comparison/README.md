@@ -183,3 +183,81 @@ independent measurement methods agree, which cross-validates the result: the
 token savings are a real effect of the ContextPilot feature itself, not an
 artifact of how the comparison was constructed.
 
+## Heavy / research-style scenarios (multi-tool investigation + long session)
+
+Uses the same dual-SDK-import (real BEFORE commit vs real AFTER branch)
+methodology as `branch-real-comparison.ts`, but with two intentionally
+heavier, more realistic scenarios:
+
+- **Scenario 6 — incident investigation (7 tools, single conversation):**
+  the model is asked to investigate an intermittent payments outage using
+  every available tool (`search_logs`, `search_metrics`, `get_pool_diff`,
+  `get_config_diff`, `grep_codebase`, `search_docs`, `search_tickets`) and
+  write a full incident report. Data is deliberately noisy/large: 250 lines
+  of logs, 60 metric samples (1 anomalous spike), a real diff + an unrelated
+  red-herring diff, a 45-line grep result, a ~90-line runbook (with the fix
+  buried in it), and 40 support tickets (1 relevant). A follow-up turn then
+  asks for the *exact* total metric-sample count to test compression/dedup
+  recovery under an aggregate/count-style query.
+- **Scenario 7 — long 4-turn session:** 4 sequential turns (KB search,
+  account lookup, billing history, then a repeat KB search + full-session
+  summary), replaying the growing conversation each turn, measuring
+  **cumulative** prompt tokens per turn to show the compounding effect of
+  ContextPilot across a long session.
+
+**Run:**
+
+```bash
+npm run example:context-pilot-heavy-comparison
+```
+
+Sample real run (Scenario 6):
+
+```
+Prompt tok (BEFORE) 22084 -> (AFTER) 11558   (48% reduction)
+Follow-up turn       (BEFORE) 3107 -> (AFTER) 1172
+Recovery turn        (BEFORE) 2604 -> (AFTER) 3856
+All correctness checks passed: YES.
+```
+
+Sample real run (Scenario 7, per turn):
+
+```
+Turn 1: 2532 -> 1773 (30%)
+Turn 2: 2314 -> 1704 (26%)
+Turn 3: 4977 -> 3759 (24%)
+Turn 4: 6890 -> 8019 (-16%, AFTER worse this run)
+Cumulative: 16713 -> 15255 (9% reduction this run)
+```
+
+**Two honest, non-obvious findings from this round of testing** (not bugs —
+both were verified via isolated repro scripts and root-caused before being
+accepted as real, expected behavior):
+
+1. **`get_tool_response` is only available once a recovery marker (e.g.
+   `DUPLICATE_TOOL_RESPONSE`, `ARCHIVED_TOOL_RESPONSE`) is already present in
+   the *input* messages at invoke start** (`hasToolResponseRecoveryReference`
+   in `contextTools.ts`, gated in `smart/index.ts`'s `syncRuntimeTools`). If a
+   duplicate is discovered *during* the same turn (e.g. the model repeats a
+   tool call and immediately gets a dedup pointer back), the recovery tool is
+   correctly **not yet injected for that turn** — the model can only recover
+   the data on a **subsequent** turn, once the marker is visible in history.
+   Scenario 6 verified this directly: turn 2 (same-turn) correctly reports
+   the recovery tool as unavailable; turn 3 (marker now in history) 
+   successfully recovers the exact count (60).
+2. **Scenario 7's turn-4 compounding result is not perfectly stable run to
+   run.** Most runs show healthy reductions across all 4 turns (one run:
+   30/27/25/35%, cumulative 30%; another: 30/65/32/40%, cumulative 43%), but
+   at least one run showed turn 4 costing *more* tokens for AFTER than
+   BEFORE (-16%), driven by real, non-deterministic model behavior (whether
+   the model chooses to re-issue the `search_kb` call in the final turn) —
+   when it does, that extra tool round-trip plus the now-injected
+   `get_tool_response` tool schema add real prompt-token overhead on top of
+   an already-large turn-4 history. This is flagged here rather than
+   glossed over: ContextPilot's savings are consistently strong in
+   aggregate/early turns, but the *final* turn of a long compounding session
+   can occasionally see reduced or negative savings depending on real model
+   behavior, and this is worth keeping in mind rather than treating the
+   reduction percentage as a hard guarantee on every single turn.
+
+

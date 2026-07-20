@@ -10,6 +10,7 @@
     "example:context-pilot-real-comparison": "tsx context-pilot-comparison/real-scenario-comparison.ts",
     "example:context-pilot-full-benchmark": "tsx context-pilot-comparison/full-real-benchmark.ts",
     "example:context-pilot-branch-comparison": "tsx context-pilot-comparison/branch-real-comparison.ts",
+    "example:context-pilot-heavy-comparison": "tsx context-pilot-comparison/heavy-scenarios-comparison.ts",
     "example:guardrails": "tsx guardrails/guardrails.ts",
     "example:handoff": "tsx handoff/handoff.ts",
     "example:mcp-tavily": "tsx mcp-tavily/mcp_tavily.ts",
