@@ -10,6 +10,7 @@ export type ContextToolsStateRef = {
   planVersion?: number;
   adherenceScore?: number;
   messages?: Array<{ role?: string; content?: unknown }>;
+  ctx?: Record<string, any>;
 };
 
 const TOOL_RESPONSE_RECOVERY_MARKERS = [
@@ -355,6 +356,17 @@ export function createGetToolResponseTool(stateRef: ContextToolsStateRef) {
       }
       if (execution) {
         return execution.rawOutput || execution.output;
+      }
+      // Fallback: ContextPilot's CCR (Compress-Cache-Retrieve) store keeps the
+      // true original of any value it compressed, addressable by the short
+      // hash embedded in the compression marker (e.g. jsonCrusher/textCrusher
+      // output), independent of toolHistory retention.
+      const ccrStore = (stateRef.ctx as any)?.__contextPilot?.ccrStore;
+      if (ccrStore && typeof ccrStore.retrieve === "function") {
+        const recovered = ccrStore.retrieve(executionId);
+        if (recovered !== undefined) {
+          return recovered;
+        }
       }
       return "Execution not found. Please check the executionId.";
     }

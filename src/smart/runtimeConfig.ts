@@ -7,6 +7,7 @@ import type {
   RuntimeProfile,
   SmartAgentOptions,
 } from "../types.js";
+import type { ContextPilotConfig } from "./contextPilot/types.js";
 
 const DEFAULT_CRITICAL_TOOLS = ["response", "manage_todo_list", "get_tool_response"];
 
@@ -64,7 +65,42 @@ const BASE_DEFAULTS: ProfileConfig = {
     criticalTools: [...DEFAULT_CRITICAL_TOOLS],
     schemaValidation: "strict",
   },
+  contextPilot: {
+    // Opt-in: ContextPilot never alters tool output unless the caller
+    // explicitly passes `contextPilot: { enabled: true }` (or sets `enabled`
+    // via `customProfile`/profile overrides). This preserves backward
+    // compatibility for every existing `createSmartAgent(...)` call site.
+    enabled: false,
+    compression: {
+      json: { enabled: true, targetRatio: 0.35, minItems: 20 },
+      text: { enabled: true, targetRatio: 0.5, minChars: 1200 },
+      diff: { enabled: true, contextLines: 3 },
+      log: { enabled: true, maxLines: 60 },
+      search: { enabled: true, maxMatches: 30 },
+    },
+    ccr: { enabled: true, ttlMs: 30 * 60 * 1000, maxEntries: 500 },
+    cacheAlignment: { enabled: true, warnOnVolatilePrompt: true },
+    dedup: { enabled: true, minChars: 500 },
+    excludeTools: [],
+  },
 };
+
+function mergeContextPilot(base: ProfileConfig["contextPilot"], override?: ContextPilotConfig): ProfileConfig["contextPilot"] {
+  return {
+    enabled: override?.enabled ?? base.enabled,
+    compression: {
+      json: { ...base.compression.json, ...override?.compression?.json },
+      text: { ...base.compression.text, ...override?.compression?.text },
+      diff: { ...base.compression.diff, ...override?.compression?.diff },
+      log: { ...base.compression.log, ...override?.compression?.log },
+      search: { ...base.compression.search, ...override?.compression?.search },
+    },
+    ccr: { ...base.ccr, ...override?.ccr },
+    cacheAlignment: { ...base.cacheAlignment, ...override?.cacheAlignment },
+    dedup: { ...base.dedup, ...override?.dedup },
+    excludeTools: override?.excludeTools ?? base.excludeTools,
+  };
+}
 
 function buildProfile(overrides: Partial<{
   limits: Partial<ProfileConfig["limits"]>;
@@ -74,6 +110,7 @@ function buildProfile(overrides: Partial<{
   memory: Partial<ProfileConfig["memory"]>;
   delegation: Partial<ProfileConfig["delegation"]>;
   toolResponses: Partial<ProfileConfig["toolResponses"]>;
+  contextPilot: ContextPilotConfig;
 }>): ProfileConfig {
   return {
     limits: { ...BASE_DEFAULTS.limits, ...overrides.limits },
@@ -92,6 +129,7 @@ function buildProfile(overrides: Partial<{
       criticalTools: overrides.toolResponses?.criticalTools ?? [...DEFAULT_CRITICAL_TOOLS],
       toolResponseRetentionByTool: overrides.toolResponses?.toolResponseRetentionByTool ?? {},
     },
+    contextPilot: mergeContextPilot(BASE_DEFAULTS.contextPilot, overrides.contextPilot),
   };
 }
 
@@ -112,6 +150,12 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     memory: { readPolicy: "recent_only" },
     delegation: { mode: "off", maxDelegationDepth: 1, maxChildCalls: 2, maxParallelChild: 1, childContextPolicy: "minimal" },
     toolResponses: { maxToolResponseChars: 16_000, maxToolResponseTokens: 4_000 },
+    contextPilot: {
+      compression: {
+        json: { targetRatio: 0.25, minItems: 12 },
+        text: { targetRatio: 0.35, minChars: 800 },
+      },
+    },
   }),
 
   balanced: buildProfile({}),
@@ -131,6 +175,13 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     memory: { scope: "workspace" },
     delegation: { maxDelegationDepth: 3, maxChildCalls: 10, maxParallelChild: 4 },
     toolResponses: { maxToolResponseChars: 64_000, maxToolResponseTokens: 16_000 },
+    contextPilot: {
+      compression: {
+        json: { targetRatio: 0.5, minItems: 30 },
+        text: { targetRatio: 0.6, minChars: 1600 },
+      },
+      ccr: { ttlMs: 60 * 60 * 1000 },
+    },
   }),
 
   research: buildProfile({
@@ -148,6 +199,13 @@ export const DEFAULT_PROFILE_CONFIGS: Record<BuiltInRuntimeProfile, ProfileConfi
     memory: { scope: "workspace" },
     delegation: { mode: "automatic", maxDelegationDepth: 4, maxChildCalls: 16, maxParallelChild: 6, childContextPolicy: "full" },
     toolResponses: { maxToolResponseChars: 96_000, maxToolResponseTokens: 24_000 },
+    contextPilot: {
+      compression: {
+        json: { targetRatio: 0.6, minItems: 40 },
+        text: { targetRatio: 0.65, minChars: 2000 },
+      },
+      ccr: { ttlMs: 2 * 60 * 60 * 1000, maxEntries: 1000 },
+    },
   }),
 };
 
@@ -243,6 +301,7 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
       },
       criticalTools: opts.toolResponses?.criticalTools ?? customProfile.toolResponses?.criticalTools ?? preset.toolResponses.criticalTools,
     },
+    contextPilot: mergeContextPilot(mergeContextPilot(preset.contextPilot, customProfile.contextPilot), opts.contextPilot),
   };
 }
 

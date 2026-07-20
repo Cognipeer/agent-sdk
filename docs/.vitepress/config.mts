@@ -15,7 +15,7 @@ export default defineConfig({
       { text: 'API Reference', link: '/api/agent' },
       { text: 'Examples', link: '/examples/' },
       {
-        text: 'v0.8.0',
+        text: 'v0.8.1',
         items: [
           { text: 'Changelog', link: '/changelog' },
           { text: 'Contributing', link: '/contributing' },
@@ -37,6 +37,7 @@ export default defineConfig({
           text: 'Features',
           items: [
             { text: 'Runtime Profiles', link: '/guide/runtime-profiles' },
+            { text: 'ContextPilot', link: '/guide/context-pilot' },
             { text: 'Planning for Autonomous Agents', link: '/guide/planning' },
             { text: 'Summarization & Context', link: '/guide/summarization' },
             { text: 'Skills & Progressive Disclosure', link: '/guide/skills' },

@@ -21,6 +21,8 @@ import { extractMessageText } from "./utils/content.js";
 import { StructuredOutputManager } from "./structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "./structuredOutput/resolver.js";
 import type { StructuredOutputError } from "./structuredOutput/types.js";
+import { getResolvedSmartConfig } from "./smart/runtimeConfig.js";
+import { createContextPilotRuntime } from "./smart/contextPilot/index.js";
 import { seedChildMessages } from "./smart/subagents/registry.js";
 import { selectPendingToolCalls } from "./utils/pendingToolCalls.js";
 
@@ -746,6 +748,12 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     }
     if (config?.timeoutMs && config.timeoutMs > 0) {
       ctx.__deadline = Date.now() + config.timeoutMs;
+    }
+    if (!ctx.__contextPilot) {
+      // Fresh per-invoke CCR store + dedup tracker (never persisted across
+      // snapshot/resume boundaries — see DISALLOWED_CTX_KEYS in stateSnapshot.ts).
+      const resolvedForContextPilot = getResolvedSmartConfig(opts as any, runtime as any);
+      ctx.__contextPilot = createContextPilotRuntime(resolvedForContextPilot.contextPilot);
     }
 
     const runtimeWithInvokeLimits: AgentRuntimeConfig = config?.limits

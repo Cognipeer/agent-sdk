@@ -26,7 +26,15 @@ const fakeModel = {
 };
 
 const apiKey = process.env.OPENAI_API_KEY || "";
-const model = apiKey ? fromLangchainModel(new ChatOpenAI({ model: "gpt-4o-mini", apiKey })) : (fakeModel as any);
+const baseURL = process.env.OPENAI_BASE_URL;
+const modelName = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const model = apiKey
+  ? fromLangchainModel(new ChatOpenAI({
+      model: modelName,
+      apiKey,
+      ...(baseURL ? { configuration: { baseURL } } : {}),
+    }))
+  : (fakeModel as any);
 
 const agent = createAgent({
   model,

@@ -8,6 +8,7 @@ const DISALLOWED_CTX_KEYS = new Set([
   "__paused",
   "__cancellationToken",
   "__abortSignal",
+  "__contextPilot",
 ]);
 
 const clone = <T>(value: T): T => {

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.1] - 2026-07-20
 
+### Added
+- **ContextPilot: native, deterministic context/token optimization layer.** Runs at tool-execution time (no extra model calls) to shrink large tool outputs before they enter the transcript, while keeping every original payload recoverable. **Opt-in** — disabled unless `contextPilot: { enabled: true }` (or an equivalent override) is passed explicitly to `createSmartAgent` (see `docs/guide/context-pilot.md`). Highlights:
+  - **Format-aware compression.** BM25-lite relevance scoring drives `jsonCrusher` (large arrays), `textCrusher` (long plain text, sentence-level), plus dedicated `diffCompressor` (unified diffs), `logCompressor` (ERROR/WARN-prioritized log lines), and `searchCompressor` (grep/search matches with per-file diversity caps).
+  - **Reversible Compress-Cache-Retrieve (CCR) store.** Every dropped/compressed payload is kept in an in-memory, TTL/LRU-bounded store keyed by a content hash; the compressed output carries a retrieval note, and the model can call the built-in `get_tool_response` tool with that `executionId` to get the full original data back. If `ccr.enabled: false` or `ccr.maxEntries: 0`, drop-based compression (json/text/diff/log/search) is skipped entirely rather than emitting a `get_tool_response` marker that can never be resolved; cross-turn dedup is unaffected since its pointers reference transcript history, not the CCR store.
+  - **Cross-turn duplicate detection (`dedup`).** Byte-identical tool outputs seen again later in the same session are replaced with a lightweight `DUPLICATE_TOOL_RESPONSE` pointer instead of being resent in full.
+  - **Cache alignment warnings.** Optional scan of the system prompt for volatile substrings (UUIDs, ISO/Unix timestamps, JWTs, hex hashes, API keys) that would defeat provider-side prompt caching; emits a one-time `context_pilot_cache_alignment` metadata event instead of rewriting the prompt.
+  - **`excludeTools`** to opt specific tools out entirely.
+  - **Runtime-profile aware defaults**: `fast`/`balanced`/`deep`/`research` scale `compression.json`/`text` `targetRatio` and `ccr.ttlMs`/`maxEntries` alongside the existing limit/context defaults.
+  - Real-model A/B benchmarks (real pre-ContextPilot commit vs this branch, via `examples/context-pilot-comparison/`) measured **29–48% prompt-token reduction** across catalog lookups, repeat-query dedup, multi-tool incident investigations, and long multi-turn sessions, with no loss of answer correctness and full data recoverability confirmed via `get_tool_response`.
+
 ### Fixed
 - **Restore provider tool-result coalescing dropped in 0.8.0.** The published `0.8.0` was built from the feature branch before the Anthropic / Bedrock / Vertex tool-result coalescing (shipped in `0.7.3`) was merged, so `0.8.0` regressed it. `0.8.1` combines both: the skills / sub-agents / ask-user work **and** the coalescing of multiple `tool_result` blocks into a single user message per provider request. Upgrade `0.8.0 → 0.8.1` to regain correct strict tool_use/tool_result pairing on tool-heavy turns.
 
