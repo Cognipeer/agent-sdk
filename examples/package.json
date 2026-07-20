@@ -7,6 +7,7 @@
   "scripts": {
     "example:basic": "tsx basic/basic.ts",
     "example:context-pilot-comparison": "tsx context-pilot-comparison/context-pilot-comparison.ts",
+    "example:context-pilot-real-comparison": "tsx context-pilot-comparison/real-scenario-comparison.ts",
     "example:guardrails": "tsx guardrails/guardrails.ts",
     "example:handoff": "tsx handoff/handoff.ts",
     "example:mcp-tavily": "tsx mcp-tavily/mcp_tavily.ts",
@@ -28,6 +29,7 @@
     "@aws-sdk/credential-provider-node": "^3.972.5",
     "@cognipeer/agent-sdk": "file:..",
     "@langchain/community": "^1.1.11",
+    "dotenv": "^16.4.5",
     "@langchain/core": "^1.0.0"
   },
   "devDependencies": {

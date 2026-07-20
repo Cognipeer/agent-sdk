@@ -41,3 +41,33 @@ Data safety: despite compressing/deduping, the full original 40-item catalog was
 Numbers will vary slightly with catalog size/content, but the shape of the
 result (large token reduction + dedup + guaranteed recoverability) is
 deterministic given the fixed fake model and fixed catalog in this example.
+
+## Real-model variant (real API keys, real scenario)
+
+`real-scenario-comparison.ts` runs the same kind of A/B test but against a
+**real** OpenAI-compatible model, loading credentials from the repo root
+`.env` (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` — see
+`.env.example`). Nothing about the model's behavior is scripted: it's asked
+to investigate a production incident by searching a realistic ~180-line
+server log (deterministic content, so both runs see the exact same raw log)
+and report the root cause + timestamp.
+
+```bash
+npm run example:context-pilot-real-comparison
+```
+
+This makes real API calls (small cost + latency). Sample real run:
+
+```
+Scenario                          Log chars sent  Prompt tokens  Completion tokens  Total tokens  Latency (ms)  Found root cause
+WITHOUT ContextPilot (baseline)   12039           4719           94                 4813          9104          yes
+WITH ContextPilot                 6316            2785           91                 2876          5118          yes
+```
+
+- **41% fewer real prompt tokens** (4719 → 2785) for the identical prompt + tool.
+- **Latency dropped** (9104ms → 5118ms) since less input has to be processed.
+- **Correctness preserved**: both runs independently and correctly named the
+  exact root cause (payment-gateway connection-pool exhaustion) and the exact
+  timestamp — because the log compressor always keeps ERROR/WARN lines
+  regardless of the length budget.
+
