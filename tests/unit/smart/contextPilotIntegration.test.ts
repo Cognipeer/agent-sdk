@@ -1440,6 +1440,277 @@ describe("ContextPilot / deep relevance-scoring battery (Faz 1)", () => {
   });
 });
 
+describe("ContextPilot / relevance scoring edge cases (Faz 1)", () => {
+  it("applies BM25 document-length normalization: a short precise match outranks a long document diluting the same term matches", async () => {
+    // Both A and B contain the exact same query terms with the same raw term
+    // frequency (1 each) — the ONLY difference is document length. BM25's
+    // length-normalization term (the `b` parameter) must penalize the term
+    // match diluted across a much longer document.
+    const items = [
+      ...Array.from({ length: 20 }, (_, i) => ({ id: i, title: `unrelated filler product ${i}` })),
+      {
+        id: 20,
+        title:
+          "widget-99 mention buried amid many other completely unrelated padding words that inflate the overall document length substantially for this listing",
+      },
+      { id: 21, title: "widget-99" },
+    ];
+    expect(items.length).toBe(22);
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-length-norm-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query: "widget-99" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "widget-99" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found widget-99." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotLengthNormAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      // 22 items, ceil(22*0.04) = 1 -> forces a single strict winner between
+      // the short and long documents (fillers all score 0 and can't compete).
+      contextPilot: { compression: { json: { targetRatio: 0.04, minItems: 20 } } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Find widget-99." }] });
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    expect(entry.contextPilot?.droppedItems).toBe(21);
+
+    const keptTitles = (entry.output as Array<{ title?: string }>)
+      .map((item) => item?.title)
+      .filter((title): title is string => typeof title === "string");
+
+    expect(keptTitles).toEqual(["widget-99"]);
+  });
+
+  it("does not let keyword-stuffing on one term beat a distinct multi-term match (BM25 term-frequency saturation)", async () => {
+    // C repeats a single query term many times; D matches all 3 distinct
+    // query terms exactly once each. BM25's saturating term-frequency curve
+    // (governed by k1) means repetition has diminishing returns, so a
+    // genuine multi-term match should still win over single-term stuffing.
+    const items = [
+      ...Array.from({ length: 20 }, (_, i) => ({ id: i, title: `unrelated filler product ${i}` })),
+      { id: 20, title: "gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget gadget" },
+      { id: 21, title: "gadget widget premium special" },
+    ];
+    expect(items.length).toBe(22);
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-saturation-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          const query = "gadget widget premium";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query },
+              function: { name: "search_items", arguments: JSON.stringify({ query }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found gadget widget premium special." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotSaturationAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      // Same 1-slot forcing trick as the length-normalization test above.
+      contextPilot: { compression: { json: { targetRatio: 0.04, minItems: 20 } } },
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "Find gadget widget premium item." }] });
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+
+    const keptTitles = (entry.output as Array<{ title?: string }>)
+      .map((item) => item?.title)
+      .filter((title): title is string => typeof title === "string");
+
+    expect(keptTitles).toEqual(["gadget widget premium special"]);
+  });
+
+  it("falls back to original document order when the latest user message has no scorable (non-stopword) content", async () => {
+    // Every token in this query is filtered by the BM25 tokenizer's stopword
+    // list, so queryTokens.length === 0 and every item must score a neutral
+    // 1 — retention then depends entirely on the stable-sort tie-break,
+    // which must preserve original array order (first N survive).
+    const items = Array.from({ length: 20 }, (_, i) => ({ id: i, title: `catalog entry number ${i} with distinct content` }));
+
+    const searchItems = createTool({
+      name: "search_items",
+      description: "Search a large product catalog.",
+      schema: z.object({ query: z.string() }),
+      func: async () => items,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-empty-query-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search",
+              type: "function",
+              name: "search_items",
+              args: { query: "the of and it as this that" },
+              function: { name: "search_items", arguments: JSON.stringify({ query: "the of and it as this that" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Here is the catalog." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotEmptyQueryAgent",
+      model,
+      tools: [searchItems],
+      limits: { maxToolCalls: 4 },
+      // 20 items, minItems 20, targetRatio 0.25 -> keepCount = ceil(20*0.25) = 5.
+      contextPilot: { compression: { json: { targetRatio: 0.25, minItems: 20 } } },
+    });
+
+    // The latest user message itself is stopword-only, so extractLatestUserQuery
+    // must feed a query with zero scorable tokens into the relevance scorer.
+    const result = await agent.invoke({ messages: [{ role: "user", content: "The of and it as this that" }] });
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+
+    const keptIds = (entry.output as Array<{ id?: number }>)
+      .map((item) => item?.id)
+      .filter((id): id is number => typeof id === "number");
+
+    expect(keptIds).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
+describe("ContextPilot / text compressor relevance depth (Faz 1)", () => {
+  it("ranks sentences by degree of relevance, keeping the exact multi-term match over partial-overlap decoys", async () => {
+    // textCrusher always keeps a floor of at least 3 sentences (see
+    // `Math.max(3, ...)` in textCrusher.ts), so a clean ranking test needs
+    // *four* graded-relevance candidates (query has 4 non-stopword terms:
+    // database, connection, timeout, production) so the single weakest
+    // partial match gets pushed out of that floor by the other three.
+    const fillerSentences = Array.from(
+      { length: 30 },
+      (_, i) => `Routine observation number ${i} about ordinary warehouse shelving activity with no anomalies.`,
+    );
+    const target = "The production database connection experienced a timeout during a spike in nightly batch traffic."; // 4/4 terms
+    const decoyThreeTerms = "A database connection timeout was logged in the archived staging environment."; // 3/4 terms
+    const decoyTwoTerms = "The production server encountered a memory issue unrelated to any database concern."; // 2/4 terms
+    const decoyOneTerm = "The connection pool exhausted during a routine batch job overnight."; // 1/4 terms — weakest, must be dropped
+    fillerSentences.splice(8, 0, decoyOneTerm);
+    fillerSentences.splice(16, 0, decoyTwoTerms);
+    fillerSentences.splice(22, 0, decoyThreeTerms);
+    fillerSentences.splice(27, 0, target);
+    const longText = fillerSentences.join(" ");
+    expect(longText.length).toBeGreaterThan(1200);
+
+    const fetchReport = createTool({
+      name: "fetch_incident_report",
+      description: "Fetch a long free-text incident report.",
+      schema: z.object({ topic: z.string() }),
+      func: async () => longText,
+    });
+
+    let turn = 0;
+    const model: DeterministicModel = {
+      modelName: "deterministic-sentence-relevance-model",
+      bindTools() { return model; },
+      async invoke(): Promise<Message> {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_report",
+              type: "function",
+              name: "fetch_incident_report",
+              args: { topic: "database connection timeout" },
+              function: { name: "fetch_incident_report", arguments: JSON.stringify({ topic: "database connection timeout" }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Found the production database connection timeout." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotSentenceRelevanceAgent",
+      model,
+      tools: [fetchReport],
+      limits: { maxToolCalls: 4 },
+      // Force a tight keep ratio so only the very best-matching sentence(s) survive.
+      contextPilot: { compression: { text: { targetRatio: 0.06, minChars: 1200 } } },
+    });
+
+    const result = await agent.invoke({
+      messages: [{ role: "user", content: "database connection timeout in production" }],
+    });
+
+    const entry = (result.state?.toolHistory || [])[0];
+    expect(entry.contextPilot?.applied).toBe(true);
+    expect(entry.contextPilot?.compressorUsed).toBe("textCrusher");
+
+    const compressed = entry.output as string;
+    expect(compressed).toContain(target);
+    expect(compressed).toContain(decoyThreeTerms);
+    expect(compressed).toContain(decoyTwoTerms);
+    // The weakest (single-term) partial match must lose out to the other
+    // three stronger candidates under the fixed keep-floor of 3.
+    expect(compressed).not.toContain(decoyOneTerm);
+  });
+});
+
 describe("ContextPilot / full pipeline grand integration (Faz 7)", () => {
   it("wires relevance scoring, JSON+log compression, cross-turn dedup, cache alignment, and CCR recovery together across two invokes sharing one runtime", async () => {
     const searchItems = createTool({
@@ -1622,5 +1893,220 @@ describe("ContextPilot / full pipeline grand integration (Faz 7)", () => {
     const secondRuntime = (secondResult.state?.ctx as any)?.__contextPilot;
     expect(secondRuntime.ccrStore).toBe(firstRuntime.ccrStore);
     expect(secondRuntime.dedupTracker).toBe(firstRuntime.dedupTracker);
+  });
+
+  it("generalizes to diff+search compressors, an excludeTools bypass, and a non-default profile, still wiring dedup and CCR recovery correctly", async () => {
+    const contextLine = (n: number) => ` unchanged context line ${n} with extra padding text to increase overall length`;
+    const diffText = [
+      "diff --git a/service.ts b/service.ts",
+      "--- a/service.ts",
+      "+++ b/service.ts",
+      "@@ -1,42 +1,42 @@",
+      ...Array.from({ length: 40 }, (_, i) => contextLine(i)),
+      "-old implementation removed",
+      "+new implementation added",
+    ].join("\n");
+
+    const getDiff = createTool({
+      name: "get_diff",
+      description: "Return a large git diff.",
+      schema: z.object({ ref: z.string() }),
+      func: async () => diffText,
+    });
+
+    const matchLines = Array.from(
+      { length: 50 },
+      (_, i) => `src/module${i % 5}.ts:${i + 1}:matched symbol at occurrence ${i}`,
+    );
+    const searchText = matchLines.join("\n");
+
+    const grepSearch = createTool({
+      name: "grep_search",
+      description: "Return large grep-style search results.",
+      schema: z.object({ pattern: z.string() }),
+      func: async () => searchText,
+    });
+
+    // This tool is explicitly excluded — its output must survive both
+    // invokes completely untouched by ContextPilot (no compression, no
+    // dedup pointer, even though it's called twice with identical output).
+    const rawStatus = createTool({
+      name: "raw_status",
+      description: "Return a fixed raw status string, never to be touched by ContextPilot.",
+      schema: z.object({ probe: z.string() }),
+      func: async () => "STATUS_OK ".repeat(80).trim(),
+    });
+
+    type Phase =
+      | "call_diff"
+      | "call_search"
+      | "call_raw_status"
+      | "final_first_invoke"
+      | "call_search_duplicate"
+      | "call_raw_status_again"
+      | "call_recover"
+      | "final_second_invoke";
+    let phase: Phase = "call_diff";
+    let capturedDiffHash: string | undefined;
+    const model: DeterministicModel = {
+      modelName: "deterministic-grand-pipeline-v2-model",
+      bindTools() { return model; },
+      async invoke(messages: Message[]): Promise<Message> {
+        if (phase === "call_diff") {
+          phase = "call_search";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_diff_1",
+              type: "function",
+              name: "get_diff",
+              args: { ref: "HEAD" },
+              function: { name: "get_diff", arguments: JSON.stringify({ ref: "HEAD" }) },
+            }],
+          };
+        }
+        if (phase === "call_search") {
+          const diffToolMessage = messages.find((m: any) => m.role === "tool" && m.name === "get_diff");
+          capturedDiffHash = extractCcrHash((diffToolMessage as any)?.content);
+          expect(capturedDiffHash).toBeTruthy();
+          phase = "call_raw_status";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search_1",
+              type: "function",
+              name: "grep_search",
+              args: { pattern: "symbol" },
+              function: { name: "grep_search", arguments: JSON.stringify({ pattern: "symbol" }) },
+            }],
+          };
+        }
+        if (phase === "call_raw_status") {
+          phase = "final_first_invoke";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_raw_status_1",
+              type: "function",
+              name: "raw_status",
+              args: { probe: "1" },
+              function: { name: "raw_status", arguments: JSON.stringify({ probe: "1" }) },
+            }],
+          };
+        }
+        if (phase === "final_first_invoke") {
+          phase = "call_search_duplicate";
+          return { role: "assistant", content: "Reviewed the diff, the matches, and the status." };
+        }
+        if (phase === "call_search_duplicate") {
+          phase = "call_raw_status_again";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_search_2",
+              type: "function",
+              name: "grep_search",
+              args: { pattern: "symbol" },
+              function: { name: "grep_search", arguments: JSON.stringify({ pattern: "symbol" }) },
+            }],
+          };
+        }
+        if (phase === "call_raw_status_again") {
+          phase = "call_recover";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_raw_status_2",
+              type: "function",
+              name: "raw_status",
+              args: { probe: "2" },
+              function: { name: "raw_status", arguments: JSON.stringify({ probe: "2" }) },
+            }],
+          };
+        }
+        if (phase === "call_recover") {
+          expect(capturedDiffHash).toBeTruthy();
+          phase = "final_second_invoke";
+          return {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_recover_1",
+              type: "function",
+              name: "get_tool_response",
+              args: { executionId: capturedDiffHash },
+              function: { name: "get_tool_response", arguments: JSON.stringify({ executionId: capturedDiffHash }) },
+            }],
+          };
+        }
+        return { role: "assistant", content: "Session complete: recovered the full diff." };
+      },
+    };
+
+    const agent = createSmartAgent({
+      name: "ContextPilotGrandPipelineAgentV2",
+      model,
+      tools: [getDiff, grepSearch, rawStatus],
+      limits: { maxToolCalls: 8 },
+      runtimeProfile: "deep",
+      contextPilot: { excludeTools: ["raw_status"] },
+    });
+
+    const firstResult = await agent.invoke({
+      messages: [{ role: "user", content: "Review the diff, search for the symbol, then check status." }],
+    });
+
+    const firstToolHistory = firstResult.state?.toolHistory || [];
+    expect(firstToolHistory.length).toBe(3);
+
+    const diffEntry = firstToolHistory.find((t: any) => t.toolName === "get_diff");
+    expect(diffEntry?.contextPilot?.applied).toBe(true);
+    expect(diffEntry?.contextPilot?.compressorUsed).toBe("diffCompressor");
+
+    const searchEntry = firstToolHistory.find((t: any) => t.toolName === "grep_search");
+    expect(searchEntry?.contextPilot?.applied).toBe(true);
+    expect(searchEntry?.contextPilot?.compressorUsed).toBe("searchCompressor");
+
+    const rawStatusEntry = firstToolHistory.find((t: any) => t.toolName === "raw_status");
+    expect(rawStatusEntry?.contextPilot).toBeUndefined();
+    expect(rawStatusEntry.output as string).toBe("STATUS_OK ".repeat(80).trim());
+
+    // --- Second invoke: duplicate search (dedup) + excluded-tool repeat (no dedup) + CCR recovery ---
+    const secondResult = await agent.invoke({
+      messages: [
+        ...firstResult.messages,
+        { role: "user", content: "Search for the symbol again, recheck status, then retrieve the full diff." },
+      ],
+      toolHistory: firstResult.state?.toolHistory,
+      toolHistoryArchived: firstResult.state?.toolHistoryArchived,
+      ctx: firstResult.state?.ctx,
+    } as any);
+
+    const secondToolHistory = secondResult.state?.toolHistory || [];
+    expect(secondToolHistory.length).toBe(6);
+
+    const duplicateSearchEntry = secondToolHistory[3];
+    expect(duplicateSearchEntry.toolName).toBe("grep_search");
+    expect(duplicateSearchEntry.contextPilot?.applied).toBe(true);
+    expect(duplicateSearchEntry.contextPilot?.duplicateOf).toBe(searchEntry.executionId);
+    expect(duplicateSearchEntry.output as string).toContain("DUPLICATE_TOOL_RESPONSE");
+
+    // The excluded tool's repeated identical call must NOT be flagged as a
+    // duplicate, even though its output is byte-identical both times.
+    const secondRawStatusEntry = secondToolHistory[4];
+    expect(secondRawStatusEntry.toolName).toBe("raw_status");
+    expect(secondRawStatusEntry.contextPilot).toBeUndefined();
+    expect(secondRawStatusEntry.output as string).toBe("STATUS_OK ".repeat(80).trim());
+
+    const recoveryEntry = secondToolHistory[5];
+    expect(recoveryEntry.toolName).toBe("get_tool_response");
+    expect(recoveryEntry.args.executionId).toBe(diffEntry.contextPilot.ccrHash);
+    expect(recoveryEntry.output).toBe(diffEntry.rawOutput);
+    expect(secondResult.content).toContain("Session complete: recovered the full diff.");
   });
 });
