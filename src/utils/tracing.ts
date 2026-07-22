@@ -326,10 +326,56 @@ function buildConfigSnapshot(runtime: TraceSessionRuntime): TraceSessionConfigSn
   };
 }
 
-async function postTraceSession(
+// ─── Reliable HTTP transport for tracing sinks ──────────────────────────────
+//
+// Tracing posts used to be a single fetch with no timeout and no retry, so a
+// transient network blip / 5xx / rate-limit silently lost the session. These
+// helpers add a bounded retry with backoff + a per-attempt timeout. Retries are
+// safe because the ingest is idempotent: start/end upsert by sessionId and the
+// end payload carries the authoritative summary. Per-event posts opt OUT of
+// retry (retry:false) because the events endpoint increments counts without
+// dedup — the authoritative totals ride the retried `end`.
+
+const TRACE_HTTP_MAX_ATTEMPTS = 4;
+const TRACE_HTTP_ATTEMPT_TIMEOUT_MS = 8_000;
+const TRACE_HTTP_RETRYABLE_STATUS = new Set([404, 408, 425, 429, 500, 502, 503, 504]);
+const TRACE_HTTP_RETRY_BASE_MS = 250;
+const TRACE_HTTP_RETRY_MAX_MS = 4_000;
+
+class RetryableHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs?: number;
+  constructor(status: number, message: string, retryAfterMs?: number) {
+    super(message);
+    this.name = "RetryableHttpError";
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function traceSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function traceBackoffDelay(attempt: number, baseMs: number, maxMs: number): number {
+  const exp = Math.min(maxMs, baseMs * 2 ** (attempt - 1));
+  // Full jitter to avoid synchronized retries across many concurrent sessions.
+  return Math.floor(Math.random() * exp);
+}
+
+function parseRetryAfterMs(headerValue: string | null | undefined): number | undefined {
+  if (!headerValue) return undefined;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(headerValue);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+async function postJsonOnce(
   url: string,
   headers: Record<string, string> | undefined,
-  payload: TraceSessionFile
+  body: unknown
 ): Promise<void> {
   const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
   if (!fetchFn) {
@@ -341,39 +387,80 @@ async function postTraceSession(
     finalHeaders["content-type"] = "application/json";
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TRACE_HTTP_ATTEMPT_TIMEOUT_MS);
+  let response: Response;
   try {
-    const response = await fetchFn(url, {
+    response = await fetchFn(url, {
       method: "POST",
       headers: finalHeaders,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
+      signal: controller.signal,
     });
-
-    if (!response.ok) {
-      let responseText = "";
-      try {
-        responseText = await response.text();
-      } catch {
-        // ignore
-      }
-      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
-      const errorMsg = `${statusLine}${bodyPreview}`;
-      
-      // DEBUG error logging
-      if (typeof console !== "undefined" && typeof console.error === "function") {
-        console.error("[Tracing] Error posting to", url, ":", errorMsg);
-      }
-      
-      throw new Error(errorMsg);
-    }
   } catch (err) {
-    // Rethrow with error info
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (typeof console !== "undefined" && typeof console.error === "function") {
-      console.error("[Tracing] Failed to post:", errMsg);
-    }
-    throw err;
+    // Network error / timeout / abort — always transient.
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RetryableHttpError(0, `network error - ${message}`);
+  } finally {
+    clearTimeout(timer);
   }
+
+  if (response.ok) return;
+
+  let responseText = "";
+  try {
+    responseText = await response.text();
+  } catch {
+    // ignore
+  }
+  const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
+  const message = `${statusLine}${bodyPreview}`;
+
+  if (TRACE_HTTP_RETRYABLE_STATUS.has(response.status)) {
+    throw new RetryableHttpError(response.status, message, parseRetryAfterMs(response.headers.get("retry-after")));
+  }
+  // Non-retryable (400/401/403/413/…): retrying will not help.
+  throw new Error(message);
+}
+
+/**
+ * POST JSON to a tracing endpoint with bounded retry + backoff. Pass
+ * `{ retry: false }` for best-effort single-attempt delivery.
+ */
+async function postJsonReliable(
+  url: string,
+  headers: Record<string, string> | undefined,
+  body: unknown,
+  opts: { retry?: boolean } = {}
+): Promise<void> {
+  const maxAttempts = opts.retry === false ? 1 : TRACE_HTTP_MAX_ATTEMPTS;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await postJsonOnce(url, headers, body);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!(err instanceof RetryableHttpError) || attempt === maxAttempts) {
+        if (typeof console !== "undefined" && typeof console.error === "function") {
+          console.error("[Tracing] Failed to post:", err instanceof Error ? err.message : String(err));
+        }
+        throw err;
+      }
+      const wait = err.retryAfterMs ?? traceBackoffDelay(attempt, TRACE_HTTP_RETRY_BASE_MS, TRACE_HTTP_RETRY_MAX_MS);
+      await traceSleep(Math.min(wait, TRACE_HTTP_RETRY_MAX_MS));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function postTraceSession(
+  url: string,
+  headers: Record<string, string> | undefined,
+  payload: TraceSessionFile
+): Promise<void> {
+  await postJsonReliable(url, headers, payload, { retry: true });
 }
 
 /**
@@ -389,46 +476,16 @@ async function postStreamingSessionStart(
     config?: TraceSessionConfigSnapshot;
   }
 ): Promise<void> {
-  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
-  if (!fetchFn) {
-    throw new Error("HTTP sink requires fetch to be available in this runtime.");
-  }
-
   const url = `${baseUrl.replace(/\/$/, "")}/stream/${payload.sessionId}/start`;
-  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
-  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
-    finalHeaders["content-type"] = "application/json";
-  }
-
-  try {
-    const response = await fetchFn(url, {
-      method: "POST",
-      headers: finalHeaders,
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      let responseText = "";
-      try {
-        responseText = await response.text();
-      } catch {
-        // ignore
-      }
-      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
-      throw new Error(`${statusLine}${bodyPreview}`);
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (typeof console !== "undefined" && typeof console.error === "function") {
-      console.error("[Tracing] Failed to post session start:", errMsg);
-    }
-    throw err;
-  }
+  await postJsonReliable(url, headers, payload, { retry: true });
 }
 
 /**
- * POST a single event to the streaming endpoint
+ * POST a single event to the streaming endpoint. Best-effort, single attempt:
+ * the Console events endpoint increments totalEvents/eventCounts without dedup,
+ * so a retried event would inflate those counts. Authoritative token/summary
+ * totals are delivered (and overwritten) by the retried session `end`, so a
+ * dropped live event never corrupts the aggregates.
  */
 async function postStreamingEvent(
   baseUrl: string,
@@ -436,46 +493,13 @@ async function postStreamingEvent(
   sessionId: string,
   event: TraceEventRecord
 ): Promise<void> {
-  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
-  if (!fetchFn) {
-    throw new Error("HTTP sink requires fetch to be available in this runtime.");
-  }
-
   const url = `${baseUrl.replace(/\/$/, "")}/stream/${sessionId}/events`;
-  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
-  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
-    finalHeaders["content-type"] = "application/json";
-  }
-
-  try {
-    const response = await fetchFn(url, {
-      method: "POST",
-      headers: finalHeaders,
-      body: JSON.stringify({ event }),
-    });
-
-    if (!response.ok) {
-      let responseText = "";
-      try {
-        responseText = await response.text();
-      } catch {
-        // ignore
-      }
-      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
-      throw new Error(`${statusLine}${bodyPreview}`);
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (typeof console !== "undefined" && typeof console.error === "function") {
-      console.error("[Tracing] Failed to post streaming event:", errMsg);
-    }
-    throw err;
-  }
+  await postJsonReliable(url, headers, { event }, { retry: false });
 }
 
 /**
- * POST session end to the streaming endpoint
+ * POST session end to the streaming endpoint. This carries the authoritative
+ * session summary, so it retries.
  */
 async function postStreamingSessionEnd(
   baseUrl: string,
@@ -489,42 +513,8 @@ async function postStreamingSessionEnd(
     errors: Array<{ eventId: string; message: string; stack?: string; type?: string; timestamp?: string }>;
   }
 ): Promise<void> {
-  const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
-  if (!fetchFn) {
-    throw new Error("HTTP sink requires fetch to be available in this runtime.");
-  }
-
   const url = `${baseUrl.replace(/\/$/, "")}/stream/${payload.sessionId}/end`;
-  const finalHeaders = { ...(headers || {}) } as Record<string, string>;
-  if (!Object.keys(finalHeaders).some((key) => key.toLowerCase() === "content-type")) {
-    finalHeaders["content-type"] = "application/json";
-  }
-
-  try {
-    const response = await fetchFn(url, {
-      method: "POST",
-      headers: finalHeaders,
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      let responseText = "";
-      try {
-        responseText = await response.text();
-      } catch {
-        // ignore
-      }
-      const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-      const bodyPreview = responseText ? ` - ${responseText.slice(0, 200)}` : "";
-      throw new Error(`${statusLine}${bodyPreview}`);
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (typeof console !== "undefined" && typeof console.error === "function") {
-      console.error("[Tracing] Failed to post session end:", errMsg);
-    }
-    throw err;
-  }
+  await postJsonReliable(url, headers, payload, { retry: true });
 }
 
 // ─── OTLP/HTTP JSON Export ──────────────────────────────────────────────────
@@ -979,7 +969,10 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
   const cfg = withDefaults(opts.tracing);
   if (!cfg.enabled) return undefined;
 
-  const sessionId = generateSessionId();
+  // Prefer a caller-supplied session id (e.g. a task-run/chat id) so emitted
+  // traces correlate with the caller's own identifiers; fall back to a random id.
+  const providedSessionId = opts.tracing?.sessionId?.trim();
+  const sessionId = providedSessionId || generateSessionId();
   const traceId = generateTraceId();
   const rootSpanId = generateSpanId();
   const runtime: TraceSessionRuntime = {
@@ -987,6 +980,7 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
     traceId,
     rootSpanId,
     threadId: opts.tracing?.threadId,
+    configAgentName: opts.tracing?.agentName?.trim() || undefined,
     startedAt: Date.now(),
     resolvedConfig: cfg,
     events: [],
@@ -1022,14 +1016,17 @@ export async function startStreamingSession(
 
   const sink = session.resolvedConfig.sink;
   
-  // Build agent info
-  const agentInfo = agentRuntime ? {
-    name: agentRuntime.name || "unknown-agent",
-    version: agentRuntime.version,
-    model: getModelName(agentRuntime.model) || "unknown-model",
-    provider: getProviderName(agentRuntime.model),
+  // Build agent info. A caller-supplied agentName (TracingConfig.agentName)
+  // overrides the SmartAgent's own name so the same implementation can be
+  // reported under distinct logical names.
+  const resolvedAgentName = session.configAgentName || agentRuntime?.name || "unknown-agent";
+  const agentInfo = (agentRuntime || session.configAgentName) ? {
+    name: resolvedAgentName,
+    version: agentRuntime?.version,
+    model: getModelName(agentRuntime?.model) || "unknown-model",
+    provider: getProviderName(agentRuntime?.model),
   } : undefined;
-  
+
   session.agentInfo = agentInfo;
   
   const configSnapshot = buildConfigSnapshot(session);

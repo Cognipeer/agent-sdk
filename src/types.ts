@@ -183,6 +183,19 @@ export type TracingConfig = {
   logData?: boolean;
   sink?: TraceSinkConfig;
   threadId?: string;
+  /**
+   * Optional caller-supplied session id. When set, the trace session is keyed
+   * by this value instead of an auto-generated `sess_…` id, so the emitted
+   * traces can be correlated with the caller's own run/task/chat identifiers.
+   * When omitted, a random session id is generated (previous behavior).
+   */
+  sessionId?: string;
+  /**
+   * Optional display name for the agent that owns this trace session. Overrides
+   * the SmartAgent's own `name` in the emitted session/start payload — useful
+   * when the same agent implementation runs under several logical names.
+   */
+  agentName?: string;
 };
 
 // Alias for backward compatibility
@@ -857,6 +870,8 @@ export type TraceSessionRuntime = {
   threadId?: string;
   sessionStarted?: boolean;
   agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
+  /** Caller-supplied agent name override (from TracingConfig.agentName). */
+  configAgentName?: string;
   resolvedConfig: ResolvedTraceConfig;
   events: TraceEventRecord[];
   summary: TraceSessionSummary;

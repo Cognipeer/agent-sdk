@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-23
+
+### Added
+- **Tracing: caller-supplied `sessionId`** — `TracingConfig.sessionId` lets a
+  caller key the trace session by their own run/task/chat id instead of the
+  auto-generated `sess_…` id, so emitted traces correlate with the caller's
+  records. Falls back to a generated id when omitted.
+- **Tracing: `agentName` override** — `TracingConfig.agentName` overrides the
+  SmartAgent's own name in the emitted session/start payload.
+
+### Changed
+- **Tracing transport is now reliable.** The `cognipeer`/`http` streaming and
+  batched posts (`start`, `end`, full-session) retry transient failures
+  (network error, timeout, 404/408/425/429/5xx) with exponential backoff +
+  jitter, honor `Retry-After`, and apply a per-attempt timeout. Retries are
+  safe because the ingest is idempotent (start/end upsert by `sessionId`; the
+  `end` carries the authoritative summary). Per-event posts remain best-effort
+  single-attempt to avoid inflating dedup-less event counts. Previously a single
+  transient failure silently dropped the session.
+
 ## [0.8.1] - 2026-07-20
 
 ### Added
