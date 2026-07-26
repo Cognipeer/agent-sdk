@@ -14,7 +14,7 @@ import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
 import { resolveUserQuestionState } from "./utils/userQuestions.js";
-import { createAskUserQuestionTool } from "./humanLoop.js";
+import { createAskUserQuestionTool, ASK_USER_TOOL_NAME } from "./humanLoop.js";
 import { countMessagesTokens } from "./utils/utilTokens.js";
 import { isSyntheticSummaryMessage } from "./utils/syntheticMessages.js";
 import { extractMessageText } from "./utils/content.js";
@@ -123,7 +123,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   const askUserStateRef: any = askUserConfig
     ? { pendingUserQuestions: undefined, ctx: undefined, __onEvent: undefined, __currentToolCallId: undefined }
     : undefined;
-  if (askUserConfig && askUserStateRef) {
+  // Only attach it when the caller's tool list does not already carry one.
+  // createSmartAgent builds its own ask_user tool into the list it hands to this
+  // factory AND forwards `humanInTheLoop`, so attaching unconditionally left the
+  // base agent with two tools of the same name. That is invisible to `invoke()`
+  // (the smart layer rebuilds its tool set per call) but reaches the provider on
+  // `resume()`, where strict APIs reject it outright — Bedrock answers
+  // `The tool ask_user_question is already defined at toolConfig.tools.N`.
+  const hasTool = (name: string) => toolsBase.some((tool: any) => tool?.name === name);
+  if (askUserConfig && askUserStateRef && !hasTool(ASK_USER_TOOL_NAME)) {
     toolsBase.push(createAskUserQuestionTool(askUserStateRef, askUserConfig));
   }
 
@@ -136,7 +144,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const modelCapabilities = getModelCapabilities(opts.model);
     const responseTool = soManager.getResponseTool();
     // Hard guard: when model supports native structured output, never attach the fallback response tool.
-    if (responseTool && modelCapabilities.structuredOutput !== "native") {
+    // Same name guard as ask_user above: a caller that already built the finalize
+    // tool into its list must not end up with two of them on the wire.
+    if (responseTool && modelCapabilities.structuredOutput !== "native" && !hasTool((responseTool as any).name)) {
       toolsBase.push(responseTool);
     }
   }

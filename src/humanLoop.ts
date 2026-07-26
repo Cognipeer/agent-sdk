@@ -8,6 +8,13 @@ import type {
   HumanInTheLoopAskUserConfig,
 } from "./types.js";
 
+/**
+ * The built-in ask-user tool's name. Exported because more than one layer has to
+ * recognise it: `createSmartAgent` builds the tool into the list it hands to
+ * `createAgent`, which must then not attach a second one of its own.
+ */
+export const ASK_USER_TOOL_NAME = "ask_user_question";
+
 export type AskUserStateRef = {
   pendingUserQuestions?: PendingUserQuestion[];
   ctx?: Record<string, any>;
@@ -93,7 +100,7 @@ export function createAskUserQuestionTool(
   const questionSchema = buildQuestionSchema(allowFreeText);
 
   const askUser = createTool({
-    name: "ask_user_question",
+    name: ASK_USER_TOOL_NAME,
     description,
     schema: z
       .object({
@@ -116,7 +123,7 @@ export function createAskUserQuestionTool(
       const entry: PendingUserQuestion = {
         id: nanoid(),
         toolCallId,
-        toolName: "ask_user_question",
+        toolName: ASK_USER_TOOL_NAME,
         questions: questions as UserQuestionItem[],
         status: "pending",
         requestedAt: new Date().toISOString(),

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-07-26
+
+### Fixed
+- **`ask_user_question` was registered twice on a smart agent's base runtime**, which made
+  `resume()` fail against providers that validate tool configs. `createSmartAgent` builds the
+  ask-user tool into the tool list it hands to `createAgent` *and* forwards `humanInTheLoop`
+  alongside it, so the factory attached a second copy of the same tool. `invoke()` hid the
+  problem — the smart layer rebuilds a fresh tool set per call — but `smartAgent.resume` **is**
+  the base agent's resume, so the duplicated list went straight to the provider. The first turn
+  worked and *answering* the question blew up:
+
+  ```
+  Bedrock 400: The tool ask_user_question is already defined at toolConfig.tools.14
+  ```
+
+  OpenAI-family providers accept duplicate tool names, so this looked model-specific rather than
+  like an SDK bug. `createAgent` now attaches its built-ins (`ask_user_question`, and the
+  tool-based structured-output `response` finalizer) only when the caller's list does not already
+  carry a tool of that name.
+
+### Added
+- **`ASK_USER_TOOL_NAME`** is exported from the root, so callers that inspect or filter an
+  agent's tool surface do not have to hardcode the string.
+
 ## [0.8.3] - 2026-07-26
 
 ### Added

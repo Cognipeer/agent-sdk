@@ -23,7 +23,7 @@ export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { resolveUserQuestionState } from "./utils/userQuestions.js";
-export { createAskUserQuestionTool } from "./humanLoop.js";
+export { createAskUserQuestionTool, ASK_USER_TOOL_NAME } from "./humanLoop.js";
 export { fromLangchainTools } from "./adapters/langchain.js";
 export { resolveReasoning, validateReasoningConfig } from "./smart/reasoning.js";
 export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp } from "./utils/tracing.js";
