@@ -6,6 +6,7 @@ Skills are the public API for progressive capability disclosure in `createSmartA
 import {
   type Skill,
   type SkillPolicy,
+  type SkillDisclosure,
   DEFAULT_SKILL_POLICY,
   SMALL_TIER_SKILL_POLICY,
 } from "@cognipeer/agent-sdk";
@@ -67,6 +68,7 @@ type SkillPolicy = {
   maxBoundToolsPerSkill: number;
   maxBoundToolsTotal: number;
   modelTier?: "small" | "large";
+  disclosure?: "catalog" | "search";
 };
 ```
 
@@ -76,6 +78,7 @@ Policy controls how much capability the model can reveal during one invoke:
 - `maxBoundToolsPerSkill`: maximum tools bound from one `bind_skill_tools` request or one small skill open.
 - `maxBoundToolsTotal`: total skill-bound tool budget across the run.
 - `modelTier`: controls `minModelTier` filtering.
+- `disclosure`: how the model discovers the catalog. `"catalog"` (default) renders `<available_skills>` into the system prompt; `"search"` renders nothing and registers the `search_skills` tool instead, making prompt cost constant. See the [Skills guide](/skills/#discovery-catalog-or-search).
 
 Defaults:
 
@@ -107,8 +110,8 @@ const agent = createSmartAgent({
 When `skills` is non-empty, the smart runtime automatically:
 
 - filters skills by `isAvailable` and `skillPolicy.modelTier`
-- injects `<available_skills>` into the system prompt
-- registers `open_skill` and `bind_skill_tools`
+- injects `<available_skills>` into the system prompt (catalog disclosure only)
+- registers `open_skill` and `bind_skill_tools`, plus `search_skills` under search disclosure
 - rebuilds the live runtime tool set after tools are bound
 - keeps `get_tool_response` recovery variants from dropping bound skill tools
 
@@ -136,6 +139,29 @@ Behavior:
 - returns a ranked `toolIndex` for large skills
 - may bind `defaultBindNames` for large skills when no useful query is present
 
+### `search_skills`
+
+Registered only under `skillPolicy.disclosure === "search"`.
+
+Schema:
+
+```ts
+{
+  query?: string;
+  limit?: number;
+}
+```
+
+Behavior:
+
+- resolves availability and model-tier gating at call time, not at prompt time
+- ranks the catalog against `query` over key, title and header (see `searchSkills`)
+- returns `{ skills: [{ skillKey, title, header, alreadyOpen? }], total, hint }`
+- lists the head of the catalog when `query` is omitted, or when nothing matches literally (a lexical ranker cannot bridge languages; the model reading the headers can)
+- defaults `limit` to 10 and caps it at 25
+
+Under this mode its description is the only place the model learns that skills exist, so keep any `promptHooks.toolDescriptions` override explicit.
+
 ### `bind_skill_tools`
 
 Schema:
@@ -161,11 +187,13 @@ These helpers are exported for tests and advanced integrations:
 | Export | Purpose |
 |---|---|
 | `createSkillRegistryRef()` | Creates the per-invoke mutable registry used by the meta-tools. |
-| `createSkillTools(deps)` | Creates `open_skill` and `bind_skill_tools` against a registry. |
+| `createSkillTools(deps)` | Creates the meta-tools against a registry (`search_skills` included under search disclosure). |
 | `createOpenSkillTool(deps)` | Creates only the opener meta-tool. |
 | `createBindSkillToolsTool(deps)` | Creates only the binder meta-tool. |
+| `createSearchSkillsTool(deps)` | Creates only the search meta-tool. |
 | `resolveAvailableSkills(skills, opts)` | Applies availability and model-tier filtering. |
 | `buildSkillHeaderBlock(skills)` | Builds the `<available_skills>` system prompt block. |
+| `searchSkills(skills, query, limit)` | Pure, deterministic ranking of a catalog against a task description. |
 | `appendBoundTools(ref, tools, policy)` | Append-only, name-deduped registry mutation with total cap. |
 | `composeToolSets(input)` | Rebuilds tool arrays with and without `get_tool_response`. |
 | `canOpenSkill(ref, policy)` | Checks open/budget precedence before opening a distinct skill. |

@@ -2,6 +2,7 @@ export type {
   Skill,
   SkillToolHeader,
   SkillModelTier,
+  SkillDisclosure,
   SkillPolicy,
   SkillRegistryRef,
 } from "./types.js";
@@ -15,12 +16,14 @@ export {
   appendBoundTools,
   canOpenSkill,
   resolveAvailableSkills,
+  searchSkills,
   buildSkillHeaderBlock,
   dedupeToolsByName,
 } from "./registry.js";
 export {
   createOpenSkillTool,
   createBindSkillToolsTool,
+  createSearchSkillsTool,
   createSkillTools,
   type SkillToolDeps,
 } from "./skillTools.js";

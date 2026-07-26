@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-07-27
+
+### Added
+- **Search-based skill discovery — `skillPolicy.disclosure: "search"`.** Until now the only
+  way for a model to learn which skills exist was the `<available_skills>` block, which renders
+  every skill's header into the system prompt. That is the right trade for a small curated
+  catalog, but it makes prompt cost scale with the catalog: a workspace with 40 installed skills
+  pays 40 header lines on every turn of every conversation, almost all of them irrelevant to the
+  task at hand.
+
+  Under `disclosure: "search"` nothing is rendered into the prompt. The runtime registers a
+  `search_skills` tool instead, so discovery costs one tool description (constant) plus one tool
+  call when the model actually needs a capability:
+
+  ```ts
+  createSmartAgent({
+    model,
+    skills,
+    skillPolicy: { ...DEFAULT_SKILL_POLICY, disclosure: "search" },
+  });
+  ```
+
+  `search_skills({ query, limit? })` returns `{ skills: [{ skillKey, title, header }], total, hint }`,
+  ranked by the new exported `searchSkills()` — a pure, deterministic keyword/prefix matcher over
+  key, title and header (no embeddings, no I/O, Unicode-aware so non-ASCII catalogs rank correctly).
+  An omitted query lists the catalog, and so does a query that matches nothing — a lexical
+  ranker cannot bridge a Turkish question against an English-authored header, but the model
+  reading those headers can, so a miss hands it the catalog head rather than an empty result.
+  `open_skill`'s description and error text point at `search_skills` instead of the prompt block
+  in this mode.
+
+  Two behavioral notes: discovery is no longer guaranteed — a model that never calls
+  `search_skills` never learns skills exist, so the tool description carries that weight — and
+  `isAvailable` is now resolved inside the tool call rather than once per invoke, which means an
+  integration that connects mid-run shows up on the next search.
+
+  The default is unchanged (`"catalog"`), so existing agents behave exactly as before.
+
+  New exports: `SkillDisclosure`, `searchSkills`, `createSearchSkillsTool`.
+
 ## [0.8.4] - 2026-07-26
 
 ### Fixed

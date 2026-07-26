@@ -75,6 +75,75 @@ export async function resolveAvailableSkills(
   return out;
 }
 
+/** Word-granular, script-agnostic: `\p{L}` keeps Turkish/Cyrillic/CJK intact. */
+const WORD_SPLIT = /[^\p{L}\p{N}]+/u;
+/** Below this a term is noise ("to", "an") that would match half the catalog. */
+const MIN_TERM_LENGTH = 3;
+const FIELD_WEIGHTS = { key: 4, title: 3, header: 2 } as const;
+
+const wordsOf = (text: string): string[] =>
+  text.toLowerCase().split(WORD_SPLIT).filter((word) => word.length >= 2);
+
+/**
+ * Deliberately morphological rather than fuzzy: a shared 4-char prefix bridges
+ * "conversion" to a header that says "convert", while plain substring matching
+ * would let "to" hit "totals".
+ */
+const termHitsWord = (term: string, word: string): boolean =>
+  word === term ||
+  word.startsWith(term) ||
+  (word.length >= 3 && term.startsWith(word)) ||
+  (term.length >= 5 && word.length >= 5 && word.slice(0, 4) === term.slice(0, 4));
+
+/**
+ * Rank a catalog against a free-text task description. Pure, deterministic and
+ * dependency-free: no embeddings, no I/O, so it costs nothing and behaves the
+ * same on every run. Backs the `search_skills` tool.
+ *
+ * Skills covering MORE of the query rank first, and only then by field weight
+ * (key > title > header) — matching two of the user's words in a header beats
+ * matching one of them in a title. Ties keep catalog order so a repeated query
+ * always returns the same list.
+ *
+ * An empty (or all-noise) query is a browse request and returns the head of the
+ * catalog rather than nothing.
+ */
+export function searchSkills(skills: Skill[], query?: string, limit = 10): Skill[] {
+  const cap = Math.max(1, limit);
+  const normalized = (query || "").trim().toLowerCase();
+  const terms = [
+    ...new Set(normalized.split(WORD_SPLIT).filter((term) => term.length >= MIN_TERM_LENGTH)),
+  ];
+  if (terms.length === 0) return skills.slice(0, cap);
+
+  const scored = skills
+    .map((skill, index) => {
+      const fields = {
+        key: wordsOf(skill.key),
+        title: wordsOf(skill.title || ""),
+        header: wordsOf(skill.header || ""),
+      };
+      const exact = skill.key.toLowerCase() === normalized || (skill.title || "").toLowerCase() === normalized;
+      let score = exact ? 100 : 0;
+      let coverage = 0;
+      for (const term of terms) {
+        let hit = false;
+        for (const [field, weight] of Object.entries(FIELD_WEIGHTS)) {
+          if (fields[field as keyof typeof fields].some((word) => termHitsWord(term, word))) {
+            score += weight;
+            hit = true;
+          }
+        }
+        if (hit) coverage += 1;
+      }
+      return { skill, score, coverage, index };
+    })
+    .filter((entry) => entry.score > 0);
+
+  scored.sort((a, b) => b.coverage - a.coverage || b.score - a.score || a.index - b.index);
+  return scored.slice(0, cap).map((entry) => entry.skill);
+}
+
 /** The cheap header block the model always sees in its system prompt. */
 export function buildSkillHeaderBlock(skills: Skill[]): string {
   if (skills.length === 0) return "";

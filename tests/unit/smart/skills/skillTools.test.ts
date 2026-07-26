@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ToolInterface } from "../../../../src/types.js";
 import { composeToolSets } from "../../../../src/smart/skills/registry.js";
-import { createBindSkillToolsTool, createOpenSkillTool } from "../../../../src/smart/skills/skillTools.js";
+import {
+  createBindSkillToolsTool,
+  createOpenSkillTool,
+  createSearchSkillsTool,
+  createSkillTools,
+} from "../../../../src/smart/skills/skillTools.js";
 import {
   createSkillRegistryRef,
   type Skill,
@@ -197,5 +202,116 @@ describe("end-to-end: bound skill tools survive composeToolSets (the identity-sw
     ]);
     // fresh references => the runtime's === short-circuit will see a change
     expect(after.toolsWithoutRecovery).not.toBe(before.toolsWithoutRecovery);
+  });
+});
+
+describe("search_skills (disclosure: \"search\")", () => {
+  const searchPolicy = policy({ disclosure: "search" });
+
+  const named = (key: string, title: string, header: string, over: Partial<Skill> = {}): Skill => ({
+    ...smallSkill(key),
+    title,
+    header,
+    ...over,
+  });
+
+  const catalog = [
+    named("workspace:file_converter", "File Converter", "use when you need file conversion"),
+    named("workspace:invoice", "Invoice Reader", "extract totals from invoices"),
+  ];
+
+  it("is only wired under search disclosure", () => {
+    const deps = { registryRef: createSkillRegistryRef(), skills: catalog, policy: policy() };
+    expect(createSkillTools(deps).map((t) => t.name)).toEqual(["open_skill", "bind_skill_tools"]);
+    expect(createSkillTools({ ...deps, policy: searchPolicy }).map((t) => t.name)).toEqual([
+      "search_skills",
+      "open_skill",
+      "bind_skill_tools",
+    ]);
+  });
+
+  it("returns the keys open_skill expects, ranked by the query", async () => {
+    const search = createSearchSkillsTool({
+      registryRef: createSkillRegistryRef(),
+      skills: catalog,
+      policy: searchPolicy,
+    });
+    const out = await invoke(search, { query: "convert a file" });
+    expect(out.skills.map((s: any) => s.skillKey)).toEqual(["workspace:file_converter"]);
+    expect(out.total).toBe(2);
+  });
+
+  it("lists everything when no query is given, and flags what is already open", async () => {
+    const ref = createSkillRegistryRef();
+    ref.openedSkillKeys.push("workspace:invoice");
+    const search = createSearchSkillsTool({ registryRef: ref, skills: catalog, policy: searchPolicy });
+    const out = await invoke(search, {});
+    expect(out.skills.map((s: any) => s.skillKey)).toEqual([
+      "workspace:file_converter",
+      "workspace:invoice",
+    ]);
+    expect(out.skills[1].alreadyOpen).toBe(true);
+    expect(out.skills[0].alreadyOpen).toBeUndefined();
+  });
+
+  it("resolves availability at call time, not at prompt time", async () => {
+    let connected = false;
+    const gated = named("mcp:crm", "CRM", "search CRM deals", { isAvailable: () => connected });
+    const search = createSearchSkillsTool({
+      registryRef: createSkillRegistryRef(),
+      skills: [gated],
+      policy: searchPolicy,
+    });
+
+    const before = await invoke(search, { query: "crm" });
+    expect(before.skills).toEqual([]);
+    expect(before.hint).toContain("No skills are available");
+
+    connected = true;
+    const after = await invoke(search, { query: "crm" });
+    expect(after.skills.map((s: any) => s.skillKey)).toEqual(["mcp:crm"]);
+  });
+
+  it("falls back to the catalog head when nothing matches literally", async () => {
+    const search = createSearchSkillsTool({
+      registryRef: createSkillRegistryRef(),
+      skills: catalog,
+      policy: searchPolicy,
+    });
+    // A lexical ranker cannot bridge languages; the model reading the headers
+    // can, so a miss must still hand it something to judge.
+    const out = await invoke(search, { query: "dosyayı pdf e çevir" });
+    expect(out.skills.map((s: any) => s.skillKey)).toEqual([
+      "workspace:file_converter",
+      "workspace:invoice",
+    ]);
+    expect(out.hint).toContain("Nothing matched");
+    expect(out.hint).toContain("headers");
+  });
+
+  it("caps the result count", async () => {
+    const many = Array.from({ length: 40 }, (_, i) => named(`k${i}`, `T${i}`, "header"));
+    const search = createSearchSkillsTool({
+      registryRef: createSkillRegistryRef(),
+      skills: many,
+      policy: searchPolicy,
+    });
+    expect((await invoke(search, {})).skills).toHaveLength(10);
+    expect((await invoke(search, { limit: 3 })).skills).toHaveLength(3);
+    expect((await invoke(search, { limit: 999 })).skills).toHaveLength(25);
+  });
+
+  it("points open_skill at search_skills instead of the prompt block", async () => {
+    const deps = { registryRef: createSkillRegistryRef(), skills: catalog, policy: searchPolicy };
+    const open = createOpenSkillTool(deps);
+    expect(open.description).toContain("search_skills");
+    expect(open.description).not.toContain("<available_skills>");
+
+    const unknown = await invoke(open, { skillKey: "nope" });
+    expect(unknown.error).toContain("search_skills");
+
+    // Catalog mode keeps pointing at the prompt block.
+    const catalogOpen = createOpenSkillTool({ ...deps, policy: policy() });
+    expect(catalogOpen.description).toContain("<available_skills>");
   });
 });
