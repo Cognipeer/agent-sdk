@@ -4,6 +4,7 @@
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyGeminiReasoning } from "./utils/reasoning.js";
+import { inferMediaTypeFromUrl } from "./utils/media.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -279,7 +280,29 @@ export class VertexProvider extends BaseProvider {
             });
           } else {
             parts.push({
-              fileData: { mimeType: "image/jpeg", fileUri: src.url },
+              fileData: {
+                mimeType: src.mediaType ?? inferMediaTypeFromUrl(src.url) ?? "image/jpeg",
+                fileUri: src.url,
+              },
+            });
+          }
+        } else if (part.type === "file" || part.type === "audio") {
+          // Gemini takes documents and audio through the same inline/file parts.
+          const src = part.source;
+          const fallbackMime = part.type === "audio" ? "audio/mpeg" : "application/pdf";
+          if (src.type === "base64") {
+            parts.push({
+              inlineData: { mimeType: src.mediaType ?? fallbackMime, data: src.data },
+            });
+          } else {
+            parts.push({
+              fileData: {
+                mimeType: src.mediaType
+                  ?? inferMediaTypeFromUrl(src.url)
+                  ?? inferMediaTypeFromUrl((part as any).fileName)
+                  ?? fallbackMime,
+                fileUri: src.url,
+              },
             });
           }
         }

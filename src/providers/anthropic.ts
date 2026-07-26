@@ -361,6 +361,23 @@ export class AnthropicProvider extends BaseProvider {
             source: { type: "url", url: src.url },
           };
         }
+        if (part.type === "file") {
+          const src = part.source;
+          const title = part.fileName ? { title: part.fileName } : {};
+          if (src.type === "base64") {
+            return {
+              type: "document",
+              source: { type: "base64", media_type: src.mediaType, data: src.data },
+              ...title,
+            };
+          }
+          return { type: "document", source: { type: "url", url: src.url }, ...title };
+        }
+        if (part.type === "audio") {
+          // Anthropic has no audio input; keep the reference visible.
+          const src = part.source;
+          return { type: "text", text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" };
+        }
         return part;
       });
     }

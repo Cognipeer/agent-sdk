@@ -4,6 +4,7 @@
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyOpenAIReasoning } from "./utils/reasoning.js";
+import { audioMimeToOpenAIFormat } from "./utils/media.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -300,6 +301,27 @@ export class OpenAIProvider extends BaseProvider {
         const url = src.type === "url" ? src.url : `data:${src.mediaType};base64,${src.data}`;
         return { type: "input_image", image_url: url };
       }
+      if (part.type === "file") {
+        const src = part.source;
+        if (src.type === "base64") {
+          return {
+            type: "input_file",
+            filename: part.fileName ?? "file",
+            file_data: `data:${src.mediaType};base64,${src.data}`,
+          };
+        }
+        return { type: "input_file", file_url: src.url };
+      }
+      if (part.type === "audio") {
+        const src = part.source;
+        if (src.type === "base64") {
+          return {
+            type: "input_audio",
+            input_audio: { data: src.data, format: audioMimeToOpenAIFormat(src.mediaType) },
+          };
+        }
+        return { type: textType, text: `[audio: ${src.url}]` };
+      }
       return { type: textType, text: "" };
     });
     return { role, content };
@@ -396,6 +418,30 @@ export class OpenAIProvider extends BaseProvider {
           const src = part.source;
           const url = src.type === "url" ? src.url : `data:${src.mediaType};base64,${src.data}`;
           return { type: "image_url", image_url: { url } };
+        }
+        if (part.type === "file") {
+          const src = part.source;
+          if (src.type === "base64") {
+            return {
+              type: "file",
+              file: {
+                filename: part.fileName ?? "file",
+                file_data: `data:${src.mediaType};base64,${src.data}`,
+              },
+            };
+          }
+          // Chat Completions has no URL file source; keep the reference visible.
+          return { type: "text", text: `[file: ${src.url}]` };
+        }
+        if (part.type === "audio") {
+          const src = part.source;
+          if (src.type === "base64") {
+            return {
+              type: "input_audio",
+              input_audio: { data: src.data, format: audioMimeToOpenAIFormat(src.mediaType) },
+            };
+          }
+          return { type: "text", text: `[audio: ${src.url}]` };
         }
         return part;
       });

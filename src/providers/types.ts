@@ -12,10 +12,38 @@ export type ImageContent = {
   type: "image";
   source:
     | { type: "base64"; mediaType: string; data: string }
-    | { type: "url"; url: string };
+    | { type: "url"; url: string; mediaType?: string };
 };
 
-export type ContentPart = TextContent | ImageContent;
+/**
+ * A document attachment (PDF, DOCX, CSV, …). Providers map this to their
+ * native document blocks: Gemini `inlineData`/`fileData`, Anthropic
+ * `document`, OpenAI Chat Completions `file` / Responses `input_file`,
+ * Bedrock Converse `document`. Providers without document support degrade
+ * to a text placeholder referencing the file name/URL.
+ */
+export type FileContent = {
+  type: "file";
+  source:
+    | { type: "base64"; mediaType: string; data: string }
+    | { type: "url"; url: string; mediaType?: string };
+  /** Original file name, when known (required by some providers, e.g. Bedrock). */
+  fileName?: string;
+};
+
+/**
+ * An audio attachment. Gemini accepts it as `inlineData`/`fileData`; OpenAI
+ * audio-capable models as `input_audio`. Providers without audio support
+ * degrade to a text placeholder.
+ */
+export type AudioContent = {
+  type: "audio";
+  source:
+    | { type: "base64"; mediaType: string; data: string }
+    | { type: "url"; url: string; mediaType?: string };
+};
+
+export type ContentPart = TextContent | ImageContent | FileContent | AudioContent;
 
 export type ToolCall = {
   id: string;

@@ -240,9 +240,68 @@ function convertContent(content: string | BaseChatMessagePart[]): string | Conte
         }
       }
     }
+    if (part.type === "file" || part.type === "document") {
+      const source = extractBinarySource(part);
+      if (source) {
+        const fileName = part.metadata?.filename ?? part.metadata?.fileName
+          ?? (part as any).fileName ?? (part as any).filename ?? (part as any).name
+          ?? (part as any).file?.filename;
+        return { type: "file", source, ...(fileName ? { fileName } : {}) };
+      }
+    }
+    if (part.type === "audio" || part.type === "input_audio") {
+      // OpenAI chat-completions shape: { type: "input_audio", input_audio: { data, format } }
+      const ia = (part as any).input_audio;
+      if (ia?.data) {
+        const mediaType = ia.format === "wav" ? "audio/wav" : "audio/mpeg";
+        return { type: "audio", source: { type: "base64", mediaType, data: ia.data } };
+      }
+      const source = extractBinarySource(part);
+      if (source) return { type: "audio", source };
+    }
     // Fallback: treat as text
     return { type: "text", text: part.text ?? part.content ?? JSON.stringify(part) };
   });
+}
+
+/**
+ * Extracts a unified base64/url source from the shapes file/audio parts arrive
+ * in: the unified `source` object, LangChain-style standard data blocks
+ * (`source_type` + `data`/`url` + `mime_type`), or a raw data URL.
+ */
+function extractBinarySource(
+  part: any,
+): { type: "base64"; mediaType: string; data: string } | { type: "url"; url: string; mediaType?: string } | undefined {
+  // Already unified: { source: { type: "base64" | "url", ... } }
+  const src = part.source;
+  if (src?.type === "base64" && src.data) {
+    return { type: "base64", mediaType: src.mediaType ?? src.media_type ?? src.mime_type ?? "application/octet-stream", data: src.data };
+  }
+  if (src?.type === "url" && src.url) {
+    const mediaType = src.mediaType ?? src.media_type ?? src.mime_type;
+    return { type: "url", url: src.url, ...(mediaType ? { mediaType } : {}) };
+  }
+
+  const mediaType = part.mime_type ?? part.mimeType ?? part.media_type ?? part.mediaType;
+
+  // LangChain standard data block: { source_type: "base64" | "url", data | url }
+  if (part.source_type === "base64" && part.data) {
+    return { type: "base64", mediaType: mediaType ?? "application/octet-stream", data: part.data };
+  }
+  if (part.source_type === "url" && part.url) {
+    return { type: "url", url: part.url, ...(mediaType ? { mediaType } : {}) };
+  }
+
+  // Raw data URL or plain URL in `data` / `url` / OpenAI `file.file_data`
+  const value = part.data ?? part.url ?? part.file?.file_data;
+  if (typeof value === "string" && value) {
+    const match = value.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) return { type: "base64", mediaType: mediaType ?? match[1], data: match[2] };
+    if (/^https?:\/\//.test(value)) return { type: "url", url: value, ...(mediaType ? { mediaType } : {}) };
+    if (mediaType) return { type: "base64", mediaType, data: value };
+  }
+
+  return undefined;
 }
 
 // ─── Zod → JSON Schema helpers ───────────────────────────────────────────────

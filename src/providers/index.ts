@@ -8,6 +8,8 @@ export type {
   MessageRole,
   TextContent,
   ImageContent,
+  FileContent,
+  AudioContent,
   ContentPart,
   ToolCall,
   UnifiedMessage,

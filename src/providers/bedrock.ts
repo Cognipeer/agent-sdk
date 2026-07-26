@@ -4,6 +4,7 @@
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
 import { applyBedrockReasoning } from "./utils/reasoning.js";
+import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -232,6 +233,25 @@ export class BedrockProvider extends BaseProvider {
               },
             });
           }
+        } else if (part.type === "file") {
+          const src = part.source;
+          const format = documentMimeToBedrockFormat(src.mediaType, part.fileName);
+          if (src.type === "base64" && format) {
+            content.push({
+              document: {
+                format,
+                name: sanitizeBedrockDocName(part.fileName),
+                source: { bytes: src.data },
+              },
+            });
+          } else {
+            // Converse has no URL document source / unknown format; keep the reference visible.
+            const ref = src.type === "url" ? src.url : part.fileName ?? "attachment";
+            content.push({ text: `[file: ${ref}]` });
+          }
+        } else if (part.type === "audio") {
+          const src = part.source;
+          content.push({ text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" });
         }
       }
     }

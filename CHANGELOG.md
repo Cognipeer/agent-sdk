@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-07-26
+
+### Added
+- **`file` and `audio` content parts across the native provider layer.** New unified `FileContent` / `AudioContent` types (exported from the root and `providers/`) let multimodal messages carry documents (PDF, DOCX, CSV, …) and audio clips alongside text/images. Per-provider wire mapping:
+  - **Vertex/Gemini**: `inlineData` (base64) / `fileData` (URL) parts — Gemini's native document & audio understanding.
+  - **Anthropic**: `document` blocks (base64 + URL sources, `title` from `fileName`); audio degrades to a visible text placeholder (no API support).
+  - **OpenAI Chat Completions**: `file` blocks (`filename` + `file_data` data URL) and `input_audio` blocks; URL file sources degrade to a text reference (no URL source in Chat Completions).
+  - **OpenAI Responses** (reasoning models): `input_file` (`file_data`/`file_url`) and `input_audio`.
+  - **Bedrock Converse**: `document` blocks (format inferred from MIME/file name, sanitized `name`); audio degrades to a text placeholder.
+- **Adapter normalization for incoming attachment shapes.** `fromNativeProvider` now recognizes LangChain-style standard data blocks (`{type: "file"|"audio", source_type: "base64"|"url", data|url, mime_type, metadata.filename}`), OpenAI `input_audio` parts, raw data URLs, and already-unified `source` objects — previously any non-text/image part was `JSON.stringify`-ed into the prompt as text (a token bomb that also hid the attachment from the model).
+- Shared media helpers (`providers/utils/media.ts`): URL/file-name → MIME inference, audio MIME → OpenAI format, document MIME → Bedrock format, Bedrock document-name sanitizer.
+
+### Fixed
+- **Vertex URL images no longer hardcode `image/jpeg`.** `fileData.mimeType` is now taken from the part's `mediaType` or inferred from the URL extension, falling back to `image/jpeg` only when unknown.
+
 ## [0.8.2] - 2026-07-23
 
 ### Added
