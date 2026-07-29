@@ -159,15 +159,91 @@ const agent = createSmartAgent({
   },
   toolResponses: {
     defaultPolicy: "summarize_archive",
-    toolResponseRetentionByTool: {
+    retentionByTool: {
       // Critical tool whose recent results must stay verbatim
-      read_skills: "keep_full",
+      read_skills: { output: "keep_full" },
     },
   },
 });
 ```
 
 When context is compacted, the raw payload remains recoverable via `get_tool_response` — the runtime injects that tool automatically once a recovery marker appears in the transcript.
+
+### 7b. Tools whose *arguments* are the payload
+
+Retention has **two axes**, because value density is per-tool. A search tool carries a
+short query and returns the bulk; a file writer is the mirror image — it carries a
+60k-char document chunk in its arguments and returns `{ok: true}`. Archiving responses
+frees nothing on the second kind, so context keeps growing no matter how aggressive
+`defaultPolicy` is, until the raw-policy clamp has to truncate.
+
+Declare `retention` on the tool itself — the author knows whether the arguments are the
+payload or just identity:
+
+```ts
+const appendToFile = createTool({
+  name: "append_to_file",
+  schema: z.object({ filePath: z.string(), mode: z.string(), content: z.string() }),
+  func: appendImpl,
+  retention: { input: "digest", output: "summarize_archive" },
+});
+```
+
+`input: "digest"` is **field-level**, never whole-object. Only string fields over
+`maxToolInputFieldChars` (default 2000) are replaced; every identifying scalar survives:
+
+```jsonc
+// before compaction
+{ "filePath": "/reports/q3.md", "mode": "append", "content": "<61840 chars>" }
+
+// after compaction
+{ "filePath": "/reports/q3.md", "mode": "append",
+  "content": { "__digest": { "chars": 61840, "sha256": "9f2ac1b4…",
+                             "head": "# Q3 Revenue…",
+                             "recover": "get_tool_response executionId=\"…\" part=\"input\"" } } }
+```
+
+That distinction is the point: the model can still state *what it did* ("appended to
+`/reports/q3.md`"), it just cannot re-read the bytes — and it can page them back with
+`get_tool_response({ executionId, part: "input" })`.
+
+Guarantees worth relying on:
+
+| Guarantee | Why |
+| --- | --- |
+| `input` defaults to `"keep"` | Argument digesting is always an explicit opt-in; upgrading changes nothing until you ask for it. |
+| Control-plane and delegation tools are never digested | `response`, `manage_todo_list`, `ask_user_question`, `open_skill`, `bind_skill_tools`, `search_skills`, `get_tool_response`, `delegate_to`, `spawn_subagent*` — their arguments are how the loop steers itself, and they are small anyway. Config cannot override this. |
+| The protected recent window is never digested | The model is still reasoning about its latest calls. |
+| Turns carrying signed reasoning blocks are skipped | Anthropic/Bedrock extended thinking replays signed `thinking` blocks in the same assistant turn as their `tool_use`; that turn is left intact. |
+| Rewrites stay valid JSON | Provider adapters (Bedrock's `toolUse` mapping) parse tool-call arguments. |
+| `toolHistory` keeps the original | Digesting only rewrites the *model view*. |
+
+A caller can override either axis per tool without touching the tool definition, and the
+legacy single-axis `toolResponseRetentionByTool` map still works:
+
+```ts
+toolResponses: {
+  retentionByTool: {
+    create_text_file: { input: "digest" },   // opt a host tool in
+    append_to_file:   { input: "keep" },     // ...or opt one back out
+  },
+  // Opt every non-protected tool in at once (rarely what you want):
+  // defaultInputPolicy: "digest",
+}
+```
+
+Resolution order, first match wins.
+
+- **Output axis:** `criticalTools` → `retentionByTool[name].output` →
+  `toolResponseRetentionByTool[name]` (legacy) → the tool's own `retention.output` →
+  control-plane default → `defaultPolicy`.
+- **Input axis:** control-plane/delegation → `criticalTools` → `retentionByTool[name].input`
+  → the tool's own `retention.input` → `defaultInputPolicy`.
+
+> **Prefer not routing bulk through arguments at all.** Digesting is damage control for an
+> API shape that pushes payloads through the context. If you control the tool surface, a
+> handle-based writer (`open_writer` → `append(handle, chunk)`) or writing from inside a
+> sandbox keeps the payload out of the transcript entirely.
 
 ## 8. Reflection budget
 

@@ -19,6 +19,8 @@ const TOOL_RESPONSE_RECOVERY_MARKERS = [
   /SUMMARIZED_TOOL_RESPONSE\b/,
   /DROPPED_TOOL_RESPONSE\s*\[/,
   /Use get_tool_response with executionId/i,
+  // Field-level ARGUMENT digest marker (see smart/toolResponses digestToolInputValue).
+  /"__digest"\s*:/,
 ] as const;
 
 const todoStatusSchema = z.enum(["not-started", "in-progress", "completed", "blocked"]);
@@ -134,8 +136,36 @@ function flattenRecoveryContent(content: unknown): string {
   return "";
 }
 
+/**
+ * Digested tool ARGUMENTS live in `tool_calls[].function.arguments`, not in a
+ * message's `content`, so the recovery gate has to look there too — otherwise a
+ * model that sees a `__digest` marker is told the execution "is not recoverable".
+ */
+function flattenToolCallArguments(message: { tool_calls?: unknown } | undefined): string {
+  const toolCalls = (message as { tool_calls?: unknown })?.tool_calls;
+  if (!Array.isArray(toolCalls)) {
+    return "";
+  }
+
+  return toolCalls
+    .map((call) => {
+      const args = (call as { function?: { arguments?: unknown } })?.function?.arguments;
+      if (typeof args === "string") return args;
+      if (args && typeof args === "object") {
+        try {
+          return JSON.stringify(args);
+        } catch {
+          return "";
+        }
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function hasToolResponseRecoveryReference(
-  messages: Array<{ role?: string; content?: unknown }> | undefined,
+  messages: Array<{ role?: string; content?: unknown; tool_calls?: unknown }> | undefined,
   executionId?: string,
 ) {
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -147,7 +177,10 @@ export function hasToolResponseRecoveryReference(
       return false;
     }
 
-    const content = flattenRecoveryContent(message?.content);
+    const content = [
+      flattenRecoveryContent(message?.content),
+      flattenToolCallArguments(message),
+    ].filter(Boolean).join("\n");
     if (!content) {
       return false;
     }
@@ -341,12 +374,15 @@ export function createGetToolResponseTool(stateRef: ContextToolsStateRef) {
   const getTool = createTool({
     name: "get_tool_response",
     description:
-      "RETRIEVE the full output of a tool execution whose response was archived, dropped, truncated, or later compacted in conversation history. This tool is only useful when the visible transcript already shows a reduced tool-response marker for the referenced executionId or tool_call_id. Use it only when a marker such as 'ARCHIVED_TOOL_RESPONSE', 'STRUCTURED_TOOL_RESPONSE', 'SUMMARIZED_TOOL_RESPONSE', 'DROPPED_TOOL_RESPONSE', or an explicit truncation note points you to a missing field you still need. Do not call it to re-fetch a normal tool result that is already present in context.",
-    schema: z.object({ executionId: z.string().describe("Tool execution id or original tool_call_id") }),
+      "RETRIEVE the full input or output of a tool execution that was reduced in conversation history. This tool is only useful when the visible transcript already shows a reduced marker for the referenced executionId or tool_call_id. Use it when a marker such as 'ARCHIVED_TOOL_RESPONSE', 'STRUCTURED_TOOL_RESPONSE', 'SUMMARIZED_TOOL_RESPONSE', 'DROPPED_TOOL_RESPONSE', an explicit truncation note, or a '__digest' descriptor inside a past tool call's arguments points you to something you still need. Pass part=\"input\" to recover arguments that were digested (their small fields are still visible; only the large payload was replaced), or part=\"output\" (the default) to recover an archived result. Do not call it to re-fetch a normal tool result that is already present in context.",
+    schema: z.object({
+      executionId: z.string().describe("Tool execution id or original tool_call_id"),
+      part: z.enum(["input", "output"]).optional().describe("Which side of the exchange to recover. Defaults to \"output\"."),
+    }),
     maxExecutionsPerRun: 8,
-    func: async ({ executionId }) => {
+    func: async ({ executionId, part }) => {
       if (!hasToolResponseRecoveryReference(stateRef.messages, executionId)) {
-        return "Execution not recoverable from the visible transcript. Use this only when the conversation already shows a reduced tool-response marker for that executionId.";
+        return "Execution not recoverable from the visible transcript. Use this only when the conversation already shows a reduced tool-response or __digest marker for that executionId.";
       }
 
       const matchesExecution = (t: any) => t?.executionId === executionId || t?.tool_call_id === executionId;
@@ -355,6 +391,11 @@ export function createGetToolResponseTool(stateRef: ContextToolsStateRef) {
         execution = stateRef.toolHistoryArchived?.find((t) => matchesExecution(t));
       }
       if (execution) {
+        if (part === "input") {
+          // `args` is the validated, post-normalization argument object recorded at
+          // execution time — the exact payload the tool actually ran with.
+          return execution.args ?? "Arguments were not recorded for this execution.";
+        }
         return execution.rawOutput || execution.output;
       }
       // Fallback: ContextPilot's CCR (Compress-Cache-Retrieve) store keeps the

@@ -7,6 +7,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-07-29
+
+### Fixed
+- **`clampToBudget` no longer drops the run's context anchor.** With
+  `context.policy: "raw"`, the over-budget clamp removed messages from the
+  front of the transcript — and the first casualty was the first user message,
+  which for worker-style agents carries the entire operating context and task
+  brief. Models that lost it concluded "no task was provided" and bounced an
+  `ask_user_question` back to the user mid-run (production incident class,
+  2026-07). The clamp now pins every system message plus the FIRST user
+  message, and drops the oldest assistant/tool exchanges (adjacency-safe)
+  instead. When nothing droppable remains, the view is returned over budget
+  rather than destroying the anchor.
+- **Hybrid turn window keeps the first user message in both counting modes.**
+  `collectRecentTurns` only re-attached the first user message when it was
+  counting assistant turns; a conversation with more user turns than
+  `lastTurnsToKeep` silently lost its original instruction from the model view.
+- **Post-loop structured-output finalizer respects run pauses and budget
+  signals.** After the main loop exited for an `ask_user_question` /
+  tool-approval pause, a cancellation, a summarization signal, a breached
+  limit, or a guardrail block, the tool-based finalizer still nudged the model
+  and executed resulting tool calls. That stacked duplicate pending questions
+  while the run was supposedly suspended, ran tools after the pause, and
+  issued model calls on an over-budget context (provider 400s) with a dangling
+  unresolved tool_calls tail. The finalizer now skips those exits entirely and
+  stops immediately if a pause is raised during one of its own rounds.
+- **Tool-call ARGUMENTS can now be reclaimed under context pressure.** Retention
+  policies rewrote tool RESPONSES only, so content-authoring calls whose
+  arguments carry the payload (file writes, document chunks — often tens of
+  kilobytes each) kept the context growing no matter how aggressively responses
+  were archived, eventually forcing destructive clamping. Arguments are now a
+  first-class retention axis — see the two-axis retention entry under **Added**.
+
+### Added
+- **Two-axis tool retention: `input` (arguments) and `output` (result).** Value
+  density is per-tool — a search tool carries a short query and returns the bulk,
+  while a file writer is the mirror image — so one policy could never serve both.
+  Argument retention is now its own axis, and it is **opt-in**:
+
+  ```ts
+  // Declared by the tool author, who knows whether args are payload or identity:
+  createTool({
+    name: "append_to_file",
+    schema: z.object({ filePath: z.string(), mode: z.string(), content: z.string() }),
+    func: appendImpl,
+    retention: { input: "digest", output: "summarize_archive" },
+  });
+
+  // ...or overridden per tool by the caller, either axis independently:
+  createSmartAgent({
+    toolResponses: {
+      retentionByTool: { create_text_file: { input: "digest" } },
+      // defaultInputPolicy: "digest",   // opt every non-protected tool in at once
+    },
+  });
+  ```
+
+  `input: "digest"` is **field-level, never whole-object**: only string fields
+  longer than `maxToolInputFieldChars` (default 2000) are replaced with a
+  `{"__digest":{chars,sha256,head,recover}}` descriptor, so identifying scalars
+  (`filePath`, `mode`, ids, indexes) survive verbatim and the model can still
+  state exactly what it did. Rewrites stay valid JSON (Bedrock's `toolUse`
+  mapping parses arguments), `toolHistory` keeps the original, and the protected
+  recent window is never touched.
+
+  Hard invariants that config cannot override: control-plane tools (`response`,
+  `manage_todo_list`, `ask_user_question`, `open_skill`, `bind_skill_tools`,
+  `search_skills`, `get_tool_response`) and delegation tools (`delegate_to`,
+  `spawn_subagent`, `spawn_subagents_parallel`) are never digested — their
+  arguments are how the loop steers itself. Assistant turns carrying signed
+  reasoning blocks are skipped as well, since Anthropic/Bedrock extended
+  thinking replays those blocks verbatim alongside their `tool_use`.
+
+  Control-plane tools additionally *default* to `keep_full` on the output axis
+  (overridable per tool), so a skill's guidance or a user's answer is not
+  archived out from under the run.
+
+  **Fully backward compatible.** `defaultInputPolicy` defaults to `"keep"`, so no
+  existing caller sees a behavior change; the legacy single-axis
+  `toolResponseRetentionByTool` map is still honored (consulted right after
+  `retentionByTool`). New exports: `resolveInputRetention`,
+  `digestToolInputValue`, `digestToolInputArguments`,
+  `collectToolRetentionDeclarations`, `CONTROL_PLANE_TOOL_NAMES`,
+  `DELEGATION_TOOL_NAMES`, plus the `ToolInputRetentionPolicy` /
+  `ToolRetentionSpec` types.
+- **`get_tool_response` can page ARGUMENTS back in: `part: "input" | "output"`.**
+  Recovery was output-only, so a digested argument had no way back — and the
+  recovery gate only scanned message `content`, missing digest markers that live
+  in `tool_calls[].function.arguments`. The gate now scans tool-call arguments
+  too, `"__digest"` counts as a recovery reference, and `part: "input"` returns
+  the exact arguments the tool ran with. `part` defaults to `"output"`, so
+  existing callers are unaffected.
+- **`prepare` script** so git-based installs (`npm i github:Cognipeer/agent-sdk#branch`)
+  build `dist/` automatically and `npm publish` always ships a fresh build.
+
+## [0.8.6] - 2026-07-29
+
+### Changed
+- Internal refactor: extracted the shared `recordUsage` helper for per-request
+  usage accounting (behavior unchanged).
+
+## [0.8.5] - 2026-07-27
+
+### Added
+- **Search-based skill discovery — `skillPolicy.disclosure: "search"`.** Until now the only
+  way for a model to learn which skills exist was the `<available_skills>` block, which renders
+  every skill's header into the system prompt. That is the right trade for a small curated
+  catalog, but it makes prompt cost scale with the catalog: a workspace with 40 installed skills
+  pays 40 header lines on every turn of every conversation, almost all of them irrelevant to the
+  task at hand.
+
+  Under `disclosure: "search"` nothing is rendered into the prompt. The runtime registers a
+  `search_skills` tool instead, so discovery costs one tool description (constant) plus one tool
+  call when the model actually needs a capability:
+
+  ```ts
+  createSmartAgent({
+    model,
+    skills,
+    skillPolicy: { ...DEFAULT_SKILL_POLICY, disclosure: "search" },
+  });
+  ```
+
+  `search_skills({ query, limit? })` returns `{ skills: [{ skillKey, title, header }], total, hint }`,
+  ranked by the new exported `searchSkills()` — a pure, deterministic keyword/prefix matcher over
+  key, title and header (no embeddings, no I/O, Unicode-aware so non-ASCII catalogs rank correctly).
+  An omitted query lists the catalog, and so does a query that matches nothing — a lexical
+  ranker cannot bridge a Turkish question against an English-authored header, but the model
+  reading those headers can, so a miss hands it the catalog head rather than an empty result.
+  `open_skill`'s description and error text point at `search_skills` instead of the prompt block
+  in this mode.
+
+  Two behavioral notes: discovery is no longer guaranteed — a model that never calls
+  `search_skills` never learns skills exist, so the tool description carries that weight — and
+  `isAvailable` is now resolved inside the tool call rather than once per invoke, which means an
+  integration that connects mid-run shows up on the next search.
+
+  The default is unchanged (`"catalog"`), so existing agents behave exactly as before.
+
+  New exports: `SkillDisclosure`, `searchSkills`, `createSearchSkillsTool`.
+
+## [0.8.4] - 2026-07-26
+
+### Fixed
+- **`ask_user_question` was registered twice on a smart agent's base runtime**, which made
+  `resume()` fail against providers that validate tool configs. `createSmartAgent` builds the
+  ask-user tool into the tool list it hands to `createAgent` *and* forwards `humanInTheLoop`
+  alongside it, so the factory attached a second copy of the same tool. `invoke()` hid the
+  problem — the smart layer rebuilds a fresh tool set per call — but `smartAgent.resume` **is**
+  the base agent's resume, so the duplicated list went straight to the provider. The first turn
+  worked and *answering* the question blew up:
+
+  ```
+  Bedrock 400: The tool ask_user_question is already defined at toolConfig.tools.14
+  ```
+
+  OpenAI-family providers accept duplicate tool names, so this looked model-specific rather than
+  like an SDK bug. `createAgent` now attaches its built-ins (`ask_user_question`, and the
+  tool-based structured-output `response` finalizer) only when the caller's list does not already
+  carry a tool of that name.
+
+### Added
+- **`ASK_USER_TOOL_NAME`** is exported from the root, so callers that inspect or filter an
+  agent's tool surface do not have to hardcode the string.
+
 ## [0.8.3] - 2026-07-26
 
 ### Added

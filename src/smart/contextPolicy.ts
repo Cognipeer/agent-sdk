@@ -34,9 +34,12 @@ function collectRecentTurns(messages: BaseMessage[], lastTurnsToKeep: number): B
     }
   }
 
-  // When counting assistant turns, ensure the first user message is always included
-  // so the agent retains its original task instruction.
-  if (countAssistantTurns && collected.length > 0 && collected[0].role !== "user") {
+  // The first user message is the run's context anchor (the original task /
+  // instruction). It must survive the turn window in BOTH counting modes:
+  // restricting this to countAssistantTurns runs dropped the anchor for any
+  // conversation with more user turns than the window (prod incident class:
+  // the agent concluded "no task was provided" mid-run and stalled or re-asked).
+  if (collected.length > 0) {
     const firstUserMsg = body.find((m) => m.role === "user");
     if (firstUserMsg && !collected.includes(firstUserMsg)) {
       collected.unshift(firstUserMsg);
@@ -74,6 +77,20 @@ function renderMemoryBlock(facts: MemoryFact[] | undefined): string {
   ].join("\n");
 }
 
+/**
+ * True for messages the clamp must NEVER remove:
+ *  - system messages (the agent's instructions, synthetic context_summary /
+ *    memory_context blocks, structured-output nudges — all small and load-bearing),
+ *  - the FIRST user message (the run's context anchor: the original task or
+ *    instruction; dropping it made agents "lose" their task mid-run, conclude
+ *    no task was provided, and stall or bounce questions back to the user).
+ */
+function isClampProtected(message: BaseMessage, index: number, firstUserIndex: number): boolean {
+  if (message.role === "system") return true;
+  if (index === firstUserIndex) return true;
+  return false;
+}
+
 function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseMessage[] {
   let working = [...messages];
 
@@ -81,8 +98,13 @@ function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseM
     const tokenCount = countApproxTokens(working.map(extractMessageText).join("\n"));
     if (tokenCount <= maxContextTokens) return working;
 
-    // Find the first non-system message to remove.
-    const firstNonSystem = working.findIndex((message, index) => !(index === 0 && message.role === "system"));
+    // Find the oldest DROPPABLE message: skip every protected message (system
+    // blocks wherever they sit, plus the first user message — the context
+    // anchor). Previously only messages[0] was protected when it was a system
+    // message, so the first casualty of an over-budget run was the user
+    // message carrying the original task.
+    const firstUserIndex = working.findIndex((message) => message.role === "user");
+    const firstNonSystem = working.findIndex((message, index) => !isClampProtected(message, index, firstUserIndex));
     if (firstNonSystem < 0) break;
 
     const target = working[firstNonSystem];

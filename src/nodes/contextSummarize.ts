@@ -14,7 +14,14 @@ import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { renderStructuredSummary } from "../smart/contextPolicy.js";
-import { renderRetainedToolMessage, resolveSummarizationRetention, summarizeObject } from "../smart/toolResponses.js";
+import {
+  collectToolRetentionDeclarations,
+  digestToolInputArguments,
+  renderRetainedToolMessage,
+  resolveInputRetention,
+  resolveSummarizationRetention,
+  summarizeObject,
+} from "../smart/toolResponses.js";
 
 // Helper for lightweight message construction
 const systemMessage = (content: string) => ({ role: 'system', content });
@@ -554,6 +561,36 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         }
     }
 
+    // 2c. Tool-call ARGUMENTS are part of the context too. For file-writing /
+    // content-authoring tools the arguments carry the entire payload (e.g. a
+    // 40k-char document chunk), so archiving only the tool RESPONSE frees
+    // nothing — summarization looks "enabled" yet the context keeps growing
+    // until the clamp has to truncate.
+    //
+    // Argument retention is its OWN axis (`retention.input` on the tool, or
+    // `toolResponses.retentionByTool[name].input`) and defaults to "keep": a
+    // tool's request is never touched unless the tool author or the caller
+    // explicitly opts in. When it is opted in, the rewrite is FIELD-LEVEL —
+    // only string fields over the threshold become a digest descriptor, so
+    // identifying scalars (filePath, mode, section, ids) survive verbatim and
+    // the model can still state exactly what it did. The result stays valid
+    // JSON so every provider adapter (including Bedrock's toolUse mapping,
+    // which parses arguments) is safe, the original arguments remain in
+    // toolHistory, and each marker names the executionId to page them back in.
+    const retentionDeclarations = collectToolRetentionDeclarations(state.agent?.tools as any);
+    const digestableToolCallIds = new Set<string>();
+    for (const m of messages) {
+        if (m.role !== 'tool' || isSyntheticSummaryMessage(m)) continue;
+        const toolCallId = m.tool_call_id;
+        if (!toolCallId || !toolCallIdToAssistantIdx.has(toolCallId)) continue;
+        // Never touch the protected recent window — the model is still reasoning
+        // about those calls.
+        if (protectedToolCallIds.has(toolCallId)) continue;
+        const toolName = m.name || '';
+        if (resolveInputRetention(toolName, resolved, retentionDeclarations) !== 'digest') continue;
+        digestableToolCallIds.add(toolCallId);
+    }
+
     // 3. Rewrite tool messages per resolved retention policy.
     // Orphan tool messages (no matching assistant tool_call) are removed.
     // The last assistant turn's tool responses are always protected so the agent
@@ -561,6 +598,33 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     const archivedExecutions: SmartState["toolHistoryArchived"] = [...(state.toolHistoryArchived || [])];
     const archivedIds = new Set(archivedExecutions.map((entry) => entry?.executionId).filter(Boolean));
     const newMessages = messages.map((m) => {
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            // Anthropic/Bedrock extended thinking replays SIGNED thinking blocks
+            // verbatim in the same assistant turn as their tool_use blocks. Do not
+            // rewrite a tool_use whose turn carries signed reasoning — leave the
+            // whole turn alone and let the response-side policy (or L3 drop) handle
+            // the pressure instead.
+            if ((m as any).reasoning?.blocks?.length) return m;
+            let changed = false;
+            const nextToolCalls = m.tool_calls.map((tc: any) => {
+                const args = tc?.function?.arguments;
+                if (!tc?.id || !digestableToolCallIds.has(tc.id)) return tc;
+                if (typeof args !== 'string') return tc;
+                const historyEntry = findToolHistoryEntry(state, tc.id, tc.function?.name);
+                const digested = digestToolInputArguments(args, {
+                    maxFieldChars: resolved.toolResponses.maxToolInputFieldChars,
+                    headChars: resolved.toolResponses.maxToolInputDigestHeadChars,
+                    executionId: historyEntry?.executionId ?? tc.id,
+                });
+                if (digested.digestedPaths.length === 0) return tc;
+                changed = true;
+                return {
+                    ...tc,
+                    function: { ...tc.function, arguments: digested.arguments },
+                };
+            });
+            return changed ? { ...m, tool_calls: nextToolCalls } : m;
+        }
         if (m.role === 'tool') {
             if (isSyntheticSummaryMessage(m)) {
                 return m;

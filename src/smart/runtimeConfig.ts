@@ -8,6 +8,10 @@ import type {
   SmartAgentOptions,
 } from "../types.js";
 import type { ContextPilotConfig } from "./contextPilot/types.js";
+import {
+  DEFAULT_MAX_TOOL_INPUT_FIELD_CHARS,
+  DEFAULT_TOOL_INPUT_DIGEST_HEAD_CHARS,
+} from "./toolResponses.js";
 
 const DEFAULT_CRITICAL_TOOLS = ["response", "manage_todo_list", "get_tool_response"];
 
@@ -62,6 +66,11 @@ const BASE_DEFAULTS: ProfileConfig = {
     maxToolResponseTokens: 8_000,
     defaultPolicy: "summarize_archive",
     toolResponseRetentionByTool: {},
+    // Argument digesting is opt-in: the default never touches a tool's request.
+    defaultInputPolicy: "keep",
+    retentionByTool: {},
+    maxToolInputFieldChars: DEFAULT_MAX_TOOL_INPUT_FIELD_CHARS,
+    maxToolInputDigestHeadChars: DEFAULT_TOOL_INPUT_DIGEST_HEAD_CHARS,
     criticalTools: [...DEFAULT_CRITICAL_TOOLS],
     schemaValidation: "strict",
   },
@@ -128,6 +137,7 @@ function buildProfile(overrides: Partial<{
       ...overrides.toolResponses,
       criticalTools: overrides.toolResponses?.criticalTools ?? [...DEFAULT_CRITICAL_TOOLS],
       toolResponseRetentionByTool: overrides.toolResponses?.toolResponseRetentionByTool ?? {},
+      retentionByTool: overrides.toolResponses?.retentionByTool ?? {},
     },
     contextPilot: mergeContextPilot(BASE_DEFAULTS.contextPilot, overrides.contextPilot),
   };
@@ -299,6 +309,16 @@ export function normalizeSmartAgentOptions(opts: SmartAgentOptions): ResolvedSma
         ...((customProfile.toolResponses?.toolResponseRetentionByTool || {})),
         ...((opts.toolResponses?.toolResponseRetentionByTool || {})),
       },
+      // Two-axis map merges the same way, so a caller can layer a small override
+      // on top of a profile's table instead of restating it.
+      retentionByTool: {
+        ...preset.toolResponses.retentionByTool,
+        ...((customProfile.toolResponses?.retentionByTool || {})),
+        ...((opts.toolResponses?.retentionByTool || {})),
+      },
+      defaultInputPolicy: opts.toolResponses?.defaultInputPolicy
+        ?? customProfile.toolResponses?.defaultInputPolicy
+        ?? preset.toolResponses.defaultInputPolicy,
       criticalTools: opts.toolResponses?.criticalTools ?? customProfile.toolResponses?.criticalTools ?? preset.toolResponses.criticalTools,
     },
     contextPilot: mergeContextPilot(mergeContextPilot(preset.contextPilot, customProfile.contextPilot), opts.contextPilot),

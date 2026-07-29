@@ -19,12 +19,44 @@ With skills:
 
 1. You pass a `skills` catalog to `createSmartAgent(...)`.
 2. The runtime filters the catalog by `isAvailable` and `minModelTier`.
-3. The model sees only a cheap `<available_skills>` block with each skill key and one-line header.
+3. The model discovers the catalog — by default through a cheap `<available_skills>` block with each skill key and one-line header. See [Discovery](#discovery-catalog-or-search).
 4. The runtime exposes two meta-tools: `open_skill` and `bind_skill_tools`.
 5. The model calls `open_skill(skillKey)` when the task needs that capability.
 6. Small skills bind their tools immediately. Large skills return a tool index, then the model calls `bind_skill_tools(skillKey, toolNames)` for the subset it needs.
 
 Opened skills stay available for the rest of the invoke. The registry is per invoke, append-only, and deduped by tool name.
+
+## Discovery: catalog or search
+
+`skillPolicy.disclosure` decides how the model learns which skills exist.
+
+| | `"catalog"` (default) | `"search"` |
+| --- | --- | --- |
+| System prompt | `<available_skills>` block, one line per skill | nothing |
+| Prompt cost | grows with the catalog, paid on every turn | constant |
+| Discovery | free, the model just reads it | one `search_skills` call |
+| Extra tool | — | `search_skills` |
+
+Stay on `"catalog"` for a small, curated, mostly-relevant catalog: discovery costs nothing and the model cannot miss a skill.
+
+Switch to `"search"` when the catalog is large, workspace-supplied, or mostly irrelevant to any one conversation — a tenant with 40 installed skills should not pay for 40 header lines on every turn of every conversation:
+
+```ts
+const agent = createSmartAgent({
+  model,
+  skills,
+  skillPolicy: { ...DEFAULT_SKILL_POLICY, disclosure: "search" },
+});
+```
+
+The model then calls `search_skills({ query: "convert a docx to pdf" })`, gets back matching `skillKey`s, and opens one. An empty query lists what is available. Ranking is a pure, deterministic keyword/prefix match over key, title and header — no embeddings, no I/O (`searchSkills` is exported if you want it directly).
+
+A query that matches nothing also returns the head of the catalog rather than an empty result. That is what keeps a Turkish question usable against an English-authored catalog: the lexical ranker cannot bridge languages, but the model reading those headers can.
+
+Two consequences worth knowing:
+
+- **Discovery is no longer guaranteed.** Nothing in the prompt says skills exist, so a model that never calls `search_skills` never finds them. The tool description carries that weight; if you override it via `promptHooks.toolDescriptions`, keep it explicit about what a skill is and when to look.
+- **Availability is resolved lazily**, inside the tool call, instead of once per invoke while assembling the block. An integration that connects mid-run shows up on the next search.
 
 ## Define a skill
 
@@ -114,7 +146,7 @@ const githubSkill: Skill = {
 };
 ```
 
-Unavailable skills are omitted from `<available_skills>`, and `open_skill` re-checks availability at call time.
+Unavailable skills are omitted from `<available_skills>` (or from `search_skills` results under `disclosure: "search"`), and `open_skill` re-checks availability at call time.
 
 Use `minModelTier: "large"` for skills that should be hidden from small-tier models:
 

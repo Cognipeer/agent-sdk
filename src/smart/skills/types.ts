@@ -3,12 +3,15 @@ import type { ToolInterface } from "../../types.js";
 /**
  * Skill primitive — progressive capability disclosure for the smart agent.
  *
- * A Skill is a lazy, self-contained capability bundle. The model always sees a
- * cheap one-line `header`; it calls `open_skill(key)` to load the skill's prompt
- * and (for small skills) bind its tools, or `bind_skill_tools(key, names)` to
- * bind a chosen subset of a fat skill. This keeps the number of bound tools per
- * step small — the property small models need — and replaces an up-front
- * tool-selector pass with on-demand disclosure.
+ * A Skill is a lazy, self-contained capability bundle. The model discovers a
+ * skill by its cheap one-line `header`, then calls `open_skill(key)` to load the
+ * skill's prompt and (for small skills) bind its tools, or
+ * `bind_skill_tools(key, names)` to bind a chosen subset of a fat skill. This
+ * keeps the number of bound tools per step small — the property small models
+ * need — and replaces an up-front tool-selector pass with on-demand disclosure.
+ *
+ * Discovery itself comes in two flavors, see `SkillPolicy.disclosure`: the
+ * headers can be listed in the system prompt, or looked up with `search_skills`.
  */
 
 export type SkillToolHeader = {
@@ -17,6 +20,22 @@ export type SkillToolHeader = {
 };
 
 export type SkillModelTier = "small" | "large";
+
+/**
+ * How the model finds out which skills exist.
+ *
+ *  - `"catalog"` (default): every available skill's header is rendered into the
+ *    system prompt as `<available_skills>`. Cheapest possible discovery — the
+ *    model needs no tool call — but the prompt grows with the catalog, and the
+ *    whole catalog is paid for on every single turn of every conversation.
+ *  - `"search"`: nothing goes into the prompt. The model finds skills through
+ *    the `search_skills` tool, whose description is the only always-on cost.
+ *    Prompt cost is constant, so this is the mode for a catalog that is large,
+ *    workspace-supplied, or mostly irrelevant to any one conversation. The
+ *    trade-off is real: a model that never calls `search_skills` never learns
+ *    the skills exist, so keep the tool description explicit about when to call.
+ */
+export type SkillDisclosure = "catalog" | "search";
 
 export type Skill = {
   /** Stable key, e.g. "mcp:atlassian" | "integration:google" | "builtin:drawio". */
@@ -54,6 +73,8 @@ export type SkillPolicy = {
   maxBoundToolsTotal: number;
   /** Current model tier; gates `minModelTier`. */
   modelTier?: SkillModelTier;
+  /** How the model discovers skills. Defaults to `"catalog"`. */
+  disclosure?: SkillDisclosure;
 };
 
 export const DEFAULT_SKILL_POLICY: SkillPolicy = {

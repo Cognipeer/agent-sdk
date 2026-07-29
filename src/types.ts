@@ -26,6 +26,14 @@ export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> 
   approvalPrompt?: string;
   approvalDefaults?: any;
   maxExecutionsPerRun?: number | null;
+  /**
+   * Context-retention hint declared by the tool author: what the summarizer may do
+   * to this tool's arguments and response under context pressure. The tool author
+   * knows whether the arguments are the payload (a file write) or just identity (a
+   * lookup); a global policy cannot. A caller-supplied
+   * `toolResponses.retentionByTool[name]` still overrides this per axis.
+   */
+  retention?: ToolRetentionSpec;
   [key: string]: any;
 }
 
@@ -364,6 +372,39 @@ export type ContextPolicy = "raw" | "summary_only" | "hybrid";
 
 export type ToolResponseRetentionPolicy = "keep_full" | "keep_structured" | "summarize_archive" | "drop";
 
+/**
+ * Retention policy for a tool call's ARGUMENTS (the `tool_use` input), applied by
+ * the summarizer when it compacts an old exchange.
+ *
+ * - `keep`   — arguments are never modified. The safe default, and correct for the
+ *              overwhelming majority of tools whose arguments are identity/query
+ *              data (ids, paths, queries, flags).
+ * - `digest` — oversized *string fields only* are replaced with a compact
+ *              `{__digest:{chars,sha256,head,executionId}}` descriptor. Every small
+ *              scalar (path, id, mode, index) survives verbatim, so the model can
+ *              still say what it did — it just cannot re-read the payload. The
+ *              original arguments stay in `toolHistory` and are retrievable with
+ *              `get_tool_response({executionId, part:"input"})`.
+ *
+ * Reach for `digest` on content-authoring tools whose arguments carry the payload
+ * (file writes, document chunks, generated code/HTML). Those are the calls where
+ * archiving the *response* frees nothing, because the bulk was in the request.
+ */
+export type ToolInputRetentionPolicy = "keep" | "digest";
+
+/**
+ * Two-axis context retention for a single tool. Input and output are independent
+ * because value density is per-tool: a file-write tool carries its payload in the
+ * arguments and returns `{ok:true}`, while a search tool carries a short query and
+ * returns the bulk. One axis cannot serve both.
+ */
+export type ToolRetentionSpec = {
+  /** Argument retention. Defaults to `toolResponses.defaultInputPolicy` ("keep"). */
+  input?: ToolInputRetentionPolicy;
+  /** Response retention. Defaults to `toolResponses.defaultPolicy`. */
+  output?: ToolResponseRetentionPolicy;
+};
+
 export type ToolResponseClassification = "critical" | "informative" | "verbose";
 
 export type PlanningMode = "off" | "todo" | "planner_executor" | "reasoning_then_tools";
@@ -502,10 +543,43 @@ export type SmartAgentToolResponseConfig = {
   /**
    * Per-tool override of the summarizer retention policy. Wins over `defaultPolicy`.
    * Critical tools cannot be reduced regardless of override.
+   *
+   * @deprecated Prefer `retentionByTool`, which also covers argument retention.
+   * Still fully honored: it is consulted for the output axis after `retentionByTool`.
    */
   toolResponseRetentionByTool?: Record<string, ToolResponseRetentionPolicy>;
+  /**
+   * Retention policy applied to a tool call's ARGUMENTS when no per-tool policy is
+   * set. Defaults to `"keep"` — argument digesting is strictly opt-in, so enabling
+   * it is always a deliberate per-tool (or per-agent) decision.
+   */
+  defaultInputPolicy?: ToolInputRetentionPolicy;
+  /**
+   * Two-axis per-tool retention override, keyed by tool name. Wins over the tool
+   * definition's own `retention` and over the axis defaults. Either axis may be
+   * omitted to fall through to the next source.
+   *
+   * ```ts
+   * retentionByTool: {
+   *   create_text_file: { input: "digest", output: "summarize_archive" },
+   *   read_skills:      { output: "keep_full" },
+   * }
+   * ```
+   */
+  retentionByTool?: Record<string, ToolRetentionSpec>;
   /** Tool names whose responses are never reduced by the summarizer or hard cap. */
   criticalTools?: string[];
+  /**
+   * Per-field character threshold for argument digesting. A string argument field
+   * longer than this is replaced by a digest descriptor; shorter fields, and every
+   * non-string scalar, are preserved verbatim. Defaults to 2000.
+   */
+  maxToolInputFieldChars?: number;
+  /**
+   * How many leading characters of a digested field to keep as a human/model
+   * readable preview. Defaults to 200.
+   */
+  maxToolInputDigestHeadChars?: number;
   /** Controls whether Zod-backed tool schemas fail fast or warn on invalid args. */
   schemaValidation?: "strict" | "warn";
 };
@@ -591,13 +665,19 @@ export type SmartAgentOptions = {
   /** See AgentOptions.humanInTheLoop. */
   humanInTheLoop?: HumanInTheLoopOptions;
   /**
-   * Progressive capability disclosure. When provided, the agent exposes cheap
-   * skill headers in its system prompt and binds a skill's tools on demand via
-   * the built-in open_skill / bind_skill_tools tools. Keeps the bound-tool count
-   * per step small. An empty array is a no-op.
+   * Progressive capability disclosure. When provided, the agent binds a skill's
+   * tools on demand via the built-in open_skill / bind_skill_tools tools, which
+   * keeps the bound-tool count per step small. An empty array is a no-op.
+   *
+   * How the model discovers the catalog is set by `skillPolicy.disclosure`:
+   * cheap skill headers in the system prompt (`"catalog"`, the default), or a
+   * `search_skills` tool with nothing in the prompt (`"search"`).
    */
   skills?: import("./smart/skills/types.js").Skill[];
-  /** Caps/tiering for skill disclosure. Defaults to DEFAULT_SKILL_POLICY. */
+  /**
+   * Caps, tiering and discovery mode for skills. Defaults to
+   * DEFAULT_SKILL_POLICY (i.e. `disclosure: "catalog"`).
+   */
   skillPolicy?: import("./smart/skills/types.js").SkillPolicy;
   /**
    * Sub-agents for dynamic problem decomposition. When provided (or when

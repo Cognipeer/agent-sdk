@@ -8,6 +8,7 @@ import {
   composeToolSets,
   dedupeToolsByName,
   resolveAvailableSkills,
+  searchSkills,
 } from "../../../../src/smart/skills/registry.js";
 import {
   createSkillRegistryRef,
@@ -144,5 +145,80 @@ describe("dedupeToolsByName", () => {
   it("keeps the first occurrence of each name", () => {
     const out = dedupeToolsByName([tool("a"), tool("b"), tool("a")]);
     expect(out.map((t) => t.name)).toEqual(["a", "b"]);
+  });
+});
+
+describe("searchSkills", () => {
+  const skill = (key: string, title: string, header: string): Skill => ({
+    key,
+    title,
+    header,
+    prompt: "",
+    listToolIndex: () => [],
+    bindTools: () => [],
+  });
+
+  const catalog = [
+    skill("workspace:file_converter", "File Converter", "use when you need file conversion"),
+    skill("workspace:invoice", "Invoice Reader", "extract totals and dates from invoices"),
+    skill("workspace:docs", "Docs", "write and convert long documents"),
+    skill("mcp:jira", "Jira", "track issues and sprints"),
+  ];
+
+  const keys = (out: Skill[]) => out.map((s) => s.key);
+
+  it("ranks by the query and drops what does not match", () => {
+    expect(keys(searchSkills(catalog, "convert this docx to pdf"))).toEqual([
+      "workspace:file_converter",
+      "workspace:docs",
+    ]);
+  });
+
+  it("ignores noise words instead of letting them match as substrings", () => {
+    // "to" must not reach "totals", or every stopword drags in the whole catalog.
+    expect(keys(searchSkills(catalog, "to"))).toEqual(keys(catalog));
+    expect(keys(searchSkills(catalog, "to an"))).toEqual(keys(catalog));
+  });
+
+  it("bridges morphology: a 'conversion' header answers a 'convert' query", () => {
+    expect(keys(searchSkills(catalog, "convert"))[0]).toBe("workspace:file_converter");
+    expect(keys(searchSkills(catalog, "conversion"))[0]).toBe("workspace:file_converter");
+    // plural/suffix in the other direction
+    expect(keys(searchSkills(catalog, "invoices"))).toEqual(["workspace:invoice"]);
+  });
+
+  it("splits non-ASCII scripts on word boundaries, not on their letters", () => {
+    const tr = [skill("workspace:donusum", "Dosya Dönüşümü", "faturaları dönüştürmek için")];
+    expect(keys(searchSkills(tr, "dönüşüm"))).toEqual(["workspace:donusum"]);
+    expect(keys(searchSkills(tr, "fatura"))).toEqual(["workspace:donusum"]);
+  });
+
+  it("prefers covering more of the query over a heavier single-field hit", () => {
+    // "convert" hits file_converter's key AND title (heavier), but docs matches
+    // both query words - which is the better answer.
+    expect(keys(searchSkills(catalog, "convert documents"))).toEqual([
+      "workspace:docs",
+      "workspace:file_converter",
+    ]);
+  });
+
+  it("treats an empty or all-noise query as a browse request", () => {
+    expect(keys(searchSkills(catalog))).toEqual(keys(catalog));
+    expect(keys(searchSkills(catalog, "   "))).toEqual(keys(catalog));
+  });
+
+  it("returns nothing when the query matches nothing", () => {
+    expect(searchSkills(catalog, "kubernetes cluster autoscaling")).toEqual([]);
+  });
+
+  it("honors the limit and keeps catalog order for ties", () => {
+    expect(keys(searchSkills(catalog, "", 2))).toEqual([catalog[0].key, catalog[1].key]);
+    // file_converter and invoice both score 9 on one term each, so the tie is
+    // broken by catalog order; docs only grazes "convert" in its header.
+    expect(keys(searchSkills(catalog, "invoice conversion"))).toEqual([
+      "workspace:file_converter",
+      "workspace:invoice",
+      "workspace:docs",
+    ]);
   });
 });

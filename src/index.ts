@@ -23,9 +23,30 @@ export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
 export { resolveUserQuestionState } from "./utils/userQuestions.js";
-export { createAskUserQuestionTool } from "./humanLoop.js";
+export { createAskUserQuestionTool, ASK_USER_TOOL_NAME } from "./humanLoop.js";
 export { fromLangchainTools } from "./adapters/langchain.js";
 export { resolveReasoning, validateReasoningConfig } from "./smart/reasoning.js";
+// Two-axis context retention (input/output) — policy resolution + field-level
+// argument digest. Exported so hosts can declare, inspect, and unit-test their
+// own retention tables.
+export {
+  CONTROL_PLANE_TOOL_NAMES,
+  DELEGATION_TOOL_NAMES,
+  DEFAULT_MAX_TOOL_INPUT_FIELD_CHARS,
+  DEFAULT_TOOL_INPUT_DIGEST_HEAD_CHARS,
+  TOOL_INPUT_DIGEST_KEY,
+  collectToolRetentionDeclarations,
+  digestToolInputArguments,
+  digestToolInputValue,
+  resolveInputRetention,
+  resolveSummarizationRetention,
+  summarizeObject,
+} from "./smart/toolResponses.js";
+export type {
+  ToolInputDigestOptions,
+  ToolInputDigestResult,
+  ToolRetentionDeclarations,
+} from "./smart/toolResponses.js";
 export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp } from "./utils/tracing.js";
 // Native LLM Providers (no LangChain dependency)
 export {
@@ -93,6 +114,8 @@ export type {
 	ChildContextPolicy,
 	ToolResponseClassification,
 	ToolResponseRetentionPolicy,
+	ToolInputRetentionPolicy,
+	ToolRetentionSpec,
 	EvalCase,
 	EvalCaseResult,
 	EvalHarnessMetrics,

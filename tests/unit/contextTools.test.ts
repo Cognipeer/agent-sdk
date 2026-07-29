@@ -153,4 +153,60 @@ describe('get_tool_response gating', () => {
     stateRef.messages = [{ role: 'tool', content: '{"results":[1,2,3]}' }];
     await expect(getTool.invoke({ executionId: 'exec-123' })).resolves.toContain('not recoverable');
   });
+
+  // A digested ARGUMENT marker lives in tool_calls[].function.arguments, not in a
+  // message's content. Without scanning there the gate would tell the model its
+  // own digested call "is not recoverable" — the asymmetry that made argument
+  // compaction lossy in the first place.
+  it('detects a __digest argument marker carried on an assistant tool_call', () => {
+    const digestedCall = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'create_text_file',
+          arguments: JSON.stringify({
+            filePath: '/reports/q3.md',
+            content: { __digest: { chars: 61840, sha256: 'abc', head: '# Q3', recover: 'get_tool_response executionId="exec-9" part="input"' } },
+          }),
+        },
+      }],
+    };
+
+    expect(hasToolResponseRecoveryReference([digestedCall])).toBe(true);
+    expect(hasToolResponseRecoveryReference([digestedCall], 'exec-9')).toBe(true);
+    expect(hasToolResponseRecoveryReference([digestedCall], 'exec-other')).toBe(false);
+  });
+
+  it('pages the original ARGUMENTS back in with part="input"', async () => {
+    const originalArgs = { filePath: '/reports/q3.md', mode: 'append', content: 'x'.repeat(5000) };
+    const stateRef: any = {
+      toolHistory: [{ executionId: 'exec-9', args: originalArgs, rawOutput: { ok: true } }],
+      toolHistoryArchived: [],
+      messages: [{
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: {
+            name: 'create_text_file',
+            arguments: JSON.stringify({
+              filePath: '/reports/q3.md',
+              content: { __digest: { chars: 5000, sha256: 'abc', head: 'xxx', recover: 'get_tool_response executionId="exec-9" part="input"' } },
+            }),
+          },
+        }],
+      }],
+    };
+
+    const getTool = createGetToolResponseTool(stateRef);
+    await expect(getTool.invoke({ executionId: 'exec-9', part: 'input' })).resolves.toEqual(originalArgs);
+    // The output side of the same execution still resolves independently.
+    await expect(getTool.invoke({ executionId: 'exec-9', part: 'output' })).resolves.toEqual({ ok: true });
+    // Default part is still "output" — existing callers are unaffected.
+    await expect(getTool.invoke({ executionId: 'exec-9' })).resolves.toEqual({ ok: true });
+  });
 });

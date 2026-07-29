@@ -375,9 +375,15 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       // Resolve which skills are usable this invoke (availability + tier gating)
       // and surface their headers in the system prompt so the model knows what
       // it can open. open_skill re-checks availability at call time.
-      const availableSkills = skillsEnabled
-        ? await resolveAvailableSkills(skills, { modelTier: skillPolicy.modelTier })
-        : [];
+      //
+      // Under `disclosure: "search"` discovery moves into the search_skills tool
+      // instead, so nothing is rendered here — and the availability probes are
+      // skipped too, since that tool resolves them itself when it is called.
+      const catalogDisclosure = skillPolicy.disclosure !== "search";
+      const availableSkills =
+        skillsEnabled && catalogDisclosure
+          ? await resolveAvailableSkills(skills, { modelTier: skillPolicy.modelTier })
+          : [];
       const skillBlock = availableSkills.length > 0 ? buildSkillHeaderBlock(availableSkills) : undefined;
 
       // Surface the sub-agent catalog so the model knows what it can delegate to.
