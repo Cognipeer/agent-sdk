@@ -10,8 +10,8 @@ import type {
 } from "../types.js";
 import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
 import { isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
-import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
-import { normalizeUsage } from "../utils/usage.js";
+import { getModelName, recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
+import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { renderStructuredSummary } from "../smart/contextPolicy.js";
 import {
@@ -487,6 +487,12 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
           outputTokensActual = normalized.completion_tokens;
           totalTokensActual = normalized.total_tokens;
           cachedInputTokens = normalized.prompt_tokens_details?.cached_tokens;
+          // Summarization is a real model call and is already reported to the
+          // tracing sink. Recording it in state.usage as well is what makes it
+          // visible to callers that bill from `result.metadata.usage` — without
+          // this, a host's own ledger is permanently short by the summarizer's
+          // spend on exactly the longest, most expensive runs.
+          recordUsage(state, getModelName(model) || "unknown_model", normalized);
         }
     } catch (err: any) {
         durationMs = Date.now() - startTime;

@@ -85,6 +85,49 @@ export function normalizeUsage(raw: any | undefined | null): NormalizedUsage | u
   return normalized;
 }
 
+/**
+ * Append one model call to the agent state's usage ledger and roll it into the
+ * per-model totals.
+ *
+ * Every node that calls a model must go through here. `state.usage` is what a
+ * host bills from (`result.metadata.usage`), so a node that reports its tokens
+ * only to the tracing sink is spend the host can see in its observability
+ * dashboard and nowhere in its own accounting — which is exactly how the two
+ * drift apart on the longest runs.
+ *
+ * Returns the entry id so a caller can correlate; the id is also the natural
+ * idempotency key for a host writing one row per model call.
+ */
+export function recordUsage(
+  state: any,
+  modelName: string,
+  normalized: NormalizedUsage,
+): string {
+  const usageState = state.usage || { perRequest: [], totals: {} };
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const cachedInput = normalized.prompt_tokens_details?.cached_tokens;
+
+  usageState.perRequest.push({
+    id,
+    modelName,
+    usage: normalized,
+    timestamp: new Date().toISOString(),
+    turn: usageState.perRequest.length + 1,
+    cachedInput,
+  });
+
+  const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+  usageState.totals[modelName] = {
+    input: previous.input + (Number(normalized.prompt_tokens) || 0),
+    output: previous.output + (Number(normalized.completion_tokens) || 0),
+    total: previous.total + (Number(normalized.total_tokens) || 0),
+    cachedInput: previous.cachedInput + (Number(cachedInput) || 0),
+  };
+
+  state.usage = usageState;
+  return id;
+}
+
 function num(...vals: any[]): number | undefined {
   for (const v of vals) {
     if (v === 0) return 0;

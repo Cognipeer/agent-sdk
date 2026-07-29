@@ -1,5 +1,5 @@
 import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../types.js";
-import { normalizeUsage } from "../utils/usage.js";
+import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { detectVolatileContent } from "../smart/contextPilot/index.js";
@@ -291,24 +291,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       messageList: messagesWithResponse,
     });
     if (normalized) {
-      const usageState = state.usage || { perRequest: [], totals: {} };
-      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const turn = usageState.perRequest.length + 1;
-      const timestamp = new Date().toISOString();
-      const cachedInputTok = normalized.prompt_tokens_details?.cached_tokens;
-      usageState.perRequest.push({ id, modelName, usage: normalized, timestamp, turn, cachedInput: cachedInputTok });
-      const inputTok = normalized.prompt_tokens;
-      const outputTok = normalized.completion_tokens;
-      const totalTok = normalized.total_tokens;
-      const key = modelName as string;
-      const agg = usageState.totals[key] || { input: 0, output: 0, total: 0, cachedInput: 0 };
-      usageState.totals[key] = {
-        input: agg.input + (Number(inputTok) || 0),
-        output: agg.output + (Number(outputTok) || 0),
-        total: agg.total + (Number(totalTok) || 0),
-        cachedInput: agg.cachedInput + (Number(cachedInputTok) || 0),
-      };
-      (state as any).usage = usageState;
+      recordUsage(state, modelName, normalized);
     }
 
     return { messages: messagesWithResponse, usage: (state as any).usage };
