@@ -554,6 +554,35 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         }
     }
 
+    // 2c. Tool-call ARGUMENTS are part of the context too. For file-writing /
+    // content-authoring tools the arguments often carry the entire payload
+    // (e.g. a 40k-char document chunk), so archiving only the tool RESPONSE
+    // left the context dominated by argument text that no retention policy
+    // could touch — summarization looked "enabled" yet the context kept
+    // growing until the clamp had to truncate. Compact the parent assistant's
+    // matching tool_call arguments for every exchange whose response is
+    // summarized/archived in this pass (protected and keep_full exchanges are
+    // untouched). The replacement is VALID JSON so every provider adapter
+    // (including Bedrock's toolUse mapping, which parses arguments) stays
+    // safe, and the original arguments remain available in toolHistory.
+    const ARGS_COMPACT_MIN_CHARS = 2000;
+    const ARGS_ARCHIVED_MARKER = '"__argsArchived"';
+    const argsCompactableToolCallIds = new Set<string>();
+    for (const m of messages) {
+        if (m.role !== 'tool' || isSyntheticSummaryMessage(m)) continue;
+        const toolCallId = m.tool_call_id;
+        if (!toolCallId || !toolCallIdToAssistantIdx.has(toolCallId)) continue;
+        if (protectedToolCallIds.has(toolCallId)) continue;
+        // Placeholders from earlier passes are included on purpose: their
+        // responses are already archived, but their arguments may still be
+        // full-size (pre-fix state or a pass interrupted mid-way).
+        if (!isSummarizedToolPlaceholder(m.content)) {
+            const policy = resolveSummarizationRetention(m.name || '', resolved);
+            if (policy === 'keep_full') continue;
+        }
+        argsCompactableToolCallIds.add(toolCallId);
+    }
+
     // 3. Rewrite tool messages per resolved retention policy.
     // Orphan tool messages (no matching assistant tool_call) are removed.
     // The last assistant turn's tool responses are always protected so the agent
@@ -561,6 +590,31 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     const archivedExecutions: SmartState["toolHistoryArchived"] = [...(state.toolHistoryArchived || [])];
     const archivedIds = new Set(archivedExecutions.map((entry) => entry?.executionId).filter(Boolean));
     const newMessages = messages.map((m) => {
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            let changed = false;
+            const nextToolCalls = m.tool_calls.map((tc: any) => {
+                const args = tc?.function?.arguments;
+                if (!tc?.id || !argsCompactableToolCallIds.has(tc.id)) return tc;
+                if (typeof args !== 'string' || args.length <= ARGS_COMPACT_MIN_CHARS) return tc;
+                if (args.startsWith('{' + ARGS_ARCHIVED_MARKER)) return tc;
+                changed = true;
+                const historyEntry = findToolHistoryEntry(state, tc.id, tc.function?.name);
+                return {
+                    ...tc,
+                    function: {
+                        ...tc.function,
+                        arguments: JSON.stringify({
+                            __argsArchived: true,
+                            tool: tc.function?.name ?? null,
+                            executionId: historyEntry?.executionId ?? null,
+                            originalChars: args.length,
+                            note: 'Large tool arguments were compacted during context summarization. The call executed with the original arguments; the outcome is in the tool response/summary.',
+                        }),
+                    },
+                };
+            });
+            return changed ? { ...m, tool_calls: nextToolCalls } : m;
+        }
         if (m.role === 'tool') {
             if (isSyntheticSummaryMessage(m)) {
                 return m;

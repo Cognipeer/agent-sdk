@@ -623,12 +623,32 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
     }
 
+    // The main loop can exit for reasons that mean "this run must not continue
+    // right now": a human-in-the-loop pause (approval / user question), a
+    // cancellation, a summarization signal (context over budget — the caller
+    // must compact before any further model call), a breached budget limit, a
+    // guardrail block, or a checkpoint pause. The structured-output finalizer
+    // below must never override these. Running it anyway made the model re-ask
+    // pending questions (duplicate ask_user_question entries piling up while
+    // the run was supposedly paused), execute additional tools after the
+    // pause, and issue model calls on an over-budget context (provider 400s)
+    // with a dangling unresolved tool_calls tail.
+    const structuredFinalizeBlocked = Boolean(
+      pausedStage
+      || state.ctx?.__awaitingApproval
+      || state.ctx?.__awaitingUserQuestion
+      || state.ctx?.__cancelled
+      || (state.ctx as any)?.__needsSummarization
+      || (state.ctx as any)?.__limitBreached
+      || (state.ctx as any)?.__guardrailBlocked
+    );
+
     // Best-effort structured-output finalization when the loop exited without
     // a parsed output. For native strategy we only attempt a one-shot parse of
     // the last assistant message — no extra model calls. Retries are reserved
     // for the tool-based strategy, where the model can stubbornly skip calling
     // `response` and we need to nudge it.
-    if (soManager && !(state as any).ctx?.__finalizedDueToStructuredOutput) {
+    if (soManager && !(state as any).ctx?.__finalizedDueToStructuredOutput && !structuredFinalizeBlocked) {
       const lastForParse: any = state.messages[state.messages.length - 1];
       if (lastForParse?.role === "assistant") {
         const assistantText = extractMessageText(lastForParse);
@@ -649,11 +669,21 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     if (
       soManager &&
       soManager.strategy.kind === "tool_based" &&
-      !(state as any).ctx?.__finalizedDueToStructuredOutput
+      !(state as any).ctx?.__finalizedDueToStructuredOutput &&
+      !structuredFinalizeBlocked
     ) {
       const maxPostLoopRetries = soManager.maxRetries;
       for (let postRetry = 0; postRetry < maxPostLoopRetries; postRetry++) {
         if ((state as any).ctx?.__finalizedDueToStructuredOutput) break;
+        // A pause or budget/summarization signal raised DURING a finalize round
+        // (e.g. the nudged model called ask_user_question, or a tool required
+        // approval) ends finalization immediately for the same reasons.
+        if (
+          state.ctx?.__awaitingApproval
+          || state.ctx?.__awaitingUserQuestion
+          || state.ctx?.__cancelled
+          || (state.ctx as any)?.__limitBreached
+        ) break;
 
         const last: any = state.messages[state.messages.length - 1];
         const lastHasToolCalls = Array.isArray(last?.tool_calls) && last.tool_calls.length > 0;

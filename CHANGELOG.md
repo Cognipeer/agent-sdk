@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-07-29
+
+### Fixed
+- **`clampToBudget` no longer drops the run's context anchor.** With
+  `context.policy: "raw"`, the over-budget clamp removed messages from the
+  front of the transcript — and the first casualty was the first user message,
+  which for worker-style agents carries the entire operating context and task
+  brief. Models that lost it concluded "no task was provided" and bounced an
+  `ask_user_question` back to the user mid-run (production incident class,
+  2026-07). The clamp now pins every system message plus the FIRST user
+  message, and drops the oldest assistant/tool exchanges (adjacency-safe)
+  instead. When nothing droppable remains, the view is returned over budget
+  rather than destroying the anchor.
+- **Hybrid turn window keeps the first user message in both counting modes.**
+  `collectRecentTurns` only re-attached the first user message when it was
+  counting assistant turns; a conversation with more user turns than
+  `lastTurnsToKeep` silently lost its original instruction from the model view.
+- **Post-loop structured-output finalizer respects run pauses and budget
+  signals.** After the main loop exited for an `ask_user_question` /
+  tool-approval pause, a cancellation, a summarization signal, a breached
+  limit, or a guardrail block, the tool-based finalizer still nudged the model
+  and executed resulting tool calls. That stacked duplicate pending questions
+  while the run was supposedly suspended, ran tools after the pause, and
+  issued model calls on an over-budget context (provider 400s) with a dangling
+  unresolved tool_calls tail. The finalizer now skips those exits entirely and
+  stops immediately if a pause is raised during one of its own rounds.
+- **Summarization now compacts archived tool-call ARGUMENTS.** Retention
+  policies rewrote tool RESPONSES only, so content-authoring calls whose
+  arguments carry the payload (file writes, document chunks — often tens of
+  kilobytes each) kept the context growing no matter how aggressively
+  responses were archived, eventually forcing destructive clamping. When an
+  exchange's response is summarized/archived, oversized arguments (>2k chars)
+  on the parent assistant's matching `tool_call` are now replaced with a
+  compact valid-JSON marker (`{"__argsArchived":true, executionId, ...}`);
+  originals remain in `toolHistory`, and the protected most-recent exchange is
+  never touched.
+
+### Added
+- **`prepare` script** so git-based installs (`npm i github:Cognipeer/agent-sdk#branch`)
+  build `dist/` automatically and `npm publish` always ships a fresh build.
+
+## [0.8.6] - 2026-07-29
+
+### Changed
+- Internal refactor: extracted the shared `recordUsage` helper for per-request
+  usage accounting (behavior unchanged).
+
 ## [0.8.5] - 2026-07-27
 
 ### Added
