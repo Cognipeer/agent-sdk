@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-07-29
+
+### Fixed
+- **Summarization spend is now recorded in `state.usage`.** Summarization is a
+  real model call, but the node reported its tokens only to the tracing sink.
+  A host billing from `result.metadata.usage` was therefore short by exactly
+  the summarizer's spend — and only on the long runs where summarization
+  fires, i.e. the expensive ones, which is how a host's own accounting and its
+  observability dashboard drift apart precisely where the money is. The ledger
+  append that `agent.ts` and `agentCore.ts` had each open-coded is extracted
+  into `recordUsage()` in `utils/usage.ts` and called from the summarization
+  node too, so every node that calls a model now goes through one path.
+
 ## [0.8.7] - 2026-07-29
 
 ### Fixed
