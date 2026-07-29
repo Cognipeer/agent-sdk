@@ -174,6 +174,60 @@ describe('contextSummarize', () => {
     );
   });
 
+  it('records the summarization call in state.usage so hosts can bill it', async () => {
+    // Summarization fires on the longest, most expensive runs. Its tokens were
+    // reported to the tracing sink but never entered state.usage, so a host
+    // billing from result.metadata.usage was permanently short by exactly that
+    // spend — and only ever on the runs where it mattered most.
+    const summarizer = createContextSummarizeNode({
+      summarization: true,
+      model: {
+        modelName: 'gpt-5.4-mini',
+        async invoke() {
+          return {
+            role: 'assistant',
+            content: JSON.stringify({
+              stable_facts: [],
+              active_goals: [],
+              open_questions: [],
+              discarded_obsolete: [],
+              rawSummary: 'summary',
+            }),
+            usage: { prompt_tokens: 900, completion_tokens: 120, total_tokens: 1020 },
+          };
+        },
+      },
+    } as any);
+
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'summarize this' },
+        {
+          role: 'assistant',
+          content: 'calling tool',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'fetch', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', name: 'fetch', tool_call_id: 'call_1', content: 'a long tool response' },
+      ],
+      summaries: [],
+      summaryRecords: [],
+      usage: { perRequest: [], totals: {} },
+      ctx: {},
+    };
+
+    await summarizer(state);
+
+    expect(state.usage.perRequest).toHaveLength(1);
+    expect(state.usage.perRequest[0]).toMatchObject({
+      modelName: 'gpt-5.4-mini',
+      usage: expect.objectContaining({ prompt_tokens: 900, completion_tokens: 120 }),
+    });
+    expect(state.usage.perRequest[0].id).toEqual(expect.any(String));
+    expect(state.usage.totals['gpt-5.4-mini']).toMatchObject({ input: 900, output: 120, total: 1020 });
+  });
+
   it('should preserve tool retrieval hints when compacting tool messages', async () => {
     const summarizer = createContextSummarizeNode({
       summarization: true,
