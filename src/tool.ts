@@ -1,6 +1,6 @@
 import type { ZodSchema } from "zod";
 
-import type { ToolInterface } from "./types.js";
+import type { ToolInterface, ToolRetentionSpec } from "./types.js";
 
 export type SmartToolFn = (args: any) => Promise<any> | any;
 
@@ -39,6 +39,7 @@ export function createTool({
     maxExecutionsPerRun,
     cache,
     retry,
+    retention,
 }: {
     name: string;
     description?: string;
@@ -52,6 +53,13 @@ export function createTool({
     cache?: boolean | ToolCachePolicy;
     /** Per-tool retry + circuit-breaker policy. */
     retry?: ToolRetryPolicy;
+    /**
+     * Two-axis context-retention hint: what the summarizer may do to this tool's
+     * arguments and response under context pressure. Declare `input: "digest"` on
+     * tools whose arguments carry a bulk payload (document/file content, generated
+     * code) so compaction can reclaim it; leave it unset for identity/query tools.
+     */
+    retention?: ToolRetentionSpec;
 }): ToolInterface {
     const execute: SmartToolFn = async (input: any) => func(input);
 
@@ -83,6 +91,9 @@ export function createTool({
     }
     if (retry !== undefined) {
         (toolRecord as any).retry = retry;
+    }
+    if (retention !== undefined) {
+        (toolRecord as any).retention = retention;
     }
 
     (toolRecord as any).__source = (toolRecord as any).__source || "smart";

@@ -82,6 +82,10 @@ Steps:
 3. Rewrite older tool messages according to the resolved retention policy:
    - `keep_full`, `keep_structured`, `summarize_archive` (default), or `drop`.
    - Critical tools and per-tool overrides set to `keep_full` are skipped.
+   - Separately, tool-call **arguments** are field-level digested for tools that opted in
+     with `retention: { input: "digest" }` (default `keep`, so nothing happens implicitly).
+     Only oversized string fields are replaced; identifying scalars survive, and the
+     original is recoverable with `get_tool_response({ executionId, part: "input" })`.
 4. Append a synthetic assistant/tool pair labelled `summarize_context` containing the structured summary.
 5. Persist the structured summary on `state.summaryRecords` and the latest text on `state.summaries`.
 

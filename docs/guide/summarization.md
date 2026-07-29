@@ -52,8 +52,15 @@ Important fields:
 - `summarization.integrityCheck` — verifies stable facts survive across passes (default `true`)
 - `context.toolResponsePolicy` — retention applied when the summarizer rewrites tool messages
 - `toolResponses.defaultPolicy` — same as above; takes precedence over `context.toolResponsePolicy`
-- `toolResponses.toolResponseRetentionByTool` — per-tool override, highest priority
+- `toolResponses.retentionByTool` — two-axis per-tool override (`{ input, output }`), highest priority
+- `toolResponses.toolResponseRetentionByTool` — legacy single-axis (output-only) map; still honored
+- `toolResponses.defaultInputPolicy` — `keep` (default) or `digest` for tool-call **arguments**
 - `toolResponses.criticalTools` — tool names that are never reduced (defaults include `response`, `manage_todo_list`, `get_tool_response`)
+
+Argument retention is its own axis: tools whose arguments carry a bulk payload (file
+writes, document chunks) opt in with `retention: { input: "digest" }` so compaction can
+reclaim the payload field while keeping every identifying scalar. See
+[Tool-heavy agents &sect;7b](/guide/tool-heavy-agents/) for the full contract.
 
 ## How the trigger interacts with the loop
 

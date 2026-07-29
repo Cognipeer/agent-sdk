@@ -33,15 +33,32 @@ function createSmartAgent<TOutput = unknown>(options: SmartAgentOptions): SmartA
 
 ### Tool response retention
 
-`toolResponses` controls how tool payloads are stored in history and re-presented to the model under context pressure. Retention is lazy: tool outputs are stored in full in `toolHistory` and are only rewritten when the summarizer runs.
+`toolResponses` controls how tool payloads are stored in history and re-presented to the model under context pressure. Retention is lazy: tool inputs and outputs are stored in full in `toolHistory` and are only rewritten in the *model view* when the summarizer runs.
+
+Retention has **two independent axes**, because value density is per-tool: a search tool carries a short query and returns the bulk, while a file writer carries the payload in its arguments and returns `{ok: true}`. Compacting only responses frees nothing on the second kind.
+
+**Output axis (tool results)**
 
 - `defaultPolicy` is applied by the summarizer to non-critical tool messages. Valid values: `keep_full`, `keep_structured`, `summarize_archive`, `drop`. Default is `summarize_archive`.
-- `toolResponseRetentionByTool` overrides the default policy on a per-tool basis and always wins.
+- `retentionByTool[name].output` is the per-tool override.
+- `toolResponseRetentionByTool` is the legacy single-axis map. Still fully honored (consulted right after `retentionByTool`) — prefer `retentionByTool`.
 - `criticalTools` is the set of tool names that are never reduced. The default list covers `response`, `manage_todo_list`, and `get_tool_response`.
+
+**Input axis (tool-call arguments)**
+
+- `defaultInputPolicy` — `keep` (default) or `digest`. `keep` means arguments are never touched, so argument compaction is strictly opt-in.
+- `retentionByTool[name].input` is the per-tool override; a tool can also declare its own default via `createTool({ retention: { input: "digest" } })`.
+- `digest` is **field-level**: only string fields longer than `maxToolInputFieldChars` (default 2000) are replaced by a `{__digest:{chars,sha256,head,recover}}` descriptor keeping `maxToolInputDigestHeadChars` (default 200) leading characters. Identifying scalars — paths, ids, modes, indexes — always survive.
+- Control-plane and delegation tools (`response`, `manage_todo_list`, `ask_user_question`, `open_skill`, `bind_skill_tools`, `search_skills`, `get_tool_response`, `delegate_to`, `spawn_subagent`, `spawn_subagents_parallel`) are never digested, and config cannot override that.
+
+**Shared**
+
 - `maxToolResponseChars` and `maxToolResponseTokens` only drive an eager hard-cap truncation when a single non-critical tool output is oversized. Truncated heads always point at `get_tool_response` for recovery.
 - `schemaValidation` controls whether Zod-based tool input validation fails fast or only warns.
 
-Resolution order at summarization time: critical tool &rarr; per-tool override &rarr; default policy. The full payload is always recoverable through `get_tool_response` using the execution id embedded in the placeholder.
+Resolution order at summarization time — output: critical tool &rarr; `retentionByTool.output` &rarr; legacy per-tool map &rarr; tool-declared `retention.output` &rarr; control-plane default &rarr; `defaultPolicy`. Input: control-plane/delegation &rarr; critical tool &rarr; `retentionByTool.input` &rarr; tool-declared `retention.input` &rarr; `defaultInputPolicy`.
+
+Both sides remain recoverable through `get_tool_response` using the execution id embedded in the placeholder or digest: `part: "output"` (default) returns the archived result, `part: "input"` returns the original arguments.
 
 ### Skills and progressive disclosure
 
@@ -86,7 +103,7 @@ const agent = createSmartAgent({
   planning: { mode: "todo" },
   toolResponses: {
     defaultPolicy: "summarize_archive",
-    toolResponseRetentionByTool: { lookup: "keep_full" },
+    retentionByTool: { lookup: { output: "keep_full" } },
   },
   limits: { maxToolCalls: 8, maxContextTokens: 12000 },
   tracing: { enabled: true },

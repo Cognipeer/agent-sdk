@@ -334,9 +334,15 @@ describe('fix 3 — post-loop structured-output finalizer respects run pauses', 
   });
 });
 
-describe('fix 4 — summarization compacts archived tool-call ARGUMENTS', () => {
-  it('replaces oversized arguments of archived exchanges with a valid-JSON marker and keeps the newest turn intact', async () => {
-    const hugeChunk = WORD.repeat(1200); // ~66k chars of argument payload per call
+describe('fix 4 — summarization can reclaim tool-call ARGUMENTS (opt-in, field-level)', () => {
+  const hugeChunk = WORD.repeat(1200); // ~66k chars of argument payload per call
+
+  /**
+   * Writes three oversized chunks then finalizes. `retentionInput` decides whether
+   * the append tool opts into argument digesting; everything else is identical, so
+   * the two runs isolate exactly what the input axis does.
+   */
+  async function runWriter(retentionInput: 'keep' | 'digest' | undefined) {
     let pages = 0;
 
     class WritingModel extends ScriptedModel {
@@ -356,7 +362,14 @@ describe('fix 4 — summarization compacts archived tool-call ARGUMENTS', () => 
                 type: 'function',
                 function: {
                   name: 'append_chunk',
-                  arguments: JSON.stringify({ page: pages, content: hugeChunk }),
+                  // filePath/mode/page are the identifying scalars a field-level
+                  // digest must preserve; `content` is the payload it may reclaim.
+                  arguments: JSON.stringify({
+                    filePath: '/reports/q3.md',
+                    mode: 'append',
+                    page: pages,
+                    content: hugeChunk,
+                  }),
                 },
               },
             ],
@@ -379,13 +392,19 @@ describe('fix 4 — summarization compacts archived tool-call ARGUMENTS', () => 
     const appendTool = createTool({
       name: 'append_chunk',
       description: 'Append a content chunk to the working document.',
-      schema: z.object({ page: z.number().int().min(1), content: z.string().min(1) }),
+      schema: z.object({
+        filePath: z.string(),
+        mode: z.string(),
+        page: z.number().int().min(1),
+        content: z.string().min(1),
+      }),
       func: async ({ page }: { page: number; content: string }) => ({ ok: true, page }),
+      ...(retentionInput ? { retention: { input: retentionInput } } : {}),
     });
 
     const model = new WritingModel(0);
     const agent = createSmartAgent<z.infer<typeof FINAL_SCHEMA>>({
-      name: 'ArgsCompaction',
+      name: 'ArgsRetention',
       model: model as never,
       tools: [appendTool],
       runtimeProfile: 'balanced',
@@ -412,32 +431,55 @@ describe('fix 4 — summarization compacts archived tool-call ARGUMENTS', () => 
     const result = await agent.invoke(initialState(`${TASK_ANCHOR}\nWrite the document.`), {});
     expect(result.output).toEqual({ summary: 'written' });
 
-    // Inspect the final persisted transcript: archived write calls must carry
-    // the compact marker instead of the original huge arguments, and markers
-    // must be valid JSON (provider adapters parse tool-call arguments).
-    const finalMessages = (result.state?.messages ?? []) as Message[];
-    const markers: Array<Record<string, unknown>> = [];
-    let fullArgsSurvivors = 0;
-    for (const message of finalMessages) {
+    const digested: Array<Record<string, any>> = [];
+    const untouched: Array<Record<string, any>> = [];
+    for (const message of (result.state?.messages ?? []) as Message[]) {
       if (message.role !== 'assistant' || !Array.isArray((message as any).tool_calls)) continue;
       for (const tc of (message as any).tool_calls) {
         if (tc?.function?.name !== 'append_chunk') continue;
-        const args = String(tc.function.arguments ?? '');
-        if (args.includes('"__argsArchived"')) {
-          markers.push(JSON.parse(args));
-        } else if (args.length > 10_000) {
-          fullArgsSurvivors += 1;
-        }
+        // Every rewrite must stay valid JSON — provider adapters (Bedrock's
+        // toolUse mapping) parse tool-call arguments.
+        const parsed = JSON.parse(String(tc.function.arguments ?? '{}'));
+        if (parsed?.content?.__digest) digested.push(parsed);
+        else untouched.push(parsed);
       }
     }
+    return { digested, untouched };
+  }
 
-    expect(markers.length).toBeGreaterThan(0);
-    for (const marker of markers) {
-      expect(marker.__argsArchived).toBe(true);
-      expect(typeof marker.originalChars).toBe('number');
+  it('leaves arguments completely untouched by default (digesting is opt-in)', async () => {
+    const { digested, untouched } = await runWriter(undefined);
+
+    expect(digested).toHaveLength(0);
+    expect(untouched.length).toBeGreaterThan(0);
+    for (const args of untouched) {
+      expect(args.content).toBe(hugeChunk);
     }
-    // The protected (most recent) exchange keeps its full arguments so the
-    // model can still reason about what it just wrote.
-    expect(fullArgsSurvivors).toBeGreaterThan(0);
+  });
+
+  it('digests only the payload FIELD when the tool opts in, preserving identifying scalars', async () => {
+    const { digested, untouched } = await runWriter('digest');
+
+    expect(digested.length).toBeGreaterThan(0);
+    for (const args of digested) {
+      // The whole point: the model can still say exactly what it did.
+      expect(args.filePath).toBe('/reports/q3.md');
+      expect(args.mode).toBe('append');
+      expect(typeof args.page).toBe('number');
+      // ...but the payload is gone, replaced by a recoverable descriptor.
+      expect(args.content.__digest.chars).toBe(hugeChunk.length);
+      expect(typeof args.content.__digest.sha256).toBe('string');
+      expect(hugeChunk.startsWith(args.content.__digest.head)).toBe(true);
+      expect(String(args.content.__digest.recover)).toContain('get_tool_response');
+    }
+    // The protected (most recent) exchange keeps its full arguments so the model
+    // can still reason about what it just wrote.
+    expect(untouched.length).toBeGreaterThan(0);
+    expect(untouched.some((args) => args.content === hugeChunk)).toBe(true);
+  });
+
+  it('an explicit retention.input="keep" also suppresses digesting', async () => {
+    const { digested } = await runWriter('keep');
+    expect(digested).toHaveLength(0);
   });
 });

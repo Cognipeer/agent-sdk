@@ -33,18 +33,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issued model calls on an over-budget context (provider 400s) with a dangling
   unresolved tool_calls tail. The finalizer now skips those exits entirely and
   stops immediately if a pause is raised during one of its own rounds.
-- **Summarization now compacts archived tool-call ARGUMENTS.** Retention
+- **Tool-call ARGUMENTS can now be reclaimed under context pressure.** Retention
   policies rewrote tool RESPONSES only, so content-authoring calls whose
   arguments carry the payload (file writes, document chunks — often tens of
-  kilobytes each) kept the context growing no matter how aggressively
-  responses were archived, eventually forcing destructive clamping. When an
-  exchange's response is summarized/archived, oversized arguments (>2k chars)
-  on the parent assistant's matching `tool_call` are now replaced with a
-  compact valid-JSON marker (`{"__argsArchived":true, executionId, ...}`);
-  originals remain in `toolHistory`, and the protected most-recent exchange is
-  never touched.
+  kilobytes each) kept the context growing no matter how aggressively responses
+  were archived, eventually forcing destructive clamping. Arguments are now a
+  first-class retention axis — see the two-axis retention entry under **Added**.
 
 ### Added
+- **Two-axis tool retention: `input` (arguments) and `output` (result).** Value
+  density is per-tool — a search tool carries a short query and returns the bulk,
+  while a file writer is the mirror image — so one policy could never serve both.
+  Argument retention is now its own axis, and it is **opt-in**:
+
+  ```ts
+  // Declared by the tool author, who knows whether args are payload or identity:
+  createTool({
+    name: "append_to_file",
+    schema: z.object({ filePath: z.string(), mode: z.string(), content: z.string() }),
+    func: appendImpl,
+    retention: { input: "digest", output: "summarize_archive" },
+  });
+
+  // ...or overridden per tool by the caller, either axis independently:
+  createSmartAgent({
+    toolResponses: {
+      retentionByTool: { create_text_file: { input: "digest" } },
+      // defaultInputPolicy: "digest",   // opt every non-protected tool in at once
+    },
+  });
+  ```
+
+  `input: "digest"` is **field-level, never whole-object**: only string fields
+  longer than `maxToolInputFieldChars` (default 2000) are replaced with a
+  `{"__digest":{chars,sha256,head,recover}}` descriptor, so identifying scalars
+  (`filePath`, `mode`, ids, indexes) survive verbatim and the model can still
+  state exactly what it did. Rewrites stay valid JSON (Bedrock's `toolUse`
+  mapping parses arguments), `toolHistory` keeps the original, and the protected
+  recent window is never touched.
+
+  Hard invariants that config cannot override: control-plane tools (`response`,
+  `manage_todo_list`, `ask_user_question`, `open_skill`, `bind_skill_tools`,
+  `search_skills`, `get_tool_response`) and delegation tools (`delegate_to`,
+  `spawn_subagent`, `spawn_subagents_parallel`) are never digested — their
+  arguments are how the loop steers itself. Assistant turns carrying signed
+  reasoning blocks are skipped as well, since Anthropic/Bedrock extended
+  thinking replays those blocks verbatim alongside their `tool_use`.
+
+  Control-plane tools additionally *default* to `keep_full` on the output axis
+  (overridable per tool), so a skill's guidance or a user's answer is not
+  archived out from under the run.
+
+  **Fully backward compatible.** `defaultInputPolicy` defaults to `"keep"`, so no
+  existing caller sees a behavior change; the legacy single-axis
+  `toolResponseRetentionByTool` map is still honored (consulted right after
+  `retentionByTool`). New exports: `resolveInputRetention`,
+  `digestToolInputValue`, `digestToolInputArguments`,
+  `collectToolRetentionDeclarations`, `CONTROL_PLANE_TOOL_NAMES`,
+  `DELEGATION_TOOL_NAMES`, plus the `ToolInputRetentionPolicy` /
+  `ToolRetentionSpec` types.
+- **`get_tool_response` can page ARGUMENTS back in: `part: "input" | "output"`.**
+  Recovery was output-only, so a digested argument had no way back — and the
+  recovery gate only scanned message `content`, missing digest markers that live
+  in `tool_calls[].function.arguments`. The gate now scans tool-call arguments
+  too, `"__digest"` counts as a recovery reference, and `part: "input"` returns
+  the exact arguments the tool ran with. `part` defaults to `"output"`, so
+  existing callers are unaffected.
 - **`prepare` script** so git-based installs (`npm i github:Cognipeer/agent-sdk#branch`)
   build `dist/` automatically and `npm publish` always ships a fresh build.
 
