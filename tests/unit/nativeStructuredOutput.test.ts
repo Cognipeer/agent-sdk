@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { StructuredOutputManager } from '../../src/structuredOutput/manager.js';
 import { NativeJsonSchemaStrategy } from '../../src/structuredOutput/nativeStrategy.js';
+import { ToolBasedStrategy } from '../../src/structuredOutput/toolStrategy.js';
 
 function findObjectSchemaWithProperty(schema: any, propertyName: string): any | undefined {
   if (!schema || typeof schema !== 'object') return undefined;
@@ -58,5 +60,34 @@ describe('NativeJsonSchemaStrategy', () => {
 
     expect(actionItemSchema).toBeDefined();
     expect(actionItemSchema.required).toEqual(expect.arrayContaining(['owner', 'text']));
+  });
+});
+
+describe('StructuredOutputManager retry messages', () => {
+  const schema = z.object({ answer: z.string() });
+
+  it.each([
+    ['native', new NativeJsonSchemaStrategy()],
+    ['tool-based', new ToolBasedStrategy()],
+  ])('uses user role for %s nudges so system remains first-only', (_name, strategy) => {
+    const manager = new StructuredOutputManager(schema, strategy);
+
+    expect(manager.buildNudgeMessage(false).role).toBe('user');
+    expect(manager.buildNudgeMessage(true).role).toBe('user');
+  });
+
+  it('uses user role for schema-validation corrections', () => {
+    const manager = new StructuredOutputManager(schema, new ToolBasedStrategy());
+
+    expect(manager.buildCorrectionMessage({
+      type: 'validation_error',
+      message: 'Invalid answer.',
+      fieldErrors: [{
+        path: 'answer',
+        expected: 'string',
+        received: 'number',
+        message: 'Expected string.',
+      }],
+    }).role).toBe('user');
   });
 });

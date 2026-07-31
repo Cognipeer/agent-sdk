@@ -79,11 +79,13 @@ export class StructuredOutputManager<T> {
   /**
    * Build a nudge message for when the model didn't produce structured output.
    * Used by the agent loop when it needs to retry.
+   * User role is intentional: OpenAI-compatible chat templates such as Qwen
+   * reject system messages anywhere except the beginning of the conversation.
    */
   buildNudgeMessage(isLastAttempt: boolean): { role: string; content: string } {
     if (this.strategy.kind === "native") {
       return {
-        role: "system",
+        role: "user",
         content: [
           "A structured output schema is active.",
           "You MUST respond with valid JSON matching the schema.",
@@ -95,7 +97,7 @@ export class StructuredOutputManager<T> {
 
     // tool_based
     return {
-      role: "system",
+      role: "user",
       content: [
         "A structured output schema is active.",
         "You MUST now call tool `response` with the final JSON object that matches the schema.",
@@ -120,7 +122,7 @@ export class StructuredOutputManager<T> {
         : "Please call `response` again with corrected values matching the schema.";
 
       return {
-        role: "system",
+        role: "user",
         content: [
           "Your previous structured output had validation errors:",
           fieldIssues,
