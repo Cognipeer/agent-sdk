@@ -348,7 +348,8 @@ export type ReflectionConfig = {
 };
 
 export type NativeReasoningConfig = {
-  effort?: "minimal" | "low" | "medium" | "high";
+  /** `none` is OFF — a value that gets SENT. See ReasoningEffort in providers/types.ts. */
+  effort?: "none" | "minimal" | "low" | "medium" | "high";
   budgetTokens?: number;
   includeThoughts?: boolean;
   providerExtras?: Record<string, any>;

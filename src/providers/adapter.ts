@@ -145,9 +145,24 @@ export function fromNativeProvider(
     if (tools?.length) req.tools = tools;
     if (opts?.extra) req.extra = opts.extra;
 
-    // Reasoning config: per-call invokeOptions.reasoning overrides the adapter default
+    // Reasoning config: a per-call `invokeOptions.reasoning` is MERGED over the
+    // adapter default rather than replacing it.
+    //
+    // The two configs answer different questions and neither is the whole
+    // answer. The adapter default is a property of the ENDPOINT — the fields it
+    // needs on every request, which for a self-hosted server is typically a
+    // `providerExtras` passthrough (a chat-template variable, a gateway flag)
+    // and nothing else. The per-call override is a property of the TURN: an
+    // agent asking this particular step for more or less deliberation, which is
+    // an `effort` and nothing else.
+    //
+    // Replacing therefore dropped the endpoint's fields the moment any agent set
+    // a per-run reasoning config — silently, on a subset of turns, in exactly the
+    // deployments that needed them. `providerExtras` is merged key-wise for the
+    // same reason, one level deep: the call may override a single flag without
+    // having to restate the endpoint's whole passthrough.
     const reasoningOverride = (invokeOptions as any)?.reasoning as ReasoningRequestConfig | undefined;
-    const reasoningCfg = reasoningOverride ?? opts?.reasoning;
+    const reasoningCfg = mergeReasoning(opts?.reasoning, reasoningOverride);
     if (reasoningCfg) req.reasoning = reasoningCfg;
 
     // Per-call tool choice override (used by reflection node to disable tools temporarily)
@@ -182,6 +197,27 @@ export function fromNativeProvider(
 
     return req;
   }
+}
+
+/**
+ * Endpoint-level reasoning config with a per-call one merged over it.
+ *
+ * Returns the surviving object, or undefined when neither side supplied one —
+ * so the caller can leave `request.reasoning` unset, which is what keeps a
+ * provider's `useResponsesApi` check from firing on a request that never asked
+ * for reasoning at all.
+ */
+function mergeReasoning(
+  base: ReasoningRequestConfig | undefined,
+  override: ReasoningRequestConfig | undefined,
+): ReasoningRequestConfig | undefined {
+  if (!base) return override;
+  if (!override) return base;
+  const merged: ReasoningRequestConfig = { ...base, ...override };
+  if (base.providerExtras || override.providerExtras) {
+    merged.providerExtras = { ...base.providerExtras, ...override.providerExtras };
+  }
+  return merged;
 }
 
 // ─── Conversion helpers ──────────────────────────────────────────────────────

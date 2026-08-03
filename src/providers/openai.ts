@@ -27,6 +27,7 @@ export class OpenAIProvider extends BaseProvider {
   protected readonly baseURL: string;
   protected readonly defaultModel: string;
   protected readonly defaultHeaders: Record<string, string>;
+  protected readonly responsesApi: "auto" | "never" | "always";
 
   constructor(config: OpenAIProviderConfig) {
     super();
@@ -37,13 +38,22 @@ export class OpenAIProvider extends BaseProvider {
       ...config.defaultHeaders,
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
+    this.responsesApi = config.responsesApi ?? "auto";
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
-  /** True when the request targets a reasoning model (o-series / gpt-5) so we
-   * should route through the Responses API, which exposes `reasoning.effort`
-   * and reasoning summaries. Chat Completions silently drops these. */
+  /** True when this request should go to the Responses API rather than Chat
+   * Completions — which exposes `reasoning.effort` and reasoning summaries that
+   * Chat Completions silently drops.
+   *
+   * `auto` (the default) keeps the historical rule: only when the request
+   * carries a reasoning config AND the model name looks like an o-series/gpt-5
+   * model. `never`/`always` let a caller state the answer instead, because the
+   * name check is a guess and the two APIs differ in far more than reasoning —
+   * see `responsesApi` in OpenAIProviderConfig. */
   protected useResponsesApi(request: ChatCompletionRequest): boolean {
+    if (this.responsesApi === "never") return false;
+    if (this.responsesApi === "always") return true;
     if (!request.reasoning) return false;
     return isReasoningModel(request.model || this.defaultModel);
   }

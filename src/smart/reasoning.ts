@@ -64,7 +64,12 @@ const LEVEL_DEFAULTS: Record<ReasoningLevel, {
 
 const VALID_LEVELS: ReasoningLevel[] = ["minimal", "low", "medium", "high"];
 const VALID_CADENCES: ReflectionCadence[] = ["off", "every_turn", "after_tool", "on_branch", "initial_then_after_tool"];
-const VALID_EFFORTS = ["minimal", "low", "medium", "high"];
+// `none` is here but NOT in VALID_LEVELS: a level is a preset that also drives
+// reflection cadence and token caps, and there is no coherent "none" preset —
+// `reasoning.enabled: false` is how you turn the whole thing off. `none` is only
+// meaningful on the native side, where it is the instruction "do not think"
+// travelling to a model that otherwise would.
+const VALID_EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
 /**
  * Validates a user-supplied ReasoningConfig and throws a descriptive error for

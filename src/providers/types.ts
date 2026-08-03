@@ -125,7 +125,18 @@ export type ChatCompletionRequest = {
   reasoning?: ReasoningRequestConfig;
 };
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+/**
+ * `none` is OFF, and it is a value rather than the absence of one.
+ *
+ * On a thinking-by-default model — every Qwen3 under vLLM, gpt-5.1 and newer on
+ * OpenAI — sending no reasoning field leaves the model thinking. So "do not
+ * think" is an instruction that has to travel: `reasoning_effort:"none"` on
+ * OpenAI, `thinkingBudget:0` on Gemini, and no thinking block at all on
+ * Anthropic (where thinking is opt-in and the absence IS off). Omitting
+ * `effort` still means "say nothing about reasoning", which is the different
+ * and equally necessary state.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
 
 export type ReasoningRequestConfig = {
   /** Qualitative effort hint (mapped per-provider). */
@@ -214,6 +225,28 @@ export type OpenAIProviderConfig = {
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
   retry?: ProviderRetryConfig;
+  /**
+   * WHICH API a reasoning-carrying request is addressed to.
+   *
+   *  auto    (default, and today's behaviour) route to the Responses API when
+   *          the request carries `reasoning` AND the model name looks like an
+   *          o-series/gpt-5 reasoning model.
+   *  never   always Chat Completions. `reasoning` is still mapped, as
+   *          `reasoning_effort` plus any `providerExtras`.
+   *  always  always Responses, whatever the model is called.
+   *
+   * `auto` is a name-based guess, and it decides far more than where reasoning
+   * goes: Responses is a different request shape (`input` not `messages`,
+   * `text.format` not `response_format`, flat tool objects) and a different
+   * response parse. A caller with its own measurements of the Chat Completions
+   * body — a gateway, a proxy, an on-prem server that serves one and not the
+   * other, or anything that has tuned `extra` — must be able to say so, rather
+   * than discover that asking for less thinking silently changed the transport.
+   *
+   * Applies to any OpenAI-shaped endpoint, which is also why the guess is weak
+   * where it matters most: a self-hosted model is named by whoever served it.
+   */
+  responsesApi?: "auto" | "never" | "always";
 };
 
 export type AnthropicProviderConfig = {

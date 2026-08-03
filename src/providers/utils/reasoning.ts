@@ -12,6 +12,9 @@ export type OpenAIReasoningMode = "legacy_effort" | "responses";
 // are deliberately conservative; Anthropic/Bedrock additionally clamp the
 // budget below `max_tokens` (a provider hard requirement).
 export const ANTHROPIC_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
+  // 0 = off. `applyAnthropicReasoning` bails on a falsy budget and emits no
+  // thinking block, which on Anthropic IS off — thinking there is opt-in.
+  none: 0,
   minimal: 1024,
   low: 2048,
   medium: 8192,
@@ -19,6 +22,10 @@ export const ANTHROPIC_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
 };
 
 export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
+  // 0 is Gemini's own documented spelling for "do not think", and unlike
+  // Anthropic it has to be SENT — hence `applyGeminiReasoning` testing for null
+  // rather than falsiness.
+  none: 0,
   minimal: 512,
   low: 1024,
   medium: 4096,
@@ -146,7 +153,7 @@ function clampBudget(budget: number, maxTokens: number | undefined): number {
 
 function normalizeEffort(effort: ReasoningEffort | undefined): ReasoningEffort | undefined {
   if (!effort) return undefined;
-  const allowed: ReasoningEffort[] = ["minimal", "low", "medium", "high"];
+  const allowed: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high"];
   return allowed.includes(effort) ? effort : undefined;
 }
 
@@ -154,10 +161,15 @@ function resolveBudget(
   reasoning: ReasoningRequestConfig,
   effortBudget: Record<ReasoningEffort, number>,
 ): number | undefined {
+  // `none` wins over an explicit budget, and the order is the whole point: a
+  // caller that says "do not think" while an endpoint-level budgetTokens is
+  // still set has stated the later and more specific intent, and silently
+  // thinking anyway is the failure this ordering exists to prevent.
+  const effort = normalizeEffort(reasoning.effort);
+  if (effort === "none") return 0;
   if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
     return Math.floor(reasoning.budgetTokens);
   }
-  const effort = normalizeEffort(reasoning.effort);
   if (effort && effortBudget[effort]) return effortBudget[effort];
   return undefined;
 }
