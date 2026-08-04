@@ -26,7 +26,7 @@ type DeterministicSummaryModel = {
 
 const factPattern = /PROJECT_FACT\|code=([^|\n"{}]+)\|owner=([^|\n"{}]+)\|risk=([^|\n"{}]+)\|milestone=([^|\n"{}]+)/g;
 
-const projectFacts: Record<'orbit' | 'nova', ProjectFact> = {
+const projectFacts: Record<'orbit' | 'nova' | 'atlas', ProjectFact> = {
   orbit: {
     code: 'ORBIT',
     owner: 'Ada Lovelace',
@@ -39,7 +39,18 @@ const projectFacts: Record<'orbit' | 'nova', ProjectFact> = {
     risk: 'medium',
     milestone: 'blocked',
   },
+  // A third fetch is what makes this scenario summarize TWICE for real: the
+  // newest tool turn is never compacted, so each pass can only reclaim the
+  // turns behind it.
+  atlas: {
+    code: 'ATLAS',
+    owner: 'Alan Turing',
+    risk: 'high',
+    milestone: 'review',
+  },
 };
+
+const projectOrder = ['orbit', 'nova', 'atlas'] as const;
 
 function messageToText(message: Message): string {
   if (typeof message.content === 'string') {
@@ -99,35 +110,19 @@ function createDeterministicSummarizationModel(): DeterministicSummaryModel {
 
       agentTurn += 1;
 
-      if (agentTurn === 1) {
+      const project = projectOrder[agentTurn - 1];
+      if (project) {
         return {
           role: 'assistant',
           content: '',
           tool_calls: [{
-            id: 'call_orbit',
+            id: `call_${project}`,
             type: 'function',
             name: 'fetch_project_snapshot',
-            args: { project: 'orbit' },
+            args: { project },
             function: {
               name: 'fetch_project_snapshot',
-              arguments: JSON.stringify({ project: 'orbit' }),
-            },
-          }],
-        };
-      }
-
-      if (agentTurn === 2) {
-        return {
-          role: 'assistant',
-          content: '',
-          tool_calls: [{
-            id: 'call_nova',
-            type: 'function',
-            name: 'fetch_project_snapshot',
-            args: { project: 'nova' },
-            function: {
-              name: 'fetch_project_snapshot',
-              arguments: JSON.stringify({ project: 'nova' }),
+              arguments: JSON.stringify({ project }),
             },
           }],
         };
@@ -158,7 +153,7 @@ async function runRepeatedSummarizationScenario() {
   const fetchProjectSnapshot = createTool({
     name: 'fetch_project_snapshot',
     description: 'Return a large project snapshot that should be compacted by summarization.',
-    schema: z.object({ project: z.enum(['orbit', 'nova']) }),
+    schema: z.object({ project: z.enum(['orbit', 'nova', 'atlas']) }),
     func: async ({ project }) => buildToolPayload(projectFacts[project]),
   });
 
@@ -178,7 +173,7 @@ async function runRepeatedSummarizationScenario() {
   const initialResult = await agent.invoke({
     messages: [{
       role: 'user',
-      content: 'Fetch the ORBIT and NOVA project snapshots, then tell me the owner and risk for each project after any summarization happens.',
+      content: 'Fetch the ORBIT, NOVA and ATLAS project snapshots, then tell me the owner and risk for each project after any summarization happens.',
     }],
   }, {
     onEvent: (event: any) => {
@@ -201,7 +196,7 @@ describe('Summarization with deterministic mock models', () => {
     const state = initialResult.state!;
     const latestSummary = state.summaries?.[state.summaries.length - 1] || '';
 
-    expect(toolPhases.filter((phase) => phase === 'success')).toHaveLength(2);
+    expect(toolPhases.filter((phase) => phase === 'success')).toHaveLength(3);
     expect(summarizationEvents.length).toBeGreaterThanOrEqual(2);
     expect(state.summaries?.length).toBeGreaterThanOrEqual(2);
     expect(state.messages.some((message) => message.role === 'tool' && typeof message.content === 'string' && /^(SUMMARIZED|SUMMARIZED_TOOL_RESPONSE|ARCHIVED_TOOL_RESPONSE|STRUCTURED_TOOL_RESPONSE|DROPPED_TOOL_RESPONSE)/.test(message.content))).toBe(true);
@@ -226,7 +221,7 @@ describe('Summarization with deterministic mock models', () => {
     const fetchProjectSnapshot = createTool({
       name: 'fetch_project_snapshot',
       description: 'Return a large project snapshot that should be compacted by summarization.',
-      schema: z.object({ project: z.enum(['orbit', 'nova']) }),
+      schema: z.object({ project: z.enum(['orbit', 'nova', 'atlas']) }),
       func: async ({ project }) => buildToolPayload(projectFacts[project]),
     });
 
@@ -246,7 +241,7 @@ describe('Summarization with deterministic mock models', () => {
     await agent.invoke({
       messages: [{
         role: 'user',
-        content: 'Fetch the ORBIT and NOVA project snapshots, then tell me the owner and risk for each project after any summarization happens.',
+        content: 'Fetch the ORBIT, NOVA and ATLAS project snapshots, then tell me the owner and risk for each project after any summarization happens.',
       }],
     }, {
       onEvent: (event: any) => {

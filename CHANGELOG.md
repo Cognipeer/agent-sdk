@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Summarization no longer archives the tool outputs the model just asked for.**
+  The recency window in `contextSummarize` was waived whenever no OTHER
+  compressable tool message existed. Because messages already rewritten into
+  placeholders are excluded from that set, "no others" was true on the very first
+  pass AND on every later pass once the backlog was archived — so the pass ate the
+  freshest batch instead. The model then read the `ARCHIVED_TOOL_RESPONSE` markers,
+  paged every payload back in with `get_tool_response` until that tool's
+  `maxExecutionsPerRun` budget ran out, and from then on simply re-issued the
+  identical tool calls forever; a production research worker never terminated.
+  The window is now unconditional, is evaluated BEFORE the summary is generated
+  (so a pass that can reclaim nothing costs no model call), and ignores the
+  synthetic `summarize_context` exchange each pass appends — otherwise the window
+  drifted off the real tool batch and the next pass archived it anyway.
+- **A deferred summarization pass no longer disables summarization for the rest of
+  the run.** `__summarizationExhausted` was sticky, so the first pass that could
+  not reclaim anything stopped the agent from ever compacting again — and could
+  strand a run before its final answer. The flag is now stamped with the tool
+  history size and re-arms as soon as new tool output lands, which is the only
+  thing that creates new compressable material.
+- Recovering an archived tool payload no longer crashes summarization when the
+  history entry carries no output (`JSON.stringify(undefined)` returns `undefined`).
+
 ## [0.8.11] - 2026-08-04
 
 ### Added

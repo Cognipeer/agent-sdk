@@ -1,6 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { createContextSummarizeNode } from "./contextSummarize.js";
 
+/**
+ * A trailing assistant→tool exchange. The summarizer never compacts the newest
+ * turn (the model has not reasoned over it yet), so any fixture that wants an
+ * earlier tool response compacted has to put something after it.
+ */
+function latestTurn(toolCallId: string, toolName: string, content: string) {
+  return [
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: toolCallId, type: 'function', function: { name: toolName, arguments: '{}' } }],
+    },
+    { role: 'tool', name: toolName, tool_call_id: toolCallId, content },
+  ];
+}
+
 describe('contextSummarize', () => {
   it('should handle summarization with null model gracefully', async () => {
     const summarizer = createContextSummarizeNode({
@@ -156,6 +172,9 @@ describe('contextSummarize', () => {
           tool_call_id: 'call_1',
           content: 'PROJECT_FACT|code=ORBIT|owner=Ada Lovelace|risk=low|milestone=design',
         },
+        // The latest turn is never compacted, so call_1 needs a successor to be
+        // outside the protected window.
+        ...latestTurn('call_2', 'fetch_project_snapshot', 'PROJECT_FACT|code=NOVA|owner=Grace Hopper|risk=medium|milestone=blocked'),
       ],
       summaries: [],
       summaryRecords: [],
@@ -210,6 +229,7 @@ describe('contextSummarize', () => {
           ],
         },
         { role: 'tool', name: 'fetch', tool_call_id: 'call_1', content: 'a long tool response' },
+        ...latestTurn('call_2', 'fetch', 'another tool response'),
       ],
       summaries: [],
       summaryRecords: [],
@@ -267,6 +287,7 @@ describe('contextSummarize', () => {
           tool_call_id: 'call_crm_1',
           content: JSON.stringify({ rows: Array.from({ length: 25 }, (_, index) => ({ day: index + 1, count: index * 3 })) }),
         },
+        ...latestTurn('call_crm_2', 'crm_list_logs', '{"rows":[]}'),
       ],
       toolHistory: [
         {

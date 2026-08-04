@@ -67,8 +67,13 @@ function shouldSignalSummarization(state: AgentState, threshold: number): "trigg
   if (tokenCount <= threshold) return "skip";
 
   // SmartAgent already attempted and could not compress further; pressing
-  // again would deadlock. Proceed with the clamped context instead.
-  if ((state.ctx as any)?.__summarizationExhausted) return "skip";
+  // again would deadlock. Proceed with the clamped context instead. The verdict
+  // only holds until the next tool result lands — that is new compressable
+  // material, so the summarizer gets another chance at it.
+  if ((state.ctx as any)?.__summarizationExhausted) {
+    const exhaustedAt = (state.ctx as any)?.__summarizationExhaustedAtToolCount;
+    if (typeof exhaustedAt !== "number" || (state.toolHistory || []).length <= exhaustedAt) return "skip";
+  }
 
   // Fresh summary in transcript + only marginally over budget: do not
   // re-summarize. Context overhead alone can keep us 0–15% above the trigger.

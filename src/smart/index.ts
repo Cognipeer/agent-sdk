@@ -342,11 +342,21 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
     const delta = await summarizer(currentState);
     if (!delta || Object.keys(delta).length === 0) {
-      const ctx = { ...(currentState.ctx || {}), __summarizationExhausted: true };
+      // Stamp the tool-history size: the summarizer could not reclaim anything at
+      // THIS point, which is not the same as never. A pass deferred because the
+      // only compressable messages were the model's live working set must not
+      // disable summarization for the rest of the run — new tool output is what
+      // creates new compressable material, so that is what re-arms it.
+      const ctx = {
+        ...(currentState.ctx || {}),
+        __summarizationExhausted: true,
+        __summarizationExhaustedAtToolCount: (currentState.toolHistory || []).length,
+      };
       return { state: { ...currentState, ctx } as SmartState, rawMessages: currentRawMessages, compressed: false };
     }
     const ctx = { ...(currentState.ctx || {}) };
     delete ctx.__summarizationExhausted;
+    delete (ctx as any).__summarizationExhaustedAtToolCount;
     const updated = await persistLatestSummary(syncPlanStateWith(ref, { ...currentState, ...delta, ctx } as SmartState));
     return { state: updated, rawMessages: [...(updated.messages || currentRawMessages)], compressed: true };
   }

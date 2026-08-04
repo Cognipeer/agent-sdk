@@ -183,6 +183,25 @@ function isSummarizedToolPlaceholder(content: BaseMessage["content"]): boolean {
         );
 }
 
+/** tool_call ids issued by the most recent assistant turn — the model's live working set. */
+function collectLatestTurnToolCallIds(messages: BaseMessage[]): Set<string> {
+    const ids = new Set<string>();
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        // Each pass appends its own summarize_context exchange at the end. Treating
+        // that as "the latest turn" would move the protection window off the real
+        // tool batch and let the next pass archive it.
+        if (isSyntheticSummaryMessage(m)) continue;
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            for (const tc of m.tool_calls) {
+                if (tc.id) ids.add(tc.id);
+            }
+            break;
+        }
+    }
+    return ids;
+}
+
 function findToolHistoryEntry(state: SmartState, toolCallId?: string, toolName?: string) {
     const entries = [
         ...(state.toolHistory || []),
@@ -318,6 +337,17 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         return {};
     }
 
+    // The LAST assistant turn's tool responses are off limits: the model asked for
+    // them and has not reasoned over them yet. Reducing them to recovery markers
+    // makes it page them straight back in and, once the recovery tool's per-run
+    // budget is gone, re-issue the same tool calls forever. Establish that window
+    // BEFORE generating a summary so a pass that could not reclaim anything costs
+    // no model call.
+    const protectedToolCallIds = collectLatestTurnToolCallIds(messages);
+    if (compressableMessages.every((m) => m.tool_call_id && protectedToolCallIds.has(m.tool_call_id))) {
+        return {};
+    }
+
     // Calculate token count before summarization
     const tokenCountBefore = countMessagesTokens(messages);
 
@@ -354,7 +384,11 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
             const historyEntry = findToolHistoryEntry(state, m.tool_call_id, m.name);
             if (historyEntry) {
                 const original = historyEntry.rawOutput ?? historyEntry.output;
-                content = typeof original === 'string' ? original : JSON.stringify(original);
+                // A history entry can exist without a payload (dropped retention, or a
+                // state restored from a trimmed snapshot); JSON.stringify(undefined)
+                // returns undefined, which used to crash the length check below.
+                const recovered = typeof original === 'string' ? original : JSON.stringify(original);
+                if (typeof recovered === 'string') content = recovered;
             } else {
                 // No history entry found — use the summary hint from the placeholder
                 // (already present in content), which is better than nothing.
@@ -547,25 +581,18 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
 
     // 2b. Identify tool_call_ids from the LAST assistant turn so we can protect
     // their tool responses from being summarized. The agent needs to see its most
-    // recent tool outputs to reason correctly. We only apply this protection when
-    // there are OTHER older compressable messages — otherwise (e.g. first turn)
-    // we allow normal summarization to proceed.
-    const protectedToolCallIds = new Set<string>();
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-            const thisToolCallIds = new Set(m.tool_calls.map((tc: any) => tc.id).filter(Boolean));
-            const otherCompressable = compressableMessages.filter(
-                (cm) => !thisToolCallIds.has(cm.tool_call_id)
-            );
-            if (otherCompressable.length > 0) {
-                for (const tc of m.tool_calls) {
-                    if (tc.id) protectedToolCallIds.add(tc.id);
-                }
-            }
-            break;
-        }
-    }
+    // recent tool outputs to reason correctly.
+    //
+    // This protection is UNCONDITIONAL. It used to be waived whenever no OTHER
+    // compressable message existed, on the theory that a first turn should not be
+    // exempt from compaction. But `compressableMessages` excludes messages already
+    // rewritten into placeholders, so "no others" is also true on every pass after
+    // the backlog is archived — and the waiver then ate the batch the model had
+    // just requested. The model read the ARCHIVED_TOOL_RESPONSE markers, paged
+    // every payload back with `get_tool_response` until that tool's per-run budget
+    // ran out, then re-issued the identical tool calls forever (prod 2026-08-04,
+    // a research worker that never terminated). When the newest turn is all there
+    // is, the correct move is to reclaim nothing — the pass aborts above.
 
     // 2c. Tool-call ARGUMENTS are part of the context too. For file-writing /
     // content-authoring tools the arguments carry the entire payload (e.g. a
