@@ -41,7 +41,9 @@ export {
   resolveInputRetention,
   resolveSummarizationRetention,
   summarizeObject,
+  validateToolArgs,
 } from "./smart/toolResponses.js";
+export { coerceToolArgs } from "./smart/toolArgCoercion.js";
 export type {
   ToolInputDigestOptions,
   ToolInputDigestResult,

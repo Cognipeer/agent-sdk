@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-08-04
+
+### Added
+- **Tool arguments are repaired before they are rejected.** Grammar-constrained
+  and smaller open-weight backends (measured on Qwen-class models behind vLLM)
+  routinely emit arguments that are semantically right and syntactically wrong: a
+  nested object arrives as a JSON *string* (`expectedResult: "{\"kind\":...}"` →
+  `expected object, received string`), a number as `"60"`, a boolean as `"true"`,
+  an omitted optional as `""`, a single value where a one-element array was
+  wanted, or every argument wrapped in one `input`/`args` envelope key. Each of
+  those cost a whole turn to recover from something no reasoning was needed to
+  fix. `validateToolArgs` now validates the raw arguments FIRST — so a model that
+  emits well-typed arguments is completely unaffected and the schema stays a real
+  constraint — and only on failure runs the new `coerceToolArgs` re-typing pass
+  and re-validates. Coercion never fabricates a value, so a genuinely missing
+  required argument still fails.
+- **Validation failures now say what the tool wanted.** A rejected call reports
+  the original Zod issues plus a one-line rendering of the tool's top-level
+  parameters and their JSON types, because `expected object, received string` on
+  its own does not tell a weaker model which key to fix.
+
+### Changed
+- **Optional nullable properties are published as plain types.** Zod's
+  `.nullable().optional()` — the idiomatic "you may leave this out" — produced
+  `anyOf: [X, {"type":"null"}]` for every constrained field, and unions are what
+  grammar-constrained decoders follow least reliably. For a property that is not
+  in `required`, the null branch carries nothing the `required` list does not
+  already carry, so it is now dropped from the JSON Schema sent to the provider.
+  Strict mode is untouched: there every property is required and the null branch
+  is the only way to express optionality.
+
 ## [0.8.8] - 2026-07-29
 
 ### Fixed

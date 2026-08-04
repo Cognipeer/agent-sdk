@@ -10,6 +10,7 @@ import type {
 } from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
 import { safeStringify } from "../utils/content.js";
+import { coerceToolArgs } from "./toolArgCoercion.js";
 
 /**
  * Tools the agent loop uses to steer ITSELF. Their arguments are never digested —
@@ -395,22 +396,83 @@ export function renderRetainedToolMessage(args: {
   return `DROPPED_TOOL_RESPONSE [${refs}]\nUse get_tool_response with executionId "${refId}" only if you must recover the original payload.`;
 }
 
+/**
+ * Parse tool arguments against the tool's schema.
+ *
+ * Two passes, and the order is the contract: the raw arguments are validated
+ * FIRST, so a model that emits well-typed arguments is unaffected and the schema
+ * stays a real constraint. Only when that fails are the arguments run through
+ * `coerceToolArgs` and re-validated — repairing the type artifacts smaller and
+ * grammar-constrained backends produce (a nested object sent as a JSON string, a
+ * number sent as `"60"`, `""` standing in for an omitted optional) instead of
+ * spending a turn telling the model something it did not get wrong.
+ *
+ * Coercion never fabricates a value, so a genuinely missing required argument
+ * still fails — and it fails with the ORIGINAL issues plus the shape the tool
+ * actually wants, because "expected object, received string" on its own does not
+ * tell a weaker model which key to fix.
+ */
 export function validateToolArgs(
   tool: ToolInterface<any, any, any>,
   args: unknown,
-): { ok: true; value: any } | { ok: false; message: string } {
+): { ok: true; value: any; coerced?: boolean } | { ok: false; message: string } {
   const schema = (tool as any).schema;
-  if (!schema || typeof schema.parse !== "function") {
+  if (!schema || typeof schema.safeParse !== "function") {
     return { ok: true, value: args };
   }
 
-  try {
-    return { ok: true, value: schema.parse(args) };
-  } catch (error) {
-    if (error instanceof ZodError) {
-      const message = error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
-      return { ok: false, message };
-    }
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  const direct = schema.safeParse(args);
+  if (direct.success) {
+    return { ok: true, value: direct.data };
+  }
+
+  const repaired = schema.safeParse(coerceToolArgs(schema, args));
+  if (repaired.success) {
+    return { ok: true, value: repaired.data, coerced: true };
+  }
+
+  const error = direct.error;
+  if (error instanceof ZodError) {
+    const issues = error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
+    const expected = describeExpectedArgs(schema);
+    return { ok: false, message: expected ? `${issues}. Expected arguments: ${expected}` : issues };
+  }
+  return { ok: false, message: error instanceof Error ? error.message : String(error) };
+}
+
+/**
+ * A one-line rendering of the tool's top-level parameters, appended to a
+ * validation failure so the retry has the answer in front of it. Deliberately
+ * shallow — the full schema is already in the tool definition, and repeating it
+ * here would bury the issue it is meant to explain.
+ */
+function describeExpectedArgs(schema: any): string | null {
+  const shape = typeof schema?._def?.shape === "function" ? schema._def.shape() : schema?._def?.shape;
+  if (!shape || typeof shape !== "object") return null;
+  const parts = Object.entries(shape).map(([key, field]) => {
+    const { typeName, optional } = describeField(field);
+    return `${key}${optional ? "?" : ""}: ${typeName}`;
+  });
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function describeField(field: any, depth = 0): { typeName: string; optional: boolean } {
+  const def = field?._def;
+  if (!def || depth > 6) return { typeName: "value", optional: false };
+  switch (def.typeName) {
+    case "ZodOptional":
+    case "ZodNullable":
+    case "ZodDefault":
+      return { typeName: describeField(def.innerType, depth + 1).typeName, optional: true };
+    case "ZodEffects":
+      return { ...describeField(def.schema, depth + 1), optional: describeField(def.schema, depth + 1).optional };
+    case "ZodObject": return { typeName: "object", optional: false };
+    case "ZodArray": return { typeName: `array of ${describeField(def.type, depth + 1).typeName}`, optional: false };
+    case "ZodRecord": return { typeName: "object", optional: false };
+    case "ZodString": return { typeName: "string", optional: false };
+    case "ZodNumber": return { typeName: "number", optional: false };
+    case "ZodBoolean": return { typeName: "boolean", optional: false };
+    case "ZodEnum": return { typeName: `one of ${(def.values ?? []).join("|")}`, optional: false };
+    default: return { typeName: "value", optional: false };
   }
 }

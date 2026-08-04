@@ -442,6 +442,67 @@ function convertToJsonSchema(schema: any, strict = false): Record<string, any> {
 }
 
 /**
+ * Collapse `anyOf: [X, {type:"null"}]` down to `X` for properties that are not
+ * required, and `type: ["string","null"]` down to `type: "string"` likewise.
+ *
+ * Zod's `.nullable().optional()` — the idiomatic way to spell "you may leave
+ * this out" — produces a two-branch union for every constrained field. Grammar-
+ * constrained backends (vLLM/xgrammar and the smaller open-weight models behind
+ * them) follow unions far less reliably than a plain type, and for an OPTIONAL
+ * property the null branch carries no information the `required` list does not
+ * already carry: omitting the key and sending null mean the same thing to the
+ * tool. So the branch is removed from what the model has to read, and the Zod
+ * schema still accepts null if one arrives anyway.
+ *
+ * Only ever applied to non-strict tool parameters. Under OpenAI strict mode
+ * every property is required and the null branch is the ONLY way to express
+ * optionality, so collapsing it there would change the contract.
+ */
+function simplifyOptionalNullableUnions(schema: Record<string, any>, required: Set<string> | null = null): Record<string, any> {
+  if (!schema || typeof schema !== "object") return schema;
+  const clone: Record<string, any> = { ...schema };
+
+  if (clone.properties && typeof clone.properties === "object") {
+    const requiredKeys = new Set<string>(Array.isArray(clone.required) ? clone.required : []);
+    const properties: Record<string, any> = {};
+    for (const [key, value] of Object.entries(clone.properties)) {
+      const child = simplifyOptionalNullableUnions(value as Record<string, any>, requiredKeys);
+      properties[key] = requiredKeys.has(key) ? child : dropNullBranch(child);
+    }
+    clone.properties = properties;
+  }
+
+  if (clone.items) clone.items = simplifyOptionalNullableUnions(clone.items, required);
+  for (const key of ["anyOf", "oneOf", "allOf"]) {
+    if (Array.isArray(clone[key])) {
+      clone[key] = clone[key].map((entry: any) => simplifyOptionalNullableUnions(entry, required));
+    }
+  }
+  return clone;
+}
+
+function dropNullBranch(schema: Record<string, any>): Record<string, any> {
+  if (!schema || typeof schema !== "object") return schema;
+
+  if (Array.isArray(schema.type) && schema.type.includes("null") && schema.type.length === 2) {
+    return { ...schema, type: schema.type.find((entry: string) => entry !== "null") };
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    const branches = schema.anyOf.filter((entry: any) => entry?.type !== "null");
+    if (branches.length === 1 && branches.length !== schema.anyOf.length) {
+      const { anyOf, ...rest } = schema;
+      return { ...branches[0], ...rest };
+    }
+    if (branches.length !== schema.anyOf.length && branches.length > 1) {
+      return { ...schema, anyOf: branches };
+    }
+  }
+
+  return schema;
+}
+
+/**
  * Recursively normalize a JSON Schema for OpenAI strict mode:
  * - All object properties become required
  * - additionalProperties: false on every object
@@ -519,6 +580,8 @@ function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
 
   if (useStrict) {
     parameters = normalizeStrictSchema(parameters);
+  } else {
+    parameters = simplifyOptionalNullableUnions(parameters);
   }
 
   return { name, description, parameters, ...(useStrict ? { strict: true } : {}) };
