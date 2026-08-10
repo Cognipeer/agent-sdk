@@ -14,6 +14,7 @@ import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resol
 import { extractMessageText } from "../utils/content.js";
 import { createSkillRegistryRef, DEFAULT_SKILL_POLICY, type Skill, type SkillPolicy } from "./skills/types.js";
 import { createSkillTools } from "./skills/skillTools.js";
+import { preopenSkills } from "./skills/preopen.js";
 import { appendBoundTools, buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
 import { createSubagentRegistryRef, DEFAULT_SUBAGENT_POLICY, type SubagentDef, type SubagentPolicy } from "./subagents/types.js";
 import { buildSubagentCatalogBlock, resolveAvailableSubagents } from "./subagents/registry.js";
@@ -416,7 +417,30 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       // Prepend a single system message once
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
       const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(disclosureBlock), ...(input.messages || [])];
-      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages } as SmartState), seedMessages, toolSet);
+
+      // Deterministic pre-opening: skills the caller requires for this run are
+      // opened here, after the user message and before the first model call, as
+      // a real tool exchange rather than something the model has to discover.
+      let seedToolHistory = input.toolHistory;
+      if (skillsEnabled && toolSet.skillRegistryRef) {
+        const preopenKeys = (config?.preopenedSkills ?? []) as string[];
+        if (preopenKeys.length > 0) {
+          const preopened = await preopenSkills({
+            skillKeys: preopenKeys,
+            tools: toolSet.toolsWithoutRecovery,
+            alreadyOpenedKeys: toolSet.skillRegistryRef.openedSkillKeys,
+            existingMessages: seedMessages,
+            onEvent: config?.onEvent ?? (opts as any).onEvent,
+          });
+          if (preopened.messages.length > 0) {
+            seedMessages.push(...preopened.messages);
+            seedToolHistory = [...(seedToolHistory ?? []), ...preopened.toolHistory];
+            stateRef.toolHistory = seedToolHistory;
+          }
+        }
+      }
+
+      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages, toolHistory: seedToolHistory } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       let rawMessages = [...seedMessages];
       const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? resolved.limits.maxToolCalls ?? 10) as number;

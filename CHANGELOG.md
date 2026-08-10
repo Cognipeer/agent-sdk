@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0]
+
+### Added
+- **`InvokeConfig.preopenedSkills` — deterministic skill activation.** Discovery
+  via `open_skill` is the model's decision, which is right for a capability and
+  wrong for a policy: a rule that only applies when the model happens to notice
+  it is not a rule. A caller can now name skill keys per invoke; each one is
+  opened before the first model call, through the same `open_skill` tool the
+  model would have called, and written into the transcript as an assistant tool
+  call plus its tool result. The model therefore starts with the skill's
+  guidance and tools already bound, in the message shape it is trained on, and
+  `bind_skill_tools` still works to widen the surface. Tool call ids are derived
+  from the skill key rather than random, so an unchanged preopen set produces a
+  byte-identical prefix on every run and provider prompt caching keeps hitting.
+  Unknown, unavailable, and already-open keys are skipped rather than injecting
+  a broken exchange, so a resumed run does not re-open what it already has.
+
+## [0.8.12]
+
 ### Fixed
 - **Summarization no longer archives the tool outputs the model just asked for.**
   The recency window in `contextSummarize` was waived whenever no OTHER

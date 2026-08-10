@@ -1485,6 +1485,15 @@ export type InvokeConfig = RunnableConfig & {
   onStateChange?: (state: SmartState) => boolean;
   // Optional reason stored alongside checkpoint metadata.
   checkpointReason?: string;
+  /**
+   * Keys of `skills` to open deterministically at the start of this invoke,
+   * before the first model call. Each one is opened through the real
+   * `open_skill` tool and written into the transcript as an assistant tool call
+   * plus its tool result, so the model starts the run with the skill's guidance
+   * and tools already bound instead of having to discover them. Unknown or
+   * unavailable keys are skipped. Ignored when the agent has no `skills`.
+   */
+  preopenedSkills?: string[];
 };
 
 export type SnapshotRuntimeHint = {

@@ -35,3 +35,9 @@ export {
   type LoadSkillsOptions,
   type SkillFrontmatter,
 } from "./markdownLoader.js";
+export {
+  preopenSkills,
+  preopenToolCallId,
+  PREOPEN_TOOL_CALL_PREFIX,
+  type PreopenSkillsResult,
+} from "./preopen.js";
