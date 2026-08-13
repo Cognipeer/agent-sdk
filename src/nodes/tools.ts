@@ -20,6 +20,43 @@ import { compressToolOutput, extractLatestUserQuery } from "../smart/contextPilo
 import type { ContextPilotCompressionStats, ContextPilotRuntime } from "../smart/contextPilot/index.js";
 import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
 
+/**
+ * Does this specific call need a human first?
+ *
+ * A boolean answers for the tool; a predicate answers for the ARGUMENTS, which
+ * is what lets a policy say "ask before `rm`, not before `ls`".
+ *
+ * A predicate that throws counts as `true`. A gate that cannot reach a decision
+ * has not granted anything, and the cost of being wrong here is asymmetric: an
+ * unnecessary prompt is an annoyance, a skipped one is an unreviewed action.
+ */
+function resolveNeedsApproval(tool: any, args: any): boolean {
+  const spec = tool?.needsApproval;
+  if (typeof spec === "function") {
+    try {
+      return Boolean(spec(args));
+    } catch {
+      return true;
+    }
+  }
+  return Boolean(spec);
+}
+
+/** The approval text for this call — a function form sees the same arguments. */
+function resolveApprovalPrompt(tool: any, args: any): string | undefined {
+  const prompt = tool?.approvalPrompt;
+  if (typeof prompt === "function") {
+    try {
+      const resolved = prompt(args);
+      return typeof resolved === "string" && resolved.length > 0 ? resolved : undefined;
+    } catch {
+      // The pause still happens; only its wording is lost.
+      return undefined;
+    }
+  }
+  return typeof prompt === "string" ? prompt : undefined;
+}
+
 function normalizeMaxExecutionsPerRun(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
@@ -79,10 +116,16 @@ function buildToolDetails(tool: ToolInterface | undefined, toolName: string): Tr
   const inputSchema = normalizeToolSchema(tool, toolName);
   if (inputSchema !== undefined) details.inputSchema = inputSchema;
 
-  const needsApproval = typeof (tool as any).needsApproval === "boolean" ? (tool as any).needsApproval : undefined;
-  if (needsApproval !== undefined || (tool as any).approvalPrompt !== undefined || (tool as any).approvalDefaults !== undefined) {
+  const approvalSpec = (tool as any).needsApproval;
+  // A predicate has no static answer, so the trace records that the decision is
+  // per call rather than claiming a boolean it cannot know.
+  const needsApproval = typeof approvalSpec === "boolean" ? approvalSpec : undefined;
+  const conditionalApproval = typeof approvalSpec === "function" ? true : undefined;
+  if (needsApproval !== undefined || conditionalApproval !== undefined
+    || (tool as any).approvalPrompt !== undefined || (tool as any).approvalDefaults !== undefined) {
     details.approval = {
       required: needsApproval,
+      conditional: conditionalApproval,
       prompt: typeof (tool as any).approvalPrompt === "string" ? (tool as any).approvalPrompt : undefined,
       defaults: (tool as any).approvalDefaults !== undefined ? sanitizeTracePayload((tool as any).approvalDefaults) : undefined,
     };
@@ -368,7 +411,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
 
       let approvalEntry = pendingByCallId.get(toolCallId);
-      const needsApproval = Boolean((tool as any).needsApproval);
+      const needsApproval = resolveNeedsApproval(tool, args);
       if (needsApproval) {
         if (!approvalEntry) {
           approvalEntry = {
@@ -378,8 +421,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             args,
             status: "pending",
             requestedAt: new Date().toISOString(),
-            metadata: (tool as any).approvalPrompt || (tool as any).approvalDefaults
-              ? { prompt: (tool as any).approvalPrompt, defaults: (tool as any).approvalDefaults }
+            metadata: resolveApprovalPrompt(tool, args) !== undefined || (tool as any).approvalDefaults !== undefined
+              ? { prompt: resolveApprovalPrompt(tool, args), defaults: (tool as any).approvalDefaults }
               : undefined,
           };
           pendingApprovals.push(approvalEntry);
@@ -775,6 +818,12 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     const parallelIndices: number[] = [];
     planned.forEach((tc, idx) => {
       const t = toolByName.get(tc.name);
+      // A PREDICATE cannot be evaluated here: this split happens before the
+      // arguments are parsed and validated, and calling it with raw args would
+      // decide on a different value than the gate below sees. Treat any
+      // predicate-bearing tool as approval-bearing so it runs sequentially —
+      // the real decision is then made once, with parsed args, where the pause
+      // can actually short-circuit the turn.
       if (t && (t as any).needsApproval) approvalIndices.push(idx);
       else parallelIndices.push(idx);
     });

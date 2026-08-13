@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`needsApproval` accepts a predicate — approvals decided per call.** The gate
+  read a static boolean, so a tool was either always gated or never: `bash` could
+  be paused, but "pause before `rm`, not before `ls`" could not be expressed at
+  all. `needsApproval` now takes `boolean | ((args) => boolean)` and the
+  predicate is evaluated in the tools node with the parsed arguments in hand,
+  immediately before the call would run.
+
+  ```ts
+  needsApproval: (args) => /^\s*rm\b/.test(args.command)
+  ```
+
+  A predicate that **throws counts as `true`** — a gate that cannot decide has
+  not granted permission, and the asymmetry matters: a needless prompt is an
+  annoyance, a skipped one is an unreviewed action. A predicate-bearing tool is
+  always placed in the sequential group, because the parallel/sequential split
+  happens before arguments are parsed and must not decide on a different value
+  than the gate sees.
+
+- **`approvalPrompt` accepts a function of the arguments**, so the question can
+  quote what is about to happen ("Run `rm -rf build`?") rather than describing
+  the tool in general. If it throws, the pause still happens and only the wording
+  is lost.
+
+- **`TraceToolDetails.approval.conditional`** marks a tool whose approval is
+  decided per call. `approval.required` stays absent in that case, because there
+  is no static answer to record; each call's verdict lives on its
+  `pendingApprovals` entry.
+
+### Compatibility
+- Fully backward compatible: `needsApproval: true | false` and a plain
+  `approvalPrompt` string behave exactly as before. A `needsApproval` value that
+  is neither a boolean nor a function is now dropped rather than carried through,
+  so a stray truthy value cannot gate a tool by accident.
+
 ## [0.9.0]
 
 ### Added

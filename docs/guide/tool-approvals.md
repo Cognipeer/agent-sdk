@@ -27,6 +27,51 @@ Once selected by the model, the agent will:
 2. Emit a `tool_approval` event with `status: "pending"`.
 3. Pause execution until the approval is resolved.
 
+## Approving per call, from the arguments
+
+A boolean decides for the tool as a whole, which is too coarse for most real
+tools: the dangerous half of `bash` is not its name, it is what it was asked to
+run. Pass a **predicate** instead and the decision is made per call, with the
+parsed arguments in hand:
+
+```ts
+const bash = createTool({
+  name: "bash",
+  description: "Run a shell command",
+  schema: z.object({ command: z.string() }),
+  // Ask before anything destructive; let the rest run.
+  needsApproval: (args) => /^\s*(rm|shutdown|mkfs)\b/.test(args.command),
+  approvalPrompt: (args) => `Run \`${args.command}\`?`,
+  async func({ command }) {
+    return exec(command);
+  },
+});
+```
+
+The predicate runs immediately before the call would execute, so it sees the same
+arguments the tool would receive.
+
+Three rules worth knowing:
+
+- **A predicate that throws counts as `true`.** A gate that cannot reach a
+  decision has not granted anything, and the cost is asymmetric — an unnecessary
+  prompt is an annoyance, a skipped one is an unreviewed action.
+- **A predicate-bearing tool never runs in parallel.** The parallel/sequential
+  split happens before arguments are parsed, so any tool that decides per call is
+  placed in the sequential group and its verdict is reached once, where the pause
+  can actually stop the turn.
+- **Tracing records `approval.conditional: true`** instead of `approval.required`,
+  because there is no static answer to record. The verdict for each call lives on
+  that call's `pendingApprovals` entry.
+
+`approvalPrompt` takes the same treatment: as a function it receives the
+arguments, so the question quotes what is actually about to happen rather than
+describing the tool in general. If it throws, the pause still happens — only the
+wording is lost.
+
+Both forms are fully backward compatible: `needsApproval: true | false` and a
+plain `approvalPrompt` string behave exactly as before.
+
 ## Inspecting `pendingApprovals`
 
 Each entry contains all the data you need to render a review form:

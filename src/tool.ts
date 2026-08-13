@@ -1,6 +1,6 @@
 import type { ZodSchema } from "zod";
 
-import type { ToolInterface, ToolRetentionSpec } from "./types.js";
+import type { ToolApprovalPredicate, ToolInterface, ToolRetentionSpec } from "./types.js";
 
 export type SmartToolFn = (args: any) => Promise<any> | any;
 
@@ -45,8 +45,13 @@ export function createTool({
     description?: string;
     schema: ZodSchema;
     func: SmartToolFn;
-    needsApproval?: boolean;
-    approvalPrompt?: string;
+    /**
+     * `true` gates every call; a predicate gates the calls whose ARGUMENTS
+     * warrant it. See ToolApprovalPredicate.
+     */
+    needsApproval?: boolean | ToolApprovalPredicate;
+    /** A function form receives the call's arguments, so the prompt can quote them. */
+    approvalPrompt?: string | ((args: any) => string | undefined);
     approvalDefaults?: any;
     maxExecutionsPerRun?: number | null;
     /** When set, identical args within the same invoke short-circuit to the cached result. */
@@ -74,7 +79,10 @@ export function createTool({
         func: execute,
     } as ToolInterface;
 
-    if (typeof needsApproval === "boolean") {
+    // A function is carried through unchanged; the tools node evaluates it per
+    // call. Anything else is normalised to a boolean so a stray value cannot be
+    // read as truthy-and-therefore-gated somewhere downstream.
+    if (typeof needsApproval === "function" || typeof needsApproval === "boolean") {
         (toolRecord as any).needsApproval = needsApproval;
     }
     if (approvalPrompt !== undefined) {

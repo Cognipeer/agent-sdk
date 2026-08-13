@@ -15,6 +15,14 @@ export type ContentPart =
   | { type: string; [key: string]: any };
 
 // Generic tool interface minimal contract (duck-typed). If user passes a LangChain Tool it will satisfy this.
+/**
+ * Decides, per call, whether this invocation needs human approval.
+ *
+ * Return `true` to pause. Returning a non-boolean is treated as `false` except
+ * for a thrown error, which is treated as `true` — see `needsApproval`.
+ */
+export type ToolApprovalPredicate = (args: any) => boolean;
+
 export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> {
   name: string;
   description?: string;
@@ -22,8 +30,25 @@ export interface ToolInterface<TInput = any, TOutput = any, TCallOptions = any> 
   invoke?: (input: TInput, config?: TCallOptions) => Promise<TOutput> | TOutput;
   call?: (input: TInput, config?: TCallOptions) => Promise<TOutput> | TOutput;
   schema?: any; // optional JSON schema / zod inference
-  needsApproval?: boolean;
-  approvalPrompt?: string;
+  /**
+   * Whether a call must pause for a human before it runs.
+   *
+   * A boolean decides for the tool as a whole. A PREDICATE decides per call, with
+   * the parsed arguments in hand — which is the only way to express "ask before
+   * `rm`, but not before `ls`", because the interesting half of a dangerous tool
+   * is usually its arguments, not its name.
+   *
+   * The predicate runs inside the tools node, immediately before the call would
+   * execute, and it must not throw: a predicate that throws is treated as
+   * `true`, because a policy that cannot decide has not granted permission.
+   */
+  needsApproval?: boolean | ToolApprovalPredicate;
+  /**
+   * The text shown to whoever is asked. A function receives the same arguments
+   * the predicate saw, so the prompt can quote what is actually about to happen
+   * ("Delete 3 files under /src?") instead of describing the tool in general.
+   */
+  approvalPrompt?: string | ((args: any) => string | undefined);
   approvalDefaults?: any;
   maxExecutionsPerRun?: number | null;
   /**
@@ -766,7 +791,13 @@ export type TraceToolDetails = {
   description?: string;
   inputSchema?: any;
   approval?: {
+    /** Set only when the tool answers statically. Absent when `conditional`. */
     required?: boolean;
+    /**
+     * The tool decides per call from its arguments, so no single answer can be
+     * recorded here. The actual verdict for each call is on its approval entry.
+     */
+    conditional?: boolean;
     prompt?: string;
     defaults?: any;
   };

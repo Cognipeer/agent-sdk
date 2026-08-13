@@ -123,9 +123,15 @@ Emit relevant metadata within the returned object if it aids observability (e.g.
 
 ## Human-in-the-loop approvals
 
-Set `needsApproval: true` on any tool that should pause execution until a reviewer signs off. Optional helpers:
+Set `needsApproval: true` on any tool that should pause execution until a reviewer signs off, or pass a **predicate** to decide per call from the arguments:
 
-- `approvalPrompt`: short text for UI surfaces explaining what needs to be reviewed.
+```ts
+needsApproval: (args) => /^\s*rm\b/.test(args.command),
+approvalPrompt: (args) => `Run \`${args.command}\`?`,
+```
+
+- `needsApproval`: `boolean` gates the tool; `(args) => boolean` gates the calls that warrant it. A predicate that throws counts as `true`, and a predicate-bearing tool always runs sequentially.
+- `approvalPrompt`: text for UI surfaces, or a function of the arguments so the question quotes the actual call.
 - `approvalDefaults`: arbitrary JSON you can use to pre-populate review forms.
 
 When the model selects the tool, the SDK stores a pending entry in `state.pendingApprovals`. Your host app can present the request to a human and then resolve it. See the dedicated [Tool Approvals](/tool-approvals/) guide for end-to-end wiring, including `resolveToolApproval` usage, event payloads, and checkpoint integration.
