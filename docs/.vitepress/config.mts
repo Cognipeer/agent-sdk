@@ -6,6 +6,15 @@ export default defineConfig({
   base: '/agent-sdk/',
   ignoreDeadLinks: true,
   appearance: false,
+  markdown: {
+    // Site is light-only (appearance: false), but code blocks use a dark
+    // panel (--cp-bg-code). VitePress's default Shiki themes are
+    // { light: 'github-light', dark: 'github-dark' } and since dark mode
+    // never activates here, the light (white-background-optimized) token
+    // colors were rendering on our dark panel with poor contrast. Force a
+    // single dark theme so highlighting matches the dark code background.
+    theme: 'github-dark',
+  },
   themeConfig: {
     logo: '/agent-sdk-logo.svg',
     siteTitle: 'agent-sdk',
