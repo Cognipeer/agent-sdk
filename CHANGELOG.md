@@ -5,9 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.2]
 
 ### Added
+- **Per-model-call tool menus on trace events.** Every `ai_call` trace event
+  now carries a `tool_definitions` section recording the exact tool menu the
+  model was offered on THAT call (`{name, description?, parameters?}` per
+  tool, flat JSON-schema parameters). Menus ride per event — never per
+  session — because the bound tools can change between iterations. Size
+  discipline matches the Cognipeer console ingest contract: ≤128 tools,
+  name ≤200 / description ≤4000 chars, section ≤64KB (oversized entries drop
+  `parameters` with a `truncated` marker before the list is trimmed). New
+  exports: `TraceToolDefinition`, `TraceToolDefinitionsSection`,
+  `buildToolDefinitionsSection`; `recordTraceEvent` accepts an optional
+  `toolDefinitions` array that composes with (never replaces) the
+  auto-converted message sections and is suppressed when `logData` is off.
+  Custom sinks, HTTP/cognipeer sinks and the OTLP exporter (via
+  `cognipeer.sections`) all carry the section unchanged.
 - **`needsApproval` accepts a predicate — approvals decided per call.** The gate
   read a static boolean, so a tool was either always gated or never: `bash` could
   be paused, but "pause before `rm`, not before `ls`" could not be expressed at

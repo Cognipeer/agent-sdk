@@ -873,13 +873,39 @@ export type TraceMetadataSection = {
   data: Record<string, any>;
 };
 
+/** One tool of the menu offered to the model on a single call. */
+export type TraceToolDefinition = {
+  name: string;
+  description?: string;
+  /** JSON-schema `parameters` object (flat, no $ref wrapper). */
+  parameters?: Record<string, any>;
+  /** Set when `parameters` was dropped to fit the section size budget. */
+  truncated?: boolean;
+};
+
+/**
+ * The tool MENU bound to one model call ("which tools was the model offered
+ * on this turn?"). Rides on the `ai_call` event — never per session, because
+ * the menu can change between calls. Matches the Cognipeer console ingest
+ * contract for section kind `tool_definitions`.
+ */
+export type TraceToolDefinitionsSection = {
+  id?: string;
+  kind: "tool_definitions";
+  label: string;
+  tools: TraceToolDefinition[];
+  /** Set when the tool list itself was truncated to fit the size budget. */
+  truncated?: boolean;
+};
+
 export type TraceDataSection =
   | TraceMessageSection
   | TraceToolCallSection
   | TraceToolResultSection
   | TraceToolResponseSection
   | TraceSummarySection
-  | TraceMetadataSection;
+  | TraceMetadataSection
+  | TraceToolDefinitionsSection;
 
 export type TraceEventRecord = {
   sessionId: string;

@@ -19,6 +19,8 @@ import type {
   TraceSinkConfig,
   TraceSinkSnapshot,
   TraceToolCallSection,
+  TraceToolDefinition,
+  TraceToolDefinitionsSection,
   TracingMode,
 } from "../types.js";
 
@@ -848,9 +850,92 @@ function defaultSectionLabel(kind: TraceDataSection["kind"]): string {
       return "Summary";
     case "metadata":
       return "Details";
+    case "tool_definitions":
+      return "Tool Definitions";
     default:
       return "Section";
   }
+}
+
+// ── Tool-definitions section (per-model-call tool menu) ──────────────────────
+// Size discipline mirrors the Cognipeer console ingest contract: at most 128
+// tools, name ≤200 chars, description ≤4000 chars, whole section ≤64KB —
+// oversized entries drop `parameters` (marked truncated) before the list
+// itself is trimmed. MCP-derived schemas can be enormous; the menu must never
+// bloat the trace payload.
+const TOOL_DEFINITIONS_MAX_TOOLS = 128;
+const TOOL_DEFINITIONS_MAX_NAME_CHARS = 200;
+const TOOL_DEFINITIONS_MAX_DESCRIPTION_CHARS = 4000;
+const TOOL_DEFINITIONS_MAX_SECTION_BYTES = 64 * 1024;
+
+function sectionByteSize(section: TraceToolDefinitionsSection): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(section), "utf8");
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/**
+ * Build the `tool_definitions` section for one model call, or undefined when
+ * nothing usable was supplied. Exported for provider/node code that assembles
+ * sections itself.
+ */
+export function buildToolDefinitionsSection(
+  toolDefinitions: Array<{ name: string; description?: string; parameters?: Record<string, any> }>,
+): TraceToolDefinitionsSection | undefined {
+  const tools: TraceToolDefinition[] = [];
+  for (const entry of toolDefinitions) {
+    if (!entry || typeof entry.name !== "string" || entry.name.trim().length === 0) continue;
+    const tool: TraceToolDefinition = { name: entry.name.trim().slice(0, TOOL_DEFINITIONS_MAX_NAME_CHARS) };
+    if (typeof entry.description === "string" && entry.description.length > 0) {
+      tool.description = entry.description.slice(0, TOOL_DEFINITIONS_MAX_DESCRIPTION_CHARS);
+    }
+    if (entry.parameters && typeof entry.parameters === "object" && !Array.isArray(entry.parameters)) {
+      // Snapshot, don't alias: the caller may mutate its schema object after
+      // this call, and the section must record the menu AS SENT on this call.
+      // JSON round-trip matches the section's eventual serialization (drops
+      // functions/undefined) and keeps the delete-based truncation safe.
+      try {
+        tool.parameters = JSON.parse(JSON.stringify(entry.parameters));
+      } catch {
+        // Non-serializable (e.g. circular) schema: omit rather than alias.
+      }
+    }
+    tools.push(tool);
+    if (tools.length >= TOOL_DEFINITIONS_MAX_TOOLS) break;
+  }
+  if (tools.length === 0) return undefined;
+
+  const section: TraceToolDefinitionsSection = {
+    kind: "tool_definitions",
+    label: "Tool Definitions",
+    tools,
+    ...(toolDefinitions.length > tools.length ? { truncated: true } : {}),
+  };
+
+  // Over budget: drop the largest parameters first (names/descriptions stay —
+  // the menu's SHAPE matters more than every schema), then trim the list.
+  if (sectionByteSize(section) > TOOL_DEFINITIONS_MAX_SECTION_BYTES) {
+    const bySize = [...section.tools]
+      .map((tool, index) => ({ index, size: tool.parameters ? sectionByteSize({ ...section, tools: [tool] }) : 0 }))
+      .sort((a, b) => b.size - a.size);
+    for (const { index } of bySize) {
+      if (sectionByteSize(section) <= TOOL_DEFINITIONS_MAX_SECTION_BYTES) break;
+      const tool = section.tools[index];
+      if (tool?.parameters) {
+        delete tool.parameters;
+        tool.truncated = true;
+        section.truncated = true;
+      }
+    }
+    while (sectionByteSize(section) > TOOL_DEFINITIONS_MAX_SECTION_BYTES && section.tools.length > 1) {
+      section.tools.pop();
+      section.truncated = true;
+    }
+  }
+
+  return section;
 }
 
 function buildMessageLabel(role: string, index: number): string {
@@ -1096,6 +1181,13 @@ export function recordTraceEvent(
     messageList?: any[];
     /** Pre-built sections to use instead of auto-converting messageList */
     sections?: TraceDataSection[];
+    /**
+     * Tool MENU bound to this model call (`ai_call` events). Appended as a
+     * `tool_definitions` section AFTER messageList/sections resolution, so it
+     * composes with the auto-converted message sections instead of replacing
+     * them. Size-capped; suppressed when logData is off.
+     */
+    toolDefinitions?: Array<{ name: string; description?: string; parameters?: Record<string, any> }>;
     debug?: Record<string, any>;
   }
 ): TraceEventRecord | undefined {
@@ -1150,6 +1242,18 @@ export function recordTraceEvent(
     } else {
       const converted = convertMessageListToSections(event.messageList);
       sections = ensureUniqueSections(id, converted);
+    }
+    // The tool menu composes with (never replaces) the message sections; skip
+    // when the caller already supplied a tool_definitions section explicitly.
+    if (event.toolDefinitions && event.toolDefinitions.length > 0) {
+      const existing = (sections ?? []).some((section) => section.kind === "tool_definitions");
+      if (!existing) {
+        const menuSection = buildToolDefinitionsSection(event.toolDefinitions);
+        // Re-normalize so the menu section gets the standard id
+        // (tool_definitions-<eventId>-NN) like every other section kind;
+        // already-stamped sections keep their ids/labels.
+        if (menuSection) sections = ensureUniqueSections(id, [...(sections ?? []), menuSection]);
+      }
     }
   }
 

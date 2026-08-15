@@ -554,7 +554,12 @@ function normalizeStrictSchema(schema: Record<string, any>): Record<string, any>
   return clone;
 }
 
-function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
+/**
+ * Normalize one bound tool (OpenAI function format or name/description/zod
+ * schema) to the wire `{name, description, parameters}` shape. Exported so
+ * tracing can record the exact menu the provider is sent.
+ */
+export function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
   let name: string;
   let description: string;
   let parameters: Record<string, any>;

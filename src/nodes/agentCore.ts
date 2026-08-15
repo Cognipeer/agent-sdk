@@ -1,6 +1,7 @@
 import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../types.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
+import { toToolDefinition } from "../providers/adapter.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { detectVolatileContent } from "../smart/contextPilot/index.js";
 
@@ -37,6 +38,25 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const traceSession = (state.ctx as any)?.__traceSession;
     const actorName = runtime.name ?? opts.name ?? "agent";
     const actorVersion = runtime.version ?? opts.version;
+
+    // Tool MENU bound to THIS call, recorded on the ai_call trace event so
+    // observability can answer "which tools was the model offered on this
+    // turn?" (the menu can change between iterations). Built once per call;
+    // a schema-conversion failure must never break the model invocation.
+    let traceToolDefinitions: Array<{ name: string; description?: string; parameters?: Record<string, any> }> | undefined;
+    if (traceSession && traceSession.resolvedConfig.logData && tools.length > 0) {
+      try {
+        traceToolDefinitions = tools.map((tool) => {
+          const def = toToolDefinition(tool, shouldUseStrictToolCalling ? true : undefined);
+          return { name: def.name, description: def.description || undefined, parameters: def.parameters };
+        });
+      } catch {
+        traceToolDefinitions = tools
+          .map((tool: any) => ({ name: typeof tool?.name === "string" ? tool.name : "" }))
+          .filter((tool) => tool.name.length > 0);
+      }
+    }
+
     const start = Date.now();
     const shouldLogPrompt = !!traceSession && traceSession.resolvedConfig.logData;
     const promptPayload = shouldLogPrompt ? sanitizeTracePayload(state.messages) : undefined;
@@ -251,6 +271,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         provider: getProviderName((runtime as any).model || (opts as any).model),
         error: { message: err?.message || String(err), stack: err?.stack },
         messageList: state.messages,
+        toolDefinitions: traceToolDefinitions,
       });
       throw err;
     }
@@ -289,6 +310,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       model: modelName,
       provider: getProviderName((runtime as any).model || (opts as any).model),
       messageList: messagesWithResponse,
+      toolDefinitions: traceToolDefinitions,
     });
     if (normalized) {
       recordUsage(state, modelName, normalized);
