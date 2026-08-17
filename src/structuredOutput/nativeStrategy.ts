@@ -66,76 +66,35 @@ export class NativeJsonSchemaStrategy implements StructuredOutputStrategy {
     return resolvedSchema;
   }
 
-  private normalizeOpenAIStrictSchema(schema: Record<string, any>): Record<string, any> {
-    const visit = (node: any): any => {
-      if (!node || typeof node !== "object") return node;
-
-      if (Array.isArray(node)) {
-        return node.map(visit);
-      }
-
-      const clone: Record<string, any> = { ...node };
-
-      if (clone.properties && typeof clone.properties === "object") {
-        const normalizedProperties: Record<string, any> = {};
-        for (const [key, value] of Object.entries(clone.properties)) {
-          normalizedProperties[key] = visit(value);
-        }
-        clone.properties = normalizedProperties;
-        clone.required = Object.keys(normalizedProperties);
-        if (clone.additionalProperties === undefined) {
-          clone.additionalProperties = false;
-        }
-      }
-
-      if (clone.items) {
-        clone.items = visit(clone.items);
-      }
-
-      if (clone.definitions && typeof clone.definitions === "object") {
-        const normalizedDefinitions: Record<string, any> = {};
-        for (const [key, value] of Object.entries(clone.definitions)) {
-          normalizedDefinitions[key] = visit(value);
-        }
-        clone.definitions = normalizedDefinitions;
-      }
-
-      if (clone.$defs && typeof clone.$defs === "object") {
-        const normalizedDefs: Record<string, any> = {};
-        for (const [key, value] of Object.entries(clone.$defs)) {
-          normalizedDefs[key] = visit(value);
-        }
-        clone.$defs = normalizedDefs;
-      }
-
-      for (const compositeKey of ["anyOf", "oneOf", "allOf"]) {
-        if (Array.isArray(clone[compositeKey])) {
-          clone[compositeKey] = clone[compositeKey].map(visit);
-        }
-      }
-
-      return clone;
-    };
-
-    return visit(schema);
-  }
 
   /**
    * Convert a Zod schema to the JSON Schema object used in response_format.
    */
   toJsonSchema(schema: ZodSchema<any>, name = "structured_response"): Record<string, any> {
-    // Use zod-to-json-schema's OpenAI strict mode so optional/defaulted fields are
-    // normalized into OpenAI's stricter json_schema subset.
+    // `target: "openAi"` is the library's real strict-mode switch. The options
+    // used before it (`openaiStrictMode`, `nameStrategy: "duplicate-ref"`,
+    // `$refStrategy: "extract-to-root"`, `nullableStrategy`) do not exist in
+    // zod-to-json-schema and were silently ignored, which had teeth:
+    //   • an unrecognised `$refStrategy` makes `get$ref` return undefined, so a
+    //     recursive schema (z.lazy) recursed until `RangeError: Maximum call
+    //     stack size exceeded` — thrown here, before any request was sent;
+    //   • repeated sub-schemas were re-inlined at every use site instead of
+    //     being referenced once;
+    //   • strict mode never ran, so the hand-rolled pass below had to force
+    //     `required` — turning every `.optional()` field into one the model MUST
+    //     invent a value for, because it was marked required with no null branch.
+    // `target: "openAi"` emits `type: [T, "null"]` for optional fields, marks
+    // everything required, and sets `additionalProperties: false` at every
+    // level, so no post-processing is needed beyond unwrapping the root $ref.
+    // ts-expect-error is for the DEPTH of zod's generic instantiation only —
+    // the option keys below are all valid for the pinned zod-to-json-schema.
     // @ts-expect-error zodToJsonSchema type instantiation can be excessively deep with complex schemas
     const result = zodToJsonSchema(schema, {
       name,
-      openaiStrictMode: true,
-      nameStrategy: "duplicate-ref",
-      $refStrategy: "extract-to-root",
-      nullableStrategy: "property",
+      target: "openAi",
+      $refStrategy: "root",
     });
-    const normalized = this.normalizeOpenAIStrictSchema(result as Record<string, any>);
-    return this.unwrapRootObjectSchema(normalized);
+    return this.unwrapRootObjectSchema(result as Record<string, any>);
   }
 
   /**

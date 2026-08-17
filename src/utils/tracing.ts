@@ -18,6 +18,7 @@ import type {
   TraceSessionSummary,
   TraceSinkConfig,
   TraceSinkSnapshot,
+  TraceResponseFormatSection,
   TraceToolCallSection,
   TraceToolDefinition,
   TraceToolDefinitionsSection,
@@ -475,6 +476,7 @@ async function postStreamingSessionStart(
     sessionId: string;
     startedAt: string;
     agent?: { name?: string; version?: string; model?: string; provider?: string };
+    metadata?: Record<string, string>;
     config?: TraceSessionConfigSnapshot;
   }
 ): Promise<void> {
@@ -493,10 +495,11 @@ async function postStreamingEvent(
   baseUrl: string,
   headers: Record<string, string> | undefined,
   sessionId: string,
-  event: TraceEventRecord
+  event: TraceEventRecord,
+  metadata?: Record<string, string>
 ): Promise<void> {
   const url = `${baseUrl.replace(/\/$/, "")}/stream/${sessionId}/events`;
-  await postJsonReliable(url, headers, { event }, { retry: false });
+  await postJsonReliable(url, headers, { event, metadata }, { retry: false });
 }
 
 /**
@@ -513,6 +516,7 @@ async function postStreamingSessionEnd(
     status: TraceSessionStatus;
     summary: TraceSessionSummary;
     errors: Array<{ eventId: string; message: string; stack?: string; type?: string; timestamp?: string }>;
+    metadata?: Record<string, string>;
   }
 ): Promise<void> {
   const url = `${baseUrl.replace(/\/$/, "")}/stream/${payload.sessionId}/end`;
@@ -578,6 +582,8 @@ function eventToOtlpSpan(event: TraceEventRecord): Record<string, unknown> {
     stringAttr("cognipeer.actor.name", event.actor?.name),
     stringAttr("cognipeer.actor.role", event.actor?.role),
     stringAttr("cognipeer.model", event.model),
+    intAttr("cognipeer.tokens.reasoning", event.reasoningTokens),
+    stringAttr("cognipeer.finish_reason", event.finishReason),
     stringAttr("cognipeer.provider", event.provider),
     stringAttr("cognipeer.tool.details", event.toolDetails ? JSON.stringify(event.toolDetails) : undefined),
     intAttr("cognipeer.tokens.input", event.inputTokens),
@@ -646,6 +652,7 @@ export function traceSessionToOtlp(session: TraceSessionFile): Record<string, un
     stringAttr("cognipeer.thread.id", session.threadId),
     stringAttr("cognipeer.agent.model", session.agent?.model),
     stringAttr("cognipeer.agent.provider", session.agent?.provider),
+    ...Object.entries(session.metadata || {}).map(([key, value]) => stringAttr(`cognipeer.metadata.${key}`, value)),
   ].filter(Boolean) as OtlpKeyValue[];
 
   // Root span — represents the entire agent session
@@ -852,6 +859,8 @@ function defaultSectionLabel(kind: TraceDataSection["kind"]): string {
       return "Details";
     case "tool_definitions":
       return "Tool Definitions";
+    case "response_format":
+      return "Response Format";
     default:
       return "Section";
   }
@@ -933,6 +942,76 @@ export function buildToolDefinitionsSection(
       section.tools.pop();
       section.truncated = true;
     }
+  }
+
+  return section;
+}
+
+// ── Response-format section (per-model-call structured-output contract) ──────
+// Same size discipline as the tool menu: a JSON Schema can be enormous, so the
+// section keeps the identifying fields (type / schema name / strict) and drops
+// only the schema body when it would blow the budget.
+const RESPONSE_FORMAT_MAX_SECTION_BYTES = 64 * 1024;
+const RESPONSE_FORMAT_MAX_NAME_CHARS = 200;
+
+/**
+ * Build the `response_format` section for one model call, or undefined when
+ * nothing usable was supplied.
+ *
+ * Accepts either the invoke-options wrapper produced by
+ * `NativeJsonSchemaStrategy.buildResponseFormat()` (`{ response_format: {…} }`)
+ * or a bare `response_format` object, so callers can pass whatever they hold.
+ * Exported for provider/node code that assembles sections itself.
+ */
+export function buildResponseFormatSection(
+  responseFormat: Record<string, any> | undefined,
+  strategy?: "native" | "tool_based",
+): TraceResponseFormatSection | undefined {
+  if (!responseFormat || typeof responseFormat !== "object" || Array.isArray(responseFormat)) return undefined;
+  // Unwrap the invoke-options envelope when present.
+  const raw = (responseFormat.response_format ?? responseFormat.responseFormat ?? responseFormat) as Record<string, any>;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+
+  const type = typeof raw.type === "string" && raw.type.trim().length > 0 ? raw.type.trim() : undefined;
+  const jsonSchema = (raw.json_schema ?? raw.jsonSchema) as Record<string, any> | undefined;
+  // A bare `{ schema: … }` with no type still describes a JSON contract.
+  const schemaSource = jsonSchema && typeof jsonSchema === "object" ? jsonSchema : raw;
+  const schema = schemaSource.schema && typeof schemaSource.schema === "object" && !Array.isArray(schemaSource.schema)
+    ? (schemaSource.schema as Record<string, any>)
+    : undefined;
+  if (!type && !schema) return undefined;
+
+  const section: TraceResponseFormatSection = {
+    kind: "response_format",
+    label: "Response Format",
+    type: type ?? (schema ? "json_schema" : "unknown"),
+    ...(strategy ? { strategy } : {}),
+    ...(typeof schemaSource.name === "string" && schemaSource.name.length > 0
+      ? { schemaName: schemaSource.name.slice(0, RESPONSE_FORMAT_MAX_NAME_CHARS) }
+      : {}),
+    ...(typeof schemaSource.strict === "boolean" ? { strict: schemaSource.strict } : {}),
+  };
+
+  if (schema) {
+    // Snapshot, don't alias: the caller may mutate the schema object after this
+    // call, and the section must record the contract AS SENT on this call.
+    try {
+      section.schema = JSON.parse(JSON.stringify(schema));
+    } catch {
+      // Non-serializable (e.g. circular) schema: omit rather than alias.
+    }
+  }
+
+  // Over budget: the schema body goes, the contract's identity stays — knowing
+  // a strict `invoice_v2` schema was enforced is most of the diagnostic value.
+  try {
+    if (section.schema && Buffer.byteLength(JSON.stringify(section), "utf8") > RESPONSE_FORMAT_MAX_SECTION_BYTES) {
+      delete section.schema;
+      section.truncated = true;
+    }
+  } catch {
+    delete section.schema;
+    section.truncated = true;
   }
 
   return section;
@@ -1066,6 +1145,9 @@ export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime
     rootSpanId,
     threadId: opts.tracing?.threadId,
     configAgentName: opts.tracing?.agentName?.trim() || undefined,
+    configMetadata: opts.tracing?.metadata && Object.keys(opts.tracing.metadata).length > 0
+      ? opts.tracing.metadata
+      : undefined,
     startedAt: Date.now(),
     resolvedConfig: cfg,
     events: [],
@@ -1122,6 +1204,7 @@ export async function startStreamingSession(
     threadId: session.threadId,
     startedAt: startedAtIso,
     agent: agentInfo,
+    metadata: session.configMetadata,
     config: configSnapshot,
   };
 
@@ -1170,6 +1253,10 @@ export function recordTraceEvent(
     outputTokens?: number;
     totalTokens?: number;
     cachedInputTokens?: number;
+    /** Subset of `outputTokens` spent on reasoning (see TraceEventRecord). */
+    reasoningTokens?: number;
+    /** Why the model stopped — `length` explains most truncated JSON. */
+    finishReason?: string;
     requestBytes?: number;
     responseBytes?: number;
     model?: string;
@@ -1188,6 +1275,15 @@ export function recordTraceEvent(
      * them. Size-capped; suppressed when logData is off.
      */
     toolDefinitions?: Array<{ name: string; description?: string; parameters?: Record<string, any> }>;
+    /**
+     * Structured-output CONTRACT bound to this model call (`ai_call` events),
+     * appended as a `response_format` section next to the tool menu. Accepts
+     * the `{ response_format: … }` invoke-options envelope or a bare
+     * response_format object. Size-capped; suppressed when logData is off.
+     */
+    responseFormat?: Record<string, any>;
+    /** Which structured-output strategy produced `responseFormat`. */
+    responseFormatStrategy?: "native" | "tool_based";
     debug?: Record<string, any>;
   }
 ): TraceEventRecord | undefined {
@@ -1221,6 +1317,7 @@ export function recordTraceEvent(
     session.summary.totalCachedInputTokens += cachedInputTokens;
   }
 
+  const reasoningTokens = event.reasoningTokens !== undefined ? Number(event.reasoningTokens) : undefined;
   const totalTokens = event.totalTokens !== undefined ? Number(event.totalTokens) : undefined;
   const requestBytes = event.requestBytes !== undefined ? Number(event.requestBytes) : undefined;
   if (!Number.isNaN(requestBytes ?? NaN) && requestBytes !== undefined) {
@@ -1253,6 +1350,15 @@ export function recordTraceEvent(
         // (tool_definitions-<eventId>-NN) like every other section kind;
         // already-stamped sections keep their ids/labels.
         if (menuSection) sections = ensureUniqueSections(id, [...(sections ?? []), menuSection]);
+      }
+    }
+    // Same composition rule for the structured-output contract: appended, and
+    // skipped when the caller already encoded the section itself.
+    if (event.responseFormat) {
+      const existing = (sections ?? []).some((section) => section.kind === "response_format");
+      if (!existing) {
+        const formatSection = buildResponseFormatSection(event.responseFormat, event.responseFormatStrategy);
+        if (formatSection) sections = ensureUniqueSections(id, [...(sections ?? []), formatSection]);
       }
     }
   }
@@ -1292,6 +1398,11 @@ export function recordTraceEvent(
       ...(totalTokens !== undefined && { totalTokens }),
       ...(cachedInputTokens !== undefined && { cachedInputTokens }),
     }),
+    // Absent, never zeroed for ai_call the way the four above are: a model
+    // that does no reasoning and one whose provider reports nothing are
+    // different facts, and a zero would erase the difference.
+    ...(reasoningTokens !== undefined && !Number.isNaN(reasoningTokens) ? { reasoningTokens } : {}),
+    ...(event.finishReason ? { finishReason: event.finishReason } : {}),
     requestBytes,
     responseBytes,
     model: resolvedModel,
@@ -1343,7 +1454,7 @@ export function recordTraceEvent(
         : sink.headers;
       
       // Fire and forget - don't block on event sending
-      postStreamingEvent(sink.url, headers, session.sessionId, record).catch((err) => {
+      postStreamingEvent(sink.url, headers, session.sessionId, record, session.configMetadata).catch((err) => {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (typeof console !== "undefined" && typeof console.warn === "function") {
           console.warn("[Tracing] Failed to send streaming event:", errMsg);
@@ -1412,6 +1523,7 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
     endedAt: endedAtIso,
     durationMs,
     agent: agentInfo || session.agentInfo,
+    metadata: session.configMetadata,
     config: configSnapshot,
     summary: session.summary,
     events: session.events,
@@ -1454,6 +1566,7 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
           status: initialStatus,
           summary: session.summary,
           errors: session.errors,
+          metadata: session.configMetadata,
         });
       } else {
         // In batched mode (or if streaming never started), send full session

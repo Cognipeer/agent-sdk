@@ -91,3 +91,76 @@ describe('StructuredOutputManager retry messages', () => {
     }).role).toBe('user');
   });
 });
+/**
+ * Regressions from the schema-conversion options that never existed in the
+ * pinned zod-to-json-schema (`openaiStrictMode`, `$refStrategy:
+ * "extract-to-root"`, …). They were silently ignored, so strict mode never
+ * ran and an unrecognised $refStrategy disabled $ref emission entirely.
+ */
+describe('NativeJsonSchemaStrategy — strict-mode schema conversion', () => {
+  const strategy = new NativeJsonSchemaStrategy();
+
+  it('marks a plain .optional() field required WITH a null branch', () => {
+    // Forcing it required without allowing null makes the model invent a value
+    // for a field the developer marked optional.
+    const schema = strategy.toJsonSchema(
+      z.object({ name: z.string(), nickname: z.string().optional() }),
+      'user',
+    );
+    const obj = findObjectSchemaWithProperty(schema, 'nickname');
+    expect(obj.required).toContain('nickname');
+    expect(obj.properties.nickname.type).toEqual(['string', 'null']);
+  });
+
+  it('sets additionalProperties:false at every level', () => {
+    const schema = strategy.toJsonSchema(
+      z.object({ name: z.string(), meta: z.object({ a: z.number() }) }),
+      'nested',
+    );
+    const root = findObjectSchemaWithProperty(schema, 'meta');
+    expect(root.additionalProperties).toBe(false);
+    expect(root.properties.meta.additionalProperties).toBe(false);
+  });
+
+  it('converts a recursive schema instead of blowing the stack', () => {
+    // z.lazy is ordinary (comment trees, categories, org charts). With the old
+    // options this threw RangeError before any request left the process.
+    const Node: z.ZodType<any> = z.lazy(() =>
+      z.object({ label: z.string(), children: z.array(Node).optional() }),
+    );
+    expect(() => strategy.toJsonSchema(z.object({ root: Node }), 'tree')).not.toThrow();
+  });
+
+  it('emits response_format with strict:true and the given name', () => {
+    const rf = strategy.buildResponseFormat(z.object({ ok: z.boolean() }), 'my_contract');
+    expect(rf.response_format.type).toBe('json_schema');
+    expect(rf.response_format.json_schema.name).toBe('my_contract');
+    expect(rf.response_format.json_schema.strict).toBe(true);
+    expect(rf.response_format.json_schema.schema.type).toBe('object');
+  });
+
+  it('emits a self-consistent schema — every $ref resolves inside it', () => {
+    // The unwrapped root carries `definitions` along BECAUSE the remaining
+    // $refs point into it. Dropping it as "duplicate" would ship a schema the
+    // provider cannot resolve.
+    const collectRefs = (node: any, out: string[] = []): string[] => {
+      if (!node || typeof node !== 'object') return out;
+      if (Array.isArray(node)) { node.forEach((n) => collectRefs(n, out)); return out; }
+      if (typeof node.$ref === 'string') out.push(node.$ref);
+      for (const value of Object.values(node)) collectRefs(value, out);
+      return out;
+    };
+    const resolve = (root: any, pointer: string) =>
+      pointer.slice(2).split('/').reduce<any>((node, seg) => node?.[seg.replace(/~1/g, '/').replace(/~0/g, '~')], root);
+
+    const Address = z.object({ city: z.string(), zip: z.string() });
+    for (const schema of [
+      strategy.toJsonSchema(z.object({ billing: Address, shipping: Address }), 'order'),
+      strategy.toJsonSchema(z.object({ root: z.lazy((): any => z.object({ label: z.string() })) }), 'tree'),
+    ]) {
+      for (const ref of collectRefs(schema)) {
+        expect(resolve(schema, ref), `unresolvable $ref: ${ref}`).toBeDefined();
+      }
+    }
+  });
+});

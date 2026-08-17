@@ -207,6 +207,29 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // Native structured output: pass response_format to model invocation if set
     const responseFormat = (runtime as any).responseFormat as Record<string, any> | undefined;
 
+    // Structured-output CONTRACT recorded on the ai_call trace event, so
+    // observability can answer "was this call required to return JSON, and
+    // against which schema?" — the question a malformed-output investigation
+    // starts from, and the contract a replay (evaluation / prompt optimizer)
+    // has to reproduce to be measuring the same system.
+    //
+    // Both strategies are reported through the same section: the native one
+    // carries the wire `response_format`, the tool-based one carries the
+    // schema of the injected `response` tool, which enforces the very same
+    // contract by another route.
+    let traceResponseFormat: Record<string, any> | undefined = responseFormat;
+    let traceResponseFormatStrategy: "native" | "tool_based" | undefined = responseFormat ? "native" : undefined;
+    if (!traceResponseFormat && (runtime as any).outputSchema) {
+      const responseTool = traceToolDefinitions?.find((tool) => tool.name === "response");
+      if (responseTool?.parameters) {
+        traceResponseFormat = {
+          type: "json_schema",
+          json_schema: { name: "response", strict: false, schema: responseTool.parameters },
+        };
+        traceResponseFormatStrategy = "tool_based";
+      }
+    }
+
     // Unified reasoning pass-through: when the loop resolved a ReasoningConfig we
     // place the native shape on ctx.__reasoning. We forward it into invoke options
     // so native providers (OpenAI/Anthropic/Vertex) can map it to their own body.
@@ -272,6 +295,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         error: { message: err?.message || String(err), stack: err?.stack },
         messageList: state.messages,
         toolDefinitions: traceToolDefinitions,
+        responseFormat: traceResponseFormat,
+        responseFormatStrategy: traceResponseFormatStrategy,
       });
       throw err;
     }
@@ -296,6 +321,13 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const responsePayload = shouldLogResponse ? sanitizeTracePayload(response) : undefined;
     const responseBytes = responsePayload !== undefined ? estimatePayloadBytes(responsePayload) : undefined;
 
+    // Why the model stopped. `length` is the single most common explanation for
+    // a truncated or unparseable structured response — without it that failure
+    // is indistinguishable from a model that simply answered badly.
+    const finishReason = (response as any)?.response_metadata?.finish_reason
+      ?? (response as any)?.response_metadata?.finishReason
+      ?? (response as any)?.finishReason;
+
     recordTraceEvent(traceSession, {
       type: "ai_call",
       label: "Assistant Response",
@@ -305,12 +337,18 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       outputTokens: normalized?.completion_tokens,
       totalTokens: normalized?.total_tokens,
       cachedInputTokens: normalized?.prompt_tokens_details?.cached_tokens,
+      // A subset of completion_tokens, and on a reasoning model routinely most
+      // of the output bill while being invisible in the response text.
+      reasoningTokens: normalized?.completion_tokens_details?.reasoning_tokens,
+      finishReason: typeof finishReason === "string" ? finishReason : undefined,
       requestBytes: promptBytes,
       responseBytes: responseBytes,
       model: modelName,
       provider: getProviderName((runtime as any).model || (opts as any).model),
       messageList: messagesWithResponse,
       toolDefinitions: traceToolDefinitions,
+      responseFormat: traceResponseFormat,
+      responseFormatStrategy: traceResponseFormatStrategy,
     });
     if (normalized) {
       recordUsage(state, modelName, normalized);

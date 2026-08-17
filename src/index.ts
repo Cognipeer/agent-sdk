@@ -49,7 +49,7 @@ export type {
   ToolInputDigestResult,
   ToolRetentionDeclarations,
 } from "./smart/toolResponses.js";
-export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, buildToolDefinitionsSection } from "./utils/tracing.js";
+export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, buildToolDefinitionsSection, buildResponseFormatSection } from "./utils/tracing.js";
 // Native LLM Providers (no LangChain dependency)
 export {
   createProvider,

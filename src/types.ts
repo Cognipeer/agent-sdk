@@ -229,6 +229,11 @@ export type TracingConfig = {
    * when the same agent implementation runs under several logical names.
    */
   agentName?: string;
+  /**
+   * Arbitrary key-value tags forwarded to every tracing payload for downstream
+   * attribution/reporting; not interpreted by the SDK itself.
+   */
+  metadata?: Record<string, string>;
 };
 
 // Alias for backward compatibility
@@ -898,6 +903,35 @@ export type TraceToolDefinitionsSection = {
   truncated?: boolean;
 };
 
+/**
+ * The structured-output contract bound to one model call — the other half of
+ * the request that decides the SHAPE of the answer (the tool menu being the
+ * first half). Without it a trace cannot distinguish "the model chose to write
+ * prose" from "nothing ever asked it for JSON", and any replay of the call
+ * (evaluation, prompt optimization) silently runs under a looser contract than
+ * production did.
+ *
+ * Rides on the `ai_call` event, never per session: a run can enforce a schema
+ * on its final turn only, and each call records the contract it actually sent.
+ */
+export type TraceResponseFormatSection = {
+  id?: string;
+  kind: "response_format";
+  label: string;
+  /** `json_schema` | `json_object` | `text` — the wire `response_format.type`. */
+  type: string;
+  /** Which strategy produced it: native `response_format` or the `response` tool. */
+  strategy?: "native" | "tool_based";
+  /** `json_schema.name` when the provider takes a named schema. */
+  schemaName?: string;
+  /** `json_schema.strict` — whether the provider enforces the schema. */
+  strict?: boolean;
+  /** The JSON Schema as sent. Dropped (with `truncated`) when over budget. */
+  schema?: Record<string, any>;
+  /** Set when `schema` was dropped to fit the section size budget. */
+  truncated?: boolean;
+};
+
 export type TraceDataSection =
   | TraceMessageSection
   | TraceToolCallSection
@@ -905,7 +939,8 @@ export type TraceDataSection =
   | TraceToolResponseSection
   | TraceSummarySection
   | TraceMetadataSection
-  | TraceToolDefinitionsSection;
+  | TraceToolDefinitionsSection
+  | TraceResponseFormatSection;
 
 export type TraceEventRecord = {
   sessionId: string;
@@ -924,6 +959,21 @@ export type TraceEventRecord = {
   outputTokens?: number;
   totalTokens?: number;
   cachedInputTokens?: number;
+  /**
+   * Reasoning tokens billed inside `outputTokens` (a SUBSET of it, matching
+   * OpenAI's `completion_tokens_details.reasoning_tokens`). Recorded because
+   * on a reasoning model they are routinely most of the output bill while
+   * being invisible in the response text — a spend investigation that only
+   * sees `outputTokens` cannot explain where the money went.
+   */
+  reasoningTokens?: number;
+  /**
+   * Why the model stopped: `stop` | `tool_calls` | `length` | `content_filter`
+   * | `error`. `length` is the single most common explanation for a truncated
+   * or unparseable structured response, and without it that failure is
+   * indistinguishable from a model that simply answered badly.
+   */
+  finishReason?: string;
   requestBytes?: number;
   responseBytes?: number;
   model?: string;
@@ -978,6 +1028,8 @@ export type TraceSessionFile = {
   endedAt?: string;
   durationMs?: number;
   agent?: { name?: string; version?: string; model?: string; provider?: string };
+  /** Arbitrary key-value tags from `TracingConfig.metadata`, forwarded as-is for downstream attribution/reporting. */
+  metadata?: Record<string, string>;
   config: TraceSessionConfigSnapshot;
   summary: TraceSessionSummary;
   events: TraceEventRecord[];
@@ -1010,6 +1062,8 @@ export type TraceSessionRuntime = {
   agentInfo?: { name?: string; version?: string; model?: string; provider?: string };
   /** Caller-supplied agent name override (from TracingConfig.agentName). */
   configAgentName?: string;
+  /** Caller-supplied attribution tags (from TracingConfig.metadata). */
+  configMetadata?: Record<string, string>;
   resolvedConfig: ResolvedTraceConfig;
   events: TraceEventRecord[];
   summary: TraceSessionSummary;

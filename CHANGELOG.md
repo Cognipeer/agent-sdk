@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4]
+
+### Added
+- **`TracingConfig.metadata`.** Arbitrary key-value tags (e.g. `{ complexity: "complex" }`) forwarded as-is on every tracing payload — session start, streaming events, session end, and the batched/OTLP session file (as `cognipeer.metadata.<key>` resource attributes). The SDK does not interpret these tags; they exist purely so a downstream sink consumer can use them as reporting/attribution dimensions.
+
+## [0.9.3]
+
+### Added
+- **Per-model-call structured-output contract on trace events.** The tool menu
+  landed in 0.9.2; this is its other half. A model call's output shape is
+  decided by two things — the tools it was offered and the contract it was held
+  to — and only the first was recorded. So a reply that was not valid JSON
+  looked identical whether a schema had been enforced and the model failed it,
+  or nothing had ever asked for JSON. That is the difference between a defect
+  and a choice, and the trace could not tell them apart.
+
+  Every `ai_call` event now carries a `response_format` section:
+  `{type, strategy?, schemaName?, strict?, schema?}`. It rides per event, never
+  per session, because an agent can enforce a schema on its final turn only.
+  Both strategies report through it: the native `response_format` path as
+  `strategy: "native"`, and providers without one — where the SDK enforces the
+  same contract through the injected `response` tool — as
+  `strategy: "tool_based"`, carrying that tool's schema. A replay
+  (evaluation, prompt optimization) that drops the contract measures a looser
+  system than production runs under, which is what this exists to prevent.
+
+  Same size discipline as the tool menu: section ≤64KB, and beyond it the
+  contract's identity (`type` / `schemaName` / `strict`) survives while the
+  schema body is dropped with a `truncated` marker — knowing a strict
+  `invoice_v2` schema was enforced is most of the diagnostic value even without
+  the schema text. New exports: `TraceResponseFormatSection`,
+  `buildResponseFormatSection`; `recordTraceEvent` accepts `responseFormat`
+  (the `{response_format: …}` invoke envelope or a bare body) plus
+  `responseFormatStrategy`, composing with — never replacing — the message and
+  tool-menu sections, and suppressed when `logData` is off.
+
+- **`finishReason` on trace events.** Why the model stopped. `length` — the
+  output ceiling — is the single most common cause of truncated and
+  unparseable structured output, and without it that failure is
+  indistinguishable from a model that simply answered badly. Read from the
+  provider's normalized response and exported as an OTLP attribute
+  (`cognipeer.finish_reason`).
+
+- **`reasoningTokens` on trace events.** A SUBSET of `outputTokens`, matching
+  OpenAI's `completion_tokens_details.reasoning_tokens`. On a reasoning model
+  it is routinely most of the output bill while being invisible in the response
+  text, so a spend investigation that only sees `outputTokens` cannot explain
+  where the money went. Recorded for attribution; consumers must not add it to
+  a cost total, because it is already inside the output count. Unlike the four
+  token fields, it is **omitted rather than zeroed** on an `ai_call` — a model
+  that does no reasoning and a provider that reports nothing are different
+  facts. OTLP attribute: `cognipeer.tokens.reasoning`.
+
+### Fixed
+- **Native structured output produced a schema the provider rejected — and
+  could crash before sending.** The Zod → JSON Schema conversion passed options
+  that do not exist in the pinned `zod-to-json-schema`
+  (`openaiStrictMode`, `nameStrategy`, `$refStrategy: "extract-to-root"`,
+  `nullableStrategy`). They were silently ignored, with teeth:
+  - an unrecognised `$refStrategy` made `get$ref` return undefined, so a
+    recursive schema (`z.lazy` — comment trees, categories, org charts)
+    recursed until `RangeError: Maximum call stack size exceeded`, thrown
+    locally before any request was sent;
+  - repeated sub-schemas were re-inlined at every use site instead of being
+    referenced once;
+  - strict mode never ran, so a hand-rolled pass forced `required` on every
+    field — turning each `.optional()` into a field the model MUST invent a
+    value for, marked required with no null branch.
+
+  Conversion now uses the library's real strict-mode switch (`target: "openAi"`),
+  which emits `type: [T, "null"]` for optional fields, marks everything
+  required, and sets `additionalProperties: false` at every level.
+
+### Compatibility
+- Fully backward compatible. The new trace fields are additive and absent when
+  the information is not available; the schema-conversion fix changes the JSON
+  Schema sent for `.optional()` fields from "required, no null" to "required,
+  nullable" — which is what OpenAI strict mode requires and what the code
+  already intended.
+
 ## [0.9.2]
 
 ### Added

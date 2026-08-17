@@ -417,6 +417,8 @@ You can disable payload capture with `logData: false` to keep only metrics, or c
 
 Each session/event also carries OTel-compatible correlation identifiers (`traceId`, `rootSpanId`, `spanId`, `parentSpanId`) so you can stitch agent traces into distributed telemetry pipelines.
 
+Pass `tracing: { metadata: { ... } }` to attach arbitrary key-value tags (e.g. `{ complexity: "complex" }`) to every payload sent to the sink. The SDK does not interpret these tags itself — they're forwarded as-is so a downstream consumer (e.g. Console) can use them as reporting/attribution dimensions.
+
 ## Development
 
 Install dependencies and build the package:
