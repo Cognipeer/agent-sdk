@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5]
+
+### Fixed
+- **`sanitizeTracePayload(undefined)` no longer returns the string `"undefined"`.** `JSON.stringify(undefined)` returns the real `undefined` (not a string); `JSON.parse` of that then coerces its argument to the string `"undefined"` and throws, and the old catch-all fallback answered with `String(undefined)` — the literal string `"undefined"`. A caller that treats an absent field as a record (e.g. Console's tool-details renderer, which spreads it) split that string into single-character indexed keys instead of showing nothing. `undefined` now stays `undefined` all the way through.
+
 ## [0.9.4]
 
 ### Added

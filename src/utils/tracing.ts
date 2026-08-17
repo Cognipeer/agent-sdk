@@ -1653,6 +1653,14 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
 export type { ResolvedTraceConfig };
 
 export function sanitizeTracePayload(value: any): any {
+  // JSON.stringify(undefined) returns the real JS `undefined`, not a JSON
+  // string — JSON.parse(undefined) then coerces its argument to the string
+  // "undefined" and throws a SyntaxError, which used to fall into the catch
+  // below and come back out as the *string* "undefined" (String(undefined)).
+  // That string then flows into the wire payload looking like real content
+  // (and downstream consumers that spread it as a record split it into
+  // single-character indexed keys). Absent must stay absent.
+  if (value === undefined) return undefined;
   try {
     const cache = new WeakSet();
     const json = JSON.stringify(

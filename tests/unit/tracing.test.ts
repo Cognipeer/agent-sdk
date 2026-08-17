@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgent, createTool } from "../../src/index.js";
-import { createTraceSession, customSink, finalizeTraceSession, startStreamingSession } from "../../src/utils/tracing.js";
+import { createTraceSession, customSink, finalizeTraceSession, sanitizeTracePayload, startStreamingSession } from "../../src/utils/tracing.js";
 import type { AgentRuntimeConfig, Message, SmartAgentOptions, TracingConfig } from "../../src/types.js";
 
 function makeAgentOptions(tracing: TracingConfig): SmartAgentOptions {
@@ -188,5 +188,23 @@ describe("tool observability tracing", () => {
         toolDetails: expect.objectContaining({ name: "lookup_customer" }),
       }),
     ]));
+  });
+});
+
+describe("sanitizeTracePayload", () => {
+  it("keeps undefined absent instead of turning it into the string \"undefined\"", () => {
+    // JSON.stringify(undefined) returns the real `undefined`, and
+    // JSON.parse(undefined) throws (its argument coerces to the string
+    // "undefined" first) — the old catch-all fallback then did
+    // String(undefined), handing callers the literal string "undefined"
+    // instead of an absent value. A caller that spreads that string as a
+    // record splits it into single-character indexed keys.
+    expect(sanitizeTracePayload(undefined)).toBeUndefined();
+  });
+
+  it("still serializes real values, including ones that need the fallback path", () => {
+    expect(sanitizeTracePayload({ a: 1 })).toEqual({ a: 1 });
+    expect(sanitizeTracePayload("plain string")).toBe("plain string");
+    expect(sanitizeTracePayload(null)).toBeNull();
   });
 });
