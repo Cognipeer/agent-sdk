@@ -13,7 +13,7 @@ import {
   DEFAULT_TOOL_INPUT_DIGEST_HEAD_CHARS,
 } from "./toolResponses.js";
 
-const DEFAULT_CRITICAL_TOOLS = ["response", "manage_todo_list", "get_tool_response"];
+const DEFAULT_CRITICAL_TOOLS = ["response", "manage_plan", "manage_todo_list", "get_tool_response"];
 
 // Shared defaults across all profiles — only overridden values need to be specified per profile.
 // These mirror the "balanced" profile and are scaled for modern frontier models

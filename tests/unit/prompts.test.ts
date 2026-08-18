@@ -33,7 +33,7 @@ describe('buildSystemPrompt', () => {
     it('should include todo list instructions when enabled', () => {
       const prompt = buildSystemPrompt('Base prompt', true, 'PlanningAgent');
 
-      expect(prompt).toContain('todo');
+      expect(prompt).toContain('manage_plan');
       expect(prompt).not.toContain('PLANNING IS MANDATORY');
       expect(prompt).toContain('Do NOT create a plan for direct Q&A');
       expect(prompt).toContain('If a task is multi-step and no valid plan exists yet, create one before substantial execution.');
@@ -46,7 +46,8 @@ describe('buildSystemPrompt', () => {
       const prompt = buildSystemPrompt('Base prompt', false, 'SimpleAgent');
       const promptLower = prompt.toLowerCase();
 
-      // Should not have explicit todo tool mentions (unless in base prompt)
+      // Should not have explicit planning tool mentions (unless in base prompt)
+      expect(promptLower.includes('manage_plan')).toBe(false);
       expect(promptLower.includes('manage_todo_list')).toBe(false);
     });
 

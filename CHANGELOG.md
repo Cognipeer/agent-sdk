@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6]
+
+### Changed
+- **The planning tool is now `manage_plan`, not `manage_todo_list`.** `manage_todo_list`'s name collided, on downstream products with their own real "todo list" domain (a personal to-do backlog, unrelated to run planning), with a substring match on `"todo_list"` — a deterministic tool-recovery mechanism that force-binds by fuzzy name/description match had no way to tell the SDK's own bookkeeping tool apart from a product's domain todo-list tools, and force-bound the wrong one. `manage_todo_list` still works exactly as before — it is now a deprecated alias sharing the same handler and the same plan state (`stateRef.todoList`/`planVersion`/`adherenceScore`) as `manage_plan`, both bound whenever planning is enabled, so an in-flight run or a caller still on the old name is unaffected. New: `createManageTodoListAliasTool` (exported alongside the existing `createManageTodoTool`, which now builds the `manage_plan` tool). `CONTROL_PLANE_TOOL_NAMES` and the default `criticalTools` list carry both names for the duration of the alias. `PlanEvent.source` widened to `"manage_plan" | "manage_todo_list" | "system"` and now reports whichever name was actually called, instead of always reporting `"manage_todo_list"`. The `<planning>` prompt block's rule 1 now says `manage_plan`.
+
 ## [0.9.5]
 
 ### Fixed

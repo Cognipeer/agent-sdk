@@ -16,7 +16,8 @@ import { coerceToolArgs } from "./toolArgCoercion.js";
  * Tools the agent loop uses to steer ITSELF. Their arguments are never digested —
  * digesting them is never a win (the arguments are small) and always a risk:
  *  - `response` carries the run's final structured output,
- *  - `manage_todo_list` carries the living plan,
+ *  - `manage_plan` (and its deprecated alias `manage_todo_list` — same handler,
+ *    same shared state, see contextTools.ts) carries the living plan,
  *  - `ask_user_question` carries the question the user's answer replies to,
  *  - `open_skill` / `bind_skill_tools` / `search_skills` name the capability being
  *    loaded, which the rest of the run reasons about,
@@ -25,6 +26,7 @@ import { coerceToolArgs } from "./toolArgCoercion.js";
  */
 export const CONTROL_PLANE_TOOL_NAMES: readonly string[] = [
   "response",
+  "manage_plan",
   "manage_todo_list",
   "get_tool_response",
   "ask_user_question",

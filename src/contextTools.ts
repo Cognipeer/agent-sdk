@@ -194,11 +194,21 @@ export function hasToolResponseRecoveryReference(
   });
 }
 
-export function createManageTodoTool(stateRef: ContextToolsStateRef) {
+/**
+ * The tool NAME used to change across a rename, but the state it manages
+ * (stateRef.todoList/planVersion/adherenceScore) and its wire contract do
+ * not — a single handler factory parametrized by name keeps both the
+ * canonical tool and the legacy alias byte-identical in everything but the
+ * name the model sees and the `source`/`actor.name` it reports.
+ */
+function createPlanTool(
+  stateRef: ContextToolsStateRef,
+  toolName: "manage_plan" | "manage_todo_list",
+  description: string,
+) {
   const manageTodo = createTool({
-    name: "manage_todo_list",
-    description:
-      "Manage a structured todo list to track progress and plan tasks throughout your coding session.\n\nOperations:\n- read: return the current plan\n- write: replace the full plan with a complete ordered todoList\n- update: patch existing todo items by id without resending the whole plan\n\nRules:\n- Use write only when creating or fully rewriting the plan\n- After a plan exists, prefer update for status, evidence, or owner changes\n- Update payloads should contain only the changed items\n- When using update, pass expectedVersion to avoid overwriting a newer plan\n- Keep ids unique; write operations must keep ids sequential starting from 1\n- Keep at most ONE item in-progress at a time\n- If update fails due to version mismatch, read the latest plan and retry",
+    name: toolName,
+    description,
     schema: z.object({
       operation: z.enum(["write", "read", "update"]),
       expectedVersion: z.number().int().min(0).optional(),
@@ -211,7 +221,7 @@ export function createManageTodoTool(stateRef: ContextToolsStateRef) {
         const version = stateRef.planVersion || 1;
         const adherenceScore = stateRef.adherenceScore || 0;
         const planData = {
-          source: "manage_todo_list",
+          source: toolName,
           operation,
           version,
           adherenceScore,
@@ -223,7 +233,7 @@ export function createManageTodoTool(stateRef: ContextToolsStateRef) {
         recordTraceEvent(traceSession, {
           type: "plan",
           label: `Plan ${operation}`,
-          actor: { scope: "agent", name: "manage_todo_list", role: "planner" },
+          actor: { scope: "agent", name: toolName, role: "planner" },
           sections: [
             {
               kind: "summary",
@@ -370,6 +380,33 @@ export function createManageTodoTool(stateRef: ContextToolsStateRef) {
   return manageTodo;
 }
 
+const MANAGE_PLAN_DESCRIPTION =
+  "Manage a structured execution plan to track progress and sequence steps throughout your run.\n\nOperations:\n- read: return the current plan\n- write: replace the full plan with a complete ordered set of steps (pass as `todoList`)\n- update: patch existing plan steps by id without resending the whole plan\n\nRules:\n- Use write only when creating or fully rewriting the plan\n- After a plan exists, prefer update for status, evidence, or owner changes\n- Update payloads should contain only the changed items\n- When using update, pass expectedVersion to avoid overwriting a newer plan\n- Keep ids unique; write operations must keep ids sequential starting from 1\n- Keep at most ONE item in-progress at a time\n- If update fails due to version mismatch, read the latest plan and retry";
+
+/**
+ * `manage_todo_list` was renamed to `manage_plan` (0.9.5) because its name
+ * collided, on downstream products with their own real "todo list" domain
+ * tools (a personal to-do backlog, unrelated to run planning), with the
+ * substring "todo_list" appearing in both. A deterministic recovery
+ * mechanism that force-binds tools by fuzzy name/description match had no
+ * way to tell this bookkeeping tool apart from a domain todo-list tool, and
+ * force-bound the wrong one. The description below intentionally never says
+ * "todo list" for the same reason.
+ */
+const LEGACY_MANAGE_TODO_LIST_DESCRIPTION =
+  "DEPRECATED — identical to, and shares state with, `manage_plan`. Kept only so a run already in flight (or a caller still on the old name) keeps working; prefer `manage_plan` for anything new.\n\n"
+  + MANAGE_PLAN_DESCRIPTION;
+
+/** The canonical planning tool. Export name kept as `createManageTodoTool` for backward compat with existing imports; the TOOL it builds is named `manage_plan`. */
+export function createManageTodoTool(stateRef: ContextToolsStateRef) {
+  return createPlanTool(stateRef, "manage_plan", MANAGE_PLAN_DESCRIPTION);
+}
+
+/** The deprecated `manage_todo_list` alias — same handler, same shared state, different name. See LEGACY_MANAGE_TODO_LIST_DESCRIPTION. */
+export function createManageTodoListAliasTool(stateRef: ContextToolsStateRef) {
+  return createPlanTool(stateRef, "manage_todo_list", LEGACY_MANAGE_TODO_LIST_DESCRIPTION);
+}
+
 export function createGetToolResponseTool(stateRef: ContextToolsStateRef) {
   const getTool = createTool({
     name: "get_tool_response",
@@ -416,7 +453,7 @@ export function createGetToolResponseTool(stateRef: ContextToolsStateRef) {
   return getTool;
 }
 
-// Create context tools like get_tool_response, manage_todo_list
+// Create context tools like get_tool_response, manage_plan
 export function createContextTools(
   stateRef: ContextToolsStateRef,
   opts?: { planningEnabled?: boolean; outputSchema?: any; includeGetToolResponse?: boolean }
@@ -424,7 +461,12 @@ export function createContextTools(
   const tools = [] as any[];
 
   if (opts?.planningEnabled) {
+    // Both share `stateRef`, so either name reads/writes the SAME plan — a
+    // run mid-flight on the old name and a fresh run on the new one never
+    // diverge. See LEGACY_MANAGE_TODO_LIST_DESCRIPTION for why the alias
+    // exists at all.
     tools.push(createManageTodoTool(stateRef));
+    tools.push(createManageTodoListAliasTool(stateRef));
   }
 
   if (opts?.includeGetToolResponse ?? true) {

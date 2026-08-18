@@ -3,7 +3,7 @@ import type { PlanningMode } from "./types.js";
 const DEFAULT_TODO_LIST_PROMPT = `Planning tools are available when they materially improve execution.
 
 Rules:
-1) Use "manage_todo_list" for multi-step work, delegation, recovery after a failed attempt, or when the user explicitly asks for a plan.
+1) Use "manage_plan" for multi-step work, delegation, recovery after a failed attempt, or when the user explicitly asks for a plan.
 2) Do NOT create a plan for direct Q&A, simple recall from existing context, or a single straightforward tool lookup unless the user asks for one.
 3) If a task is multi-step and no valid plan exists yet, create one before substantial execution.
 4) Use operation="write" only to create or fully replace the entire plan. After a plan exists, default to operation="update" for progress, evidence, status, owner changes, blockers, or reprioritization.

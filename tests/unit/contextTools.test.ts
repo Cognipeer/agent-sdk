@@ -129,6 +129,62 @@ describe('createContextTools manage_todo_list', () => {
   });
 });
 
+describe('manage_plan (canonical) and manage_todo_list (deprecated alias) share one plan', () => {
+  it('binds both names when planning is enabled, and manage_plan is the non-deprecated one', () => {
+    const stateRef: any = { todoList: undefined, planVersion: 0, adherenceScore: 0 };
+    const tools = createContextTools(stateRef, { planningEnabled: true });
+    const names = tools.map((tool: any) => tool.name);
+
+    expect(names).toContain('manage_plan');
+    expect(names).toContain('manage_todo_list');
+
+    const managePlan = tools.find((tool: any) => tool.name === 'manage_plan') as any;
+    const legacyAlias = tools.find((tool: any) => tool.name === 'manage_todo_list') as any;
+    expect(managePlan.description).not.toContain('DEPRECATED');
+    expect(legacyAlias.description).toContain('DEPRECATED');
+  });
+
+  it('a write through manage_todo_list is readable through manage_plan, and vice versa', async () => {
+    const stateRef: any = { todoList: undefined, planVersion: 0, adherenceScore: 0 };
+    const tools = createContextTools(stateRef, { planningEnabled: true });
+    const managePlan = tools.find((tool: any) => tool.name === 'manage_plan') as any;
+    const legacyAlias = tools.find((tool: any) => tool.name === 'manage_todo_list') as any;
+
+    await legacyAlias.invoke({
+      operation: 'write',
+      todoList: [{ id: 1, title: 'Inspect code', status: 'in-progress' }],
+    });
+
+    const readBack = await managePlan.invoke({ operation: 'read' });
+    expect(readBack).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 1, title: 'Inspect code' })]),
+    );
+
+    const updated = await managePlan.invoke({
+      operation: 'update',
+      expectedVersion: 1,
+      todoList: [{ id: 1, status: 'completed' }],
+    });
+    expect(updated).toEqual(expect.objectContaining({ status: 'ok', version: 2 }));
+    expect(stateRef.todoList[0].status).toBe('completed');
+  });
+
+  it('reports the actual tool name called as the plan event source', async () => {
+    const stateRef: any = { todoList: undefined, planVersion: 0, adherenceScore: 0 };
+    const runtimeEvents: any[] = [];
+    stateRef.__onEvent = (event: any) => runtimeEvents.push(event);
+    const tools = createContextTools(stateRef, { planningEnabled: true });
+    const managePlan = tools.find((tool: any) => tool.name === 'manage_plan') as any;
+    const legacyAlias = tools.find((tool: any) => tool.name === 'manage_todo_list') as any;
+
+    await managePlan.invoke({ operation: 'write', todoList: [{ id: 1, title: 'x', status: 'in-progress' }] });
+    await legacyAlias.invoke({ operation: 'update', expectedVersion: 1, todoList: [{ id: 1, status: 'completed' }] });
+
+    expect(runtimeEvents[0]).toEqual(expect.objectContaining({ source: 'manage_plan' }));
+    expect(runtimeEvents[1]).toEqual(expect.objectContaining({ source: 'manage_todo_list' }));
+  });
+});
+
 describe('get_tool_response gating', () => {
   it('should detect visible reduced tool-response markers', () => {
     expect(hasToolResponseRecoveryReference([

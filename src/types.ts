@@ -1200,7 +1200,7 @@ export type ToolCallEvent = {
 
 export type PlanEvent = {
   type: "plan";
-  source: "manage_todo_list" | "system";
+  source: "manage_plan" | "manage_todo_list" | "system";
   operation?: "write" | "read" | "update";
   todoList?: PlanStepRecord[];
   version?: number;
