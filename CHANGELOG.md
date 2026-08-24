@@ -112,6 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-converted message sections and is suppressed when `logData` is off.
   Custom sinks, HTTP/cognipeer sinks and the OTLP exporter (via
   `cognipeer.sections`) all carry the section unchanged.
+
+## [0.9.1] - 2026-08-12
+
+### Added
 - **`needsApproval` accepts a predicate — approvals decided per call.** The gate
   read a static boolean, so a tool was either always gated or never: `bash` could
   be paused, but "pause before `rm`, not before `ls`" could not be expressed at
@@ -218,6 +222,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already carry, so it is now dropped from the JSON Schema sent to the provider.
   Strict mode is untouched: there every property is required and the null branch
   is the only way to express optionality.
+
+## [0.8.10] - 2026-08-02
+
+### Fixed
+- **Per-call reasoning config now merges with the adapter's default instead of
+  replacing it.** The adapter default is a property of the endpoint (for a
+  self-hosted server, typically a `providerExtras` passthrough — a chat-template
+  variable, a gateway flag); the per-call override is a property of the turn (an
+  agent asking for more or less deliberation on this step). Replacing dropped
+  the endpoint's fields the moment any agent set a per-run reasoning config —
+  silently, on exactly the deployments that needed them. `providerExtras` is
+  now merged key-wise, one level deep, so a call can override a single flag
+  without restating the endpoint's whole passthrough.
+
+### Added
+- **`reasoning.effort: "none"`.** An explicit "do not think" instruction for a
+  model that otherwise defaults to reasoning — distinct from omitting
+  `reasoning` entirely, and not a valid `reasoning.level` (there is no coherent
+  "off" preset; `reasoning.enabled: false` is how the whole feature is turned
+  off).
+
+## [0.8.9] - 2026-07-31
+
+### Fixed
+- **Structured-output nudge and correction messages now use `role: "user"`
+  instead of `role: "system"`.** Several OpenAI-compatible chat templates (e.g.
+  Qwen-class models) reject a `system` message anywhere except the very start
+  of the conversation, so the in-loop "you must respond with valid JSON" /
+  "call `response` again with corrected values" nudges were rejected outright
+  by those backends.
 
 ## [0.8.8] - 2026-07-29
 
@@ -449,26 +483,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - 2026-07-20
 
-### Changed (BREAKING)
-- **Default runtime-profile values modernized for frontier models.** All four built-in profiles (`fast`, `balanced`, `deep`, `research`) had their numeric defaults rescaled for 2026-era models (Claude 4.x, GPT-4o, Gemini 2.x). The previous defaults were tuned for 8k–16k context windows and now leave too much headroom unused. Headline changes per profile:
-  - `fast`: `maxToolCalls 4→8`, `maxParallelTools 1→3`, `maxContextTokens 12000→32000`, summarization trigger `9000→24000`, `maxToolResponseChars 8k→16k`.
-  - `balanced` (also the shared baseline): `maxToolCalls 8→20`, `maxParallelTools 2→5`, `maxContextTokens 24000→96000`, summarization trigger `17000→72000`, `lastTurnsToKeep 8→16`, `maxChildCalls 4→6`, `maxToolResponseChars 12k→32k`.
-  - `deep`: `maxToolCalls 14→40`, `maxParallelTools 3→8`, `maxContextTokens 42000→200000`, summarization trigger `30000→150000`, `lastTurnsToKeep 12→30`, `maxChildCalls 6→10`, `maxToolResponseChars 16k→64k`.
-  - `research`: `maxToolCalls 20→80`, `maxParallelTools 4→10`, `maxContextTokens 56000→400000`, summarization trigger `42000→300000`, `lastTurnsToKeep 20→60`, `maxChildCalls 8→16`, `maxParallelChild 3→6`, `maxToolResponseChars 24k→96k`.
-  - **Migration:** if you depend on the old conservative caps (e.g., running against an 8k-window model, strict cost ceilings, or a deliberate "tight loop" agent), pass explicit `limits`, `summarization`, `context`, and `toolResponses` overrides — or build a `customProfile` extending the desired base and clamp the values you care about. Behavioral defaults (planning still `off`, `summaryMode: incremental`, `memory.writePolicy: auto_important`, `context.policy: hybrid`) are unchanged.
+> Builds on the ask-user primitive (0.6.6), the runtime-profile rescale (0.7.0),
+> the native reasoning round-trip (0.7.1), and the skill primitive (0.7.2)
+> shipped over the preceding months — see those entries for that groundwork.
+> This release adds sub-agents on top of it.
 
 ### Added
-- **Coalesced tool results for Anthropic / Bedrock / Vertex.** Multiple `tool_result` blocks answering one assistant turn are now merged into a single user message per provider request, satisfying the providers' strict tool_use/tool_result pairing and reducing message overhead on tool-heavy turns.
 - **Testing & evaluation surface.** New deterministic suites for the sub-agent primitive (`tests/unit/subagents*.test.ts` — intersections with structured output / guardrails / borrowed tools, plus snapshot serialize→resume round-trips, depth/cancellation/fan-out resilience). New `tests/integration/evalHarness.integration.test.ts` runs the public `runSmartAgentEvalHarness` with a scripted model (key-free) to guard the scoring math, and `tests/integration/providerMatrix.integration.test.ts` (`npm run test:matrix`) verifies tool-calling / structured-output / streaming against any real provider whose credentials are present (OpenAI, Anthropic, Azure, Bedrock, Vertex), skipping the rest. Coverage thresholds raised toward current actuals (statements/lines 55, functions 60, branches 45). Docs: new [Testing & Evaluation guide](docs/guide/testing.md) and refreshed `tests/README.md`.
 - **Sub-agents (dynamic problem decomposition).** **Opt-in** — a plain `createSmartAgent({ model })` registers no sub-agent tools; pass `subagents: SubagentDef[]` and/or `subagentPolicy` to expose three built-in tools and an `<available_subagents>` system-prompt catalog: `delegate_to(subagent, input)` for predefined registry sub-agents, `spawn_subagent({ role, prompt, input, tools? })` for ad-hoc specialists the orchestrator defines at runtime, and `spawn_subagents_parallel({ tasks })` for concurrent fan-out (bounded by `subagentPolicy.maxParallel`). When enabled, the policy default is hybrid (`mode: "registry_and_adhoc"`). Children are **model-agnostic** (inherit the parent model unless `SubagentDef.model` overrides) and inherit the parent's event / streaming / cancellation / tracing wiring; each spawn emits `subagent` lifecycle events (`start` / `result` / `error` / `paused`) and forwards the child's own events (stamped with `subagentName` / `subagentId`, typed via the new `DelegationEventStamp`). Spawning reuses the existing delegation guards (`maxDepth`, `maxChildCalls`, `childContextPolicy`); sub-agents are single-level (a child never gets its own spawn tools). A tool-approval or `ask_user_question` pause inside a sequential sub-agent is surfaced to the parent and resumed transparently via `state.ctx.__subagentPending`; parallel (`spawn_subagents_parallel`) children may not request human input. Exposed: `SubagentDef`, `SubagentPolicy`, `DEFAULT_SUBAGENT_POLICY`, `SubagentResult`, `SubagentEvent`, `DelegationEventStamp`, `createSubagentTools`, plus the shared `seedChildMessages` helper (now used by both sub-agents and `asTool`).
 - **Prompt-override hooks (`promptHooks`).** Intercept the SDK's otherwise-static prompt surfaces from `createSmartAgent`: `transformSystemPrompt(prompt, ctx)` rewrites the fully-composed system prompt, `toolDescriptions` overrides any built-in tool description by name (e.g. `delegate_to`, `spawn_subagent`, `open_skill`, `ask_user_question`), and `subagentCatalog(defaultBlock, subagents)` rewrites the `<available_subagents>` block. Overrides clone affected tools so shared tool objects are never mutated.
 - **`asTool` now forwards observability.** Delegated children spawned via `agent.asTool(...)` previously ran "dark"; they now inherit the parent's `onEvent` / `onStream` / `onProgress` / cancellation wiring (events stamped with `delegatedTo`), and share the `seedChildMessages` context-seeding implementation with the sub-agent primitive.
-- **Native reasoning round-trip (thinking blocks).** Provider responses now surface a normalized `reasoning` payload (`{ blocks, summary }`). Anthropic and Bedrock thinking / redacted-thinking blocks (with signatures) are captured on the assistant message and replayed verbatim on the next request, satisfying the providers' signed-thinking requirement. Vertex/Gemini `thought` parts and reasoning token counts are surfaced as a summary. OpenAI o-series / gpt-5 now route through the Responses API (`completeResponses`) when reasoning is requested, exposing the reasoning summary and `reasoning_tokens`; Azure OpenAI gets the same via its `/openai/responses` route. Reasoning mappers raise `max_tokens` above the thinking budget, clamp the budget below it, and strip sampling params (`temperature`/`top_p`/`top_k`) that thinking mode forbids.
-- **`reasoning.level: "minimal"`.** A fourth, cheapest reasoning preset (`effort: "minimal"`, reflection off).
-- **`initial_then_after_tool` reflection cadence.** Reflects once up-front as a planning note, then like `after_tool`. New default for `level: "medium"` / `"high"`. `on_branch` now fires on an actual tool-name-set change between turns rather than a turn-count heuristic.
-- **Reflection hooks and routing.** `reasoning.reflection` accepts `shouldReflect` (override the cadence decision), `buildPrompt` (customize the probe), `onReflection` (side-effect hook), and `feedTo: "memory" | "plan" | "none"` to route the note into a `MemoryFact` or `plan.lastReflection`. Near-duplicate consecutive reflections are suppressed.
-- **`validateReasoningConfig(config)`.** Exported pure validator that throws descriptive errors for invalid `level`, `cadence`, `effort`, `budgetTokens`, `everyNTurns`, or `feedTo` values; also run automatically inside `resolveReasoning`.
-- **Ask-user (structured human-in-the-loop).** Opt in with `humanInTheLoop: { askUser: true }` on `createAgent` / `createSmartAgent` to register a built-in `ask_user_question` tool. When the model calls it, the runtime pauses with a `PendingUserQuestion` entry, emits a `user_question` event, and sets `ctx.__awaitingUserQuestion`. Resume by calling `agent.resolveUserQuestion(state, { id, answers })` which validates the response and appends it as a `role: "tool"` message bound to the original `tool_call_id`. The global `allowFreeText` flag (default `true`) decides whether "Other" / typed answers are accepted; when `false`, every question must include `>= 2` options and the resolver rejects `freeText`. Also exposed: `resolveUserQuestionState`, `createAskUserQuestionTool`, and types `PendingUserQuestion`, `UserQuestionItem`, `UserQuestionOption`, `UserQuestionAnswer`, `UserQuestionAnswerSet`, `UserQuestionResolution`, `UserQuestionEvent`, `HumanInTheLoopOptions`.
 
 ### Fixed
 - **Sub-agent human-in-the-loop resume no longer strands the run.** When a delegating tool (`delegate_to` / `spawn_subagent`) paused for a child approval / `ask_user_question` **in the same assistant turn as another tool that completed**, the completing sibling's `tool_result` became the last message and the resume driver read tool_calls off it — so the paused sub-agent was never resumed and the run threw *"Agent loop terminated with a pending tool response…"*. The runtime now re-drives the owning assistant turn's **unresolved** tool_calls (a new `selectPendingToolCalls` helper, shared by the base loop and tools node), skipping already-completed siblings so they never re-execute.
@@ -479,9 +503,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sub-agents are opt-in.** Previously a plain `createSmartAgent` registered `spawn_subagent` + `spawn_subagents_parallel` and injected an `<available_subagents>` block by default. They are now wired only when `subagents` or `subagentPolicy` is provided.
 - **Parallel spawn budget is charged only for tasks that run.** `spawn_subagents_parallel` no longer counts invalid tasks (unknown sub-agent, ad-hoc disabled) against `maxChildCalls`, so a following `delegate_to` is no longer wrongly refused for an exhausted budget.
 - **SKILL.md frontmatter no longer splits scalar values on commas.** A `description` (or any non-list key) containing commas is kept as a scalar string instead of being fragmented into an array, so the always-visible skill header is intact. Comma lists are split only for list-typed keys (e.g. `scripts`) or with explicit `[a, b]` syntax.
+
+## [0.7.3] - 2026-07-14
+
+### Fixed
+- **Coalesced multiple tool results into a single user message for Anthropic, Bedrock, and Vertex.** These providers require strict `tool_use` → `tool_result` pairing; when an assistant turn produced several tool calls, each `tool_result` had previously been sent as its own message. Results answering one assistant turn are now merged into a single user-role message per provider request, satisfying the pairing requirement and reducing per-turn message overhead on tool-heavy runs.
+
+## [0.7.2] - 2026-06-17
+
+### Added
+- **Skill primitive for progressive capability disclosure.** New `src/smart/skills/` module replaces the up-front tool-selector with on-demand skill opening, keeping the bound-tool count per step small — the property small/weaker models need. `open_skill` / `bind_skill_tools` per-invoke tools (mirroring the ask-user tool's `stateRef` pattern): a "small" skill binds all its tools at once, a "fat" skill returns a ranked tool index and binds a deterministic default floor for models that give no usable query. New `Skill` / `SkillPolicy` types (with a `SMALL_TIER` preset), and a pure `composeToolSets` that rebuilds both runtime tool-set variants with fresh references so newly-bound tools actually propagate across the identity-swap the runtime uses to sync tools between invokes.
+- **Wired into `createSmartAgent`.** Passing `opts.skills` builds a per-invoke skill registry, adds an `<available_skills>` header block to the system prompt (availability/tier resolved per invoke), and introduces a generic `__runtimeToolsDelta` marker so a tool that binds new tools mid-run (like `open_skill`) makes them callable on a later turn within the same loop.
+- New `docs/guide/skills.md` and `docs/api/skills.md` reference pages.
+
+## [0.7.1] - 2026-06-01
+
+### Added
+- **Native reasoning round-trip (thinking blocks).** Provider responses now surface a normalized `reasoning` payload (`{ blocks, summary }`). Anthropic and Bedrock thinking / redacted-thinking blocks (with signatures) are captured on the assistant message and replayed verbatim on the next request, satisfying the providers' signed-thinking requirement. Vertex/Gemini `thought` parts and reasoning token counts are surfaced as a summary. OpenAI o-series / gpt-5 now route through the Responses API (`completeResponses`) when reasoning is requested, exposing the reasoning summary and `reasoning_tokens`; Azure OpenAI gets the same via its `/openai/responses` route. Reasoning mappers raise `max_tokens` above the thinking budget, clamp the budget below it, and strip sampling params (`temperature`/`top_p`/`top_k`) that thinking mode forbids.
+- **`reasoning.level: "minimal"`.** A fourth, cheapest reasoning preset (`effort: "minimal"`, reflection off).
+- **`initial_then_after_tool` reflection cadence.** Reflects once up-front as a planning note, then like `after_tool`. New default for `level: "medium"` / `"high"`. `on_branch` now fires on an actual tool-name-set change between turns rather than a turn-count heuristic.
+- **Reflection hooks and routing.** `reasoning.reflection` accepts `shouldReflect` (override the cadence decision), `buildPrompt` (customize the probe), `onReflection` (side-effect hook), and `feedTo: "memory" | "plan" | "none"` to route the note into a `MemoryFact` or `plan.lastReflection`. Near-duplicate consecutive reflections are suppressed.
+- **`validateReasoningConfig(config)`.** Exported pure validator that throws descriptive errors for invalid `level`, `cadence`, `effort`, `budgetTokens`, `everyNTurns`, or `feedTo` values; also run automatically inside `resolveReasoning`.
+
+### Fixed
 - **Reflection throttling is now run-scoped.** `reasoning.reflection.maxPerRun` counts reflections within the current `invoke(...)` instead of the whole (possibly resumed) conversation, and `everyNTurns` spacing is enforced in a single place (the duplicate hidden `on_branch` gate was removed).
 - **Native reasoning config lifecycle.** `ctx.__reasoning` is (re)applied on every invoke and cleared when native reasoning is disabled, so a resumed run can no longer inherit a stale reasoning configuration.
 
+## [0.7.0] - 2026-05-21
+
+### Changed (BREAKING)
+- **Default runtime-profile values modernized for frontier models.** All four built-in profiles (`fast`, `balanced`, `deep`, `research`) had their numeric defaults rescaled for 2026-era models (Claude 4.x, GPT-4o, Gemini 2.x). The previous defaults were tuned for 8k–16k context windows and now leave too much headroom unused. Headline changes per profile:
+  - `fast`: `maxToolCalls 4→8`, `maxParallelTools 1→3`, `maxContextTokens 12000→32000`, summarization trigger `9000→24000`, `maxToolResponseChars 8k→16k`.
+  - `balanced` (also the shared baseline): `maxToolCalls 8→20`, `maxParallelTools 2→5`, `maxContextTokens 24000→96000`, summarization trigger `17000→72000`, `lastTurnsToKeep 8→16`, `maxChildCalls 4→6`, `maxToolResponseChars 12k→32k`.
+  - `deep`: `maxToolCalls 14→40`, `maxParallelTools 3→8`, `maxContextTokens 42000→200000`, summarization trigger `30000→150000`, `lastTurnsToKeep 12→30`, `maxChildCalls 6→10`, `maxToolResponseChars 16k→64k`.
+  - `research`: `maxToolCalls 20→80`, `maxParallelTools 4→10`, `maxContextTokens 56000→400000`, summarization trigger `42000→300000`, `lastTurnsToKeep 20→60`, `maxChildCalls 8→16`, `maxParallelChild 3→6`, `maxToolResponseChars 24k→96k`.
+  - **Migration:** if you depend on the old conservative caps (e.g., running against an 8k-window model, strict cost ceilings, or a deliberate "tight loop" agent), pass explicit `limits`, `summarization`, `context`, and `toolResponses` overrides — or build a `customProfile` extending the desired base and clamp the values you care about. Behavioral defaults (planning still `off`, `summaryMode: incremental`, `memory.writePolicy: auto_important`, `context.policy: hybrid`) are unchanged.
+
+### Added
+- **Tool observability tracing.** New `TraceToolDetails` type captures detailed per-call tool information — execution status, retention policy, approval state — on trace events.
+
+## [0.6.6] - 2026-05-20
+
+### Added
+- **Ask-user (structured human-in-the-loop).** Opt in with `humanInTheLoop: { askUser: true }` on `createAgent` / `createSmartAgent` to register a built-in `ask_user_question` tool. When the model calls it, the runtime pauses with a `PendingUserQuestion` entry, emits a `user_question` event, and sets `ctx.__awaitingUserQuestion`. Resume by calling `agent.resolveUserQuestion(state, { id, answers })` which validates the response and appends it as a `role: "tool"` message bound to the original `tool_call_id`. The global `allowFreeText` flag (default `true`) decides whether "Other" / typed answers are accepted; when `false`, every question must include `>= 2` options and the resolver rejects `freeText`. Also exposed: `resolveUserQuestionState`, `createAskUserQuestionTool`, and types `PendingUserQuestion`, `UserQuestionItem`, `UserQuestionOption`, `UserQuestionAnswer`, `UserQuestionAnswerSet`, `UserQuestionResolution`, `UserQuestionEvent`, `HumanInTheLoopOptions`.
 
 ## [0.6.5]
 
@@ -542,6 +606,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Provider capabilities auto-configured (`structuredOutput`, `streaming`) so the smart runtime picks the right strategy automatically
 - 38 new unit tests covering message conversion, request/response parsing, token usage, factory, adapter, SSE parser, and SigV4
 - New docs page: `docs/guide/native-providers.md`
+
+## [0.6.4] - 2026-04-29
+
+### Fixed
+- **Per-call `tool_choice` override was sent even when no tools were bound.** The reflection node temporarily disables tools by clearing the tool list, but still passed a `tool_choice` override alongside it. Both the native adapter and the OpenAI provider now only forward `tool_choice` when `tools.length > 0`.
+
+### Changed
+- **`toolResponses.defaultPolicy` now inherits `context.toolResponsePolicy`** (falling back to the active runtime profile default) instead of always defaulting to `"summarize_archive"` regardless of what `context.toolResponsePolicy` was set to.
+
+## [0.6.3] - 2026-04-28
+
+### Fixed
+- **A synthetic `summarize_context` marker could leak out as a fake final answer.** When the base loop exited purely to signal SmartAgent that summarization was needed, the last assistant message in state could be the internal synthetic summarization call rather than a real answer. `createAgent` now suppresses `finalAnswer` / `stream` events in that case, and `createSmartAgent` stops running a post-turn summarization pass once the model has already produced a real terminal assistant turn.
+
+## [0.6.2] - 2026-04-22
+
+### Changed
+- **Removed additional stale no-op config fields**: `context.archiveLargeToolResponses`, `context.retrieveArchivedToolResponseOnDemand`, and `toolResponses.retryOnSchemaError` (continuing the surface cleanup started in 0.6.0).
+- **Context tools refactored into individually exported functions** (`createManageTodoTool` and others) and gained a `hasToolResponseRecoveryReference` guard that recognizes all four retention placeholder markers (`ARCHIVED_TOOL_RESPONSE`, `STRUCTURED_TOOL_RESPONSE`, `SUMMARIZED_TOOL_RESPONSE`, `DROPPED_TOOL_RESPONSE`) before honoring a `get_tool_response` recovery request.
+
+## [0.6.1] - 2026-04-21
+
+### Added
+- Unified `reasoning` configuration on `createAgent(...)` / `createSmartAgent(...)` for provider-native reasoning plus post-tool reflection, generated by a new reflection node that produces insights without polluting the assistant's message history.
+- Reflection persistence on `state.reflections` plus `reflection` events for streaming UIs and task timelines.
+- Native provider reasoning mappings for OpenAI/Azure/OpenAI-compatible, Anthropic, and Vertex/Gemini through the built-in provider layer.
+
+### Changed
+- Getting-started, native-provider, state-management, tracing, and type docs were refreshed to describe reasoning/reflection behavior.
+
+## [0.6.0] - 2026-04-21
+
+### Changed (BREAKING)
+- **Tool response retention collapsed to a single lazy-summarizer model.** Tool outputs are never reduced at tool-call time. When the summarizer runs (context limit reached), old tool messages are rewritten according to `toolResponses.defaultPolicy` (default `summarize_archive`); the full payload always stays available via `get_tool_response` because it is stored in `state.toolHistory` / `state.toolHistoryArchived`.
+- Removed config fields (no backward compatibility): `toolResponses.smallResponseChars`, `smallResponsePolicy`, `largeResponsePolicy`, `fallbackPolicy`, `keepRecentFullCount`.
+- Classification enum simplified to `critical | informative | verbose` (removed `small`, `redundant`).
+- `maxToolResponseChars` / `maxToolResponseTokens` now only drive an eager hard-cap truncation for non-critical, oversized single responses; the truncated head points at `get_tool_response` for recovery.
+- Summarization placeholder prefixes standardized: `STRUCTURED_TOOL_RESPONSE`, `ARCHIVED_TOOL_RESPONSE`, `DROPPED_TOOL_RESPONSE`.
+
+## [0.5.4] - 2026-04-21
+
+### Changed
+- npm republish of the `0.5.3` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish.
+
+## [0.5.3] - 2026-04-18
+
+### Fixed
+- **Strict tool-schema mode now falls back safely instead of emitting a schema OpenAI's strict mode would reject.** A new shape-scanner (`hasStrictUnsafeShape`) detects untyped object properties, `$ref`s, and unconstrained `anyOf`/`oneOf`/`allOf` compositions that strict mode can't represent; when a tool's schema contains one, strict mode is silently disabled for that tool instead of sending an invalid `strict: true` tool definition the provider would reject outright.
+
+## [0.5.2] - 2026-04-17
+
+### Changed
+- **Native structured output now parses in a single pass instead of always going through the retry/nudge loop.** When the active strategy is `"native"` (the provider's own `response_format: json_schema` contract), the model's text output is guaranteed valid JSON, so the agent loop parses and finalizes immediately on the first text response — no nudges, no extra round-trips. Retries are now reserved for the `"tool_based"` strategy, where the model can still skip calling the `response` tool.
+
+### Fixed
+- **Strict JSON Schema conversion no longer sends the unsupported `format` keyword**, which some strict-mode validators reject outright.
+
+## [0.5.1] - 2026-04-15
+
+### Changed
+- Internal refactor: consolidated message-content extraction and token-counting into shared utilities (`extractMessageText`, `countMessagesTokens`), simplified the `createSmartAgent` summarization call path behind a `trySummarize` helper, and removed the unused legacy `tokenManager` utility and debug logger. No public behavior change.
+
+## [0.5.0] - 2026-04-14
+
+### Added
+- **Native LLM provider layer** (`src/providers/`) — direct API access for six providers without LangChain or any framework dependency. `createProvider(config)` supports `"openai"`, `"anthropic"`, `"azure"`, `"bedrock"`, `"vertex"`, `"openai-compatible"`; `fromNativeProvider(provider, options?)` wraps any provider as a `BaseChatModel` for drop-in agent-sdk use. Includes a unified `ChatCompletionRequest` / `ChatCompletionResponse` schema, an SSE stream parser, AWS Signature V4 signing for Bedrock (zero AWS SDK dependency), and a Google Vertex service-account-JSON → JWT → access-token flow, all built in. 38 new unit tests and a new [Native Providers guide](docs/guide/native-providers.md).
+
+## [0.4.9] - 2026-04-13
+
+### Changed
+- npm republish of the `0.4.8` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish.
+
+## [0.4.8] - 2026-04-10
+
+### Changed
+- Removed watchdog telemetry from the smart agent (metrics/config plumbing and its documentation); summarization logic no longer references watchdog metrics. Internal cleanup, no public API change.
+
+## [0.4.7] - 2026-04-09
+
+### Fixed
+- **A plain `createAgent` (no `summarization` configured) could throw "Agent context exceeded the available budget" even though nothing had asked for summarization.** The internal `__needsSummarization` signal introduced in 0.4.6 was being set regardless of whether summarization was actually configured. The active summarization threshold is now resolved once per agent (`undefined` when summarization isn't configured) and the signal is cleared whenever it's inactive.
+
+## [0.4.6] - 2026-04-09
+
+### Added
+- **Safety check for abnormal loop exit.** If the base loop terminates with an unresolved tool response and no valid exit condition is active (approval pause, cancellation, checkpoint, structured-output finalize, summarization signal), it now throws a descriptive error instead of silently leaking the raw tool output to the caller as if it were the final answer.
+
+### Fixed
+- **The final answer is now read from the last *assistant* message, not just the last message in state** — closes a class of bug where a stray trailing message could be returned as the agent's answer.
+
+## [0.4.5] - 2026-04-07
+
+### Added
+- **Summarized tool responses now carry retrieval references.** The placeholder left behind for a compacted tool message changed from a bare `"SUMMARIZED"` string to `SUMMARIZED_TOOL_RESPONSE [toolName=…; toolCallId=…; executionId=…]` plus a one-line summary and a `get_tool_response` hint, so the model (and downstream renderers) can tell which call was summarized and how to recover it, instead of an opaque marker.
+
+### Changed
+- `get_tool_response`'s description and schema were expanded to also recognize `SUMMARIZED_TOOL_RESPONSE` references, not just `ARCHIVED_TOOL_RESPONSE` / `DROPPED_TOOL_RESPONSE`.
+
+## [0.4.4] - 2026-04-06
+
+### Changed
+- npm republish of the `0.4.3` source snapshot from the same `gitHead`; no additional repository diff was recorded for this publish.
+
+## [0.4.3] - 2026-04-05
+
+### Fixed
+- **Summarization could trigger prematurely.** The context-size check that signals SmartAgent to summarize was reading `summarization.maxTokens` (which controls *summary output* size) instead of the intended `summarization.summaryTriggerTokens` threshold. It now prefers `summaryTriggerTokens` and only falls back to `maxTokens` when the former isn't set.
+- A tool response kept with `retentionPolicy: "keep_full"` was losing its `summary` field (set to an empty string); the summary is now always computed before branching on retention policy.
+
+## [0.4.2] - 2026-04-04
+
+### Changed
+- **`get_tool_response`'s description was rewritten for clarity**, spelling out the exact `ARCHIVED_TOOL_RESPONSE [executionId=…]` / `DROPPED_TOOL_RESPONSE [executionId=…]` markers it expects and confirming it also accepts the original `tool_call_id`.
+- Archived and dropped tool responses now surface as explicit `ARCHIVED_TOOL_RESPONSE [executionId=…]` / `DROPPED_TOOL_RESPONSE [executionId=…]` messages (previously a single undifferentiated placeholder), each pointing back at `get_tool_response`.
+
+### Fixed
+- Safer JSON serialization fallback for tool-response summarization when `JSON.stringify` returns a non-string result.
+
+## [0.4.1] - 2026-04-03
+
+### Changed
+- npm republish of the `0.4.0` source snapshot; the only repository changes in this window were documentation/site theming, not part of the published package.
 
 ## [0.4.0] - 2026-03-16
 
