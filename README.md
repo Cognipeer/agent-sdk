@@ -1,6 +1,6 @@
 # @cognipeer/agent-sdk
 
-[![npm](https://img.shields.io/npm/v/@cognipeer/agent-sdk?color=success)](https://npmjs.com/package/@cognipeer/agent-sdk) [Docs Website](https://cognipeer.github.io/agent-sdk/) 
+[![npm](https://img.shields.io/npm/v/@cognipeer/agent-sdk?color=success)](https://npmjs.com/package/@cognipeer/agent-sdk) [Docs Website](https://docs.cognipeer.com/agent-sdk/) 
 
 Lightweight, message-first agent runtime that keeps tool calls transparent, supports provider-native reasoning plus post-tool reflection, automatically summarizes long histories, and ships with planning, multi-agent handoffs, and structured tracing.
 
@@ -50,7 +50,7 @@ Highlights:
 |------|-------------|
 | `src/` | Source for the published package (TypeScript, bundled via tsup). |
 | `examples/` | End-to-end scripts demonstrating tools, planning, summarization, multi-agent, MCP, structured output, and vision input. |
-| `docs/` | VitePress documentation site served at [cognipeer.github.io/agent-sdk](https://cognipeer.github.io/agent-sdk/). |
+| `docs/` | VitePress documentation site served at [docs.cognipeer.com/agent-sdk](https://docs.cognipeer.com/agent-sdk/). |
 | `dist/` | Build output (generated). Contains ESM, CommonJS, and TypeScript definitions. |
 | `logs/` | Generated trace sessions when `tracing.enabled: true`. Safe to delete. |
 
@@ -464,7 +464,7 @@ npm publish --access public
 
 ## Documentation
 
-- Live site: https://cognipeer.github.io/agent-sdk/
+- Live site: https://docs.cognipeer.com/agent-sdk/
 - Key guides within this repo:
   - `docs/getting-started/`
   - `docs/core-concepts/`
