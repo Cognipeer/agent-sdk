@@ -276,6 +276,28 @@ function convertContent(content: string | BaseChatMessagePart[]): string | Conte
         }
       }
     }
+    // The SDK's OWN unified shape. Without this branch it falls through to the
+    // text fallback below and is JSON.stringify'd — the model never sees the
+    // picture, and the whole base64 payload is billed as text. `image_url`
+    // above is the legacy shape; both have to work.
+    if (part.type === "image") {
+      const source = extractBinarySource(part);
+      if (source) return { type: "image", source };
+    }
+    if (part.type === "video") {
+      // No provider in this SDK maps video yet, but stringifying a base64 blob
+      // into the prompt is the worst possible failure: it is expensive, silent,
+      // and looks like the model simply ignored the clip.
+      const source = extractBinarySource(part);
+      if (source) {
+        return {
+          type: "text",
+          text: `[video attachment omitted: ${
+            source.type === "url" ? source.url : `${source.mediaType}, inline`
+          } — no provider mapping]`,
+        };
+      }
+    }
     if (part.type === "file" || part.type === "document") {
       const source = extractBinarySource(part);
       if (source) {

@@ -1,144 +1,83 @@
 /**
  * Real OpenAI Integration Tests
- * 
- * Bu testler gerçek OpenAI API'si ile çalışır.
- * Çalıştırmak için OPENAI_API_KEY environment variable'ı gerekli.
- * 
- * Çalıştırma:
+ *
+ * These tests drive the SDK against a REAL, OpenAI-compatible endpoint through
+ * the SDK's OWN provider layer (`createProvider` + `fromNativeProvider`) rather
+ * than a hand-rolled adapter, so a regression in the provider/adapter code is
+ * actually caught here instead of being masked by a second, drifting copy of it.
+ *
+ * Requires OPENAI_API_KEY; skipped entirely without one.
+ *
  *   OPENAI_API_KEY=sk-xxx npm run test:real
+ *
+ * Any OpenAI-compatible endpoint works — a gateway, a proxy, or a local server:
+ *
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 \
+ *   PLUGIN_TEST_MODEL=qwen2.5 OPENAI_API_KEY=ignored npx vitest run …
+ *
+ * Assertions are written against BEHAVIOUR (tool invocations, message shapes,
+ * state fields) rather than particular model wording, so they hold across models.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createAgent, createSmartAgent, createTool } from '../../src/index.js';
-import OpenAI from 'openai';
+import { createProvider, fromNativeProvider } from '../../src/providers/index.js';
+import { defineHook } from '../../src/plugins/define.js';
 import { z } from 'zod';
 import type { SmartState, Message } from '../../src/types.js';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 
 // Skip if no API key
 const API_KEY = process.env.OPENAI_API_KEY;
 const runReal = API_KEY ? describe : describe.skip;
+const MODEL = process.env.PLUGIN_TEST_MODEL ?? 'gpt-4o-mini';
+const BASE_URL = process.env.OPENAI_BASE_URL;
 
-/**
- * Simple OpenAI adapter that wraps the OpenAI SDK
- */
-function createOpenAIModel(apiKey: string, modelName = 'gpt-4o-mini') {
-  const client = new OpenAI({ apiKey });
-  let boundTools: any[] | undefined;
+/** The SDK's own provider stack, pointed at whatever endpoint is configured. */
+function realModel() {
+  return fromNativeProvider(
+    createProvider({
+      provider: 'openai',
+      apiKey: API_KEY!,
+      defaultModel: MODEL,
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    }),
+    { model: MODEL },
+  );
+}
 
-  const model: any = {
-    modelName,
-    
-    async invoke(messages: any[]): Promise<any> {
-      // Convert messages to OpenAI format
-      const openaiMessages = messages.map((m: any) => {
-        const msg: any = {
-          role: m.role as 'system' | 'user' | 'assistant' | 'tool',
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-        };
-        if (m.name) msg.name = m.name;
-        // Convert tool_calls from SDK format { id, name, args } to OpenAI format { id, type, function: { name, arguments } }
-        if (m.tool_calls && Array.isArray(m.tool_calls)) {
-          msg.tool_calls = m.tool_calls.map((tc: any) => ({
-            id: tc.id,
-            type: tc.type || 'function',
-            function: tc.function || {
-              name: tc.name,
-              arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args || {}),
-            },
-          }));
-        }
-        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-        return msg;
-      });
-
-      const params: any = {
-        model: modelName,
-        messages: openaiMessages,
-      };
-
-      if (boundTools && boundTools.length > 0) {
-        params.tools = boundTools;
-        params.tool_choice = 'auto';
-      }
-
-      const response = await client.chat.completions.create(params);
-      const choice = response.choices[0];
-      const msg = choice.message;
-
-      const result: any = {
-        role: 'assistant',
-        content: msg.content || '',
-        usage: response.usage,
-      };
-
-      if (msg.tool_calls && msg.tool_calls.length > 0) {
-        // SDK expects { id, name, args } format, not OpenAI's { id, function: { name, arguments } }
-        result.tool_calls = msg.tool_calls.map((tc: any) => ({
-          id: tc.id,
-          name: tc.function.name,
-          args: tc.function.arguments, // SDK will parse this if it's a string
-        }));
-      }
-
-      return result;
+/** Captures exactly what the agent handed to the provider. */
+function wireSpy(sink: Message[][]) {
+  return defineHook(
+    'preModelCall',
+    ({ messages }) => {
+      sink.push(messages.map((m) => ({ ...m })));
+      return undefined;
     },
-
-    bindTools(tools: any[]) {
-      // Convert tools to OpenAI format
-      boundTools = tools.map(tool => {
-        const schema = tool.schema || tool.parameters;
-        let jsonSchema: any;
-
-        if (schema && typeof schema.parse === 'function') {
-          // Zod schema
-          jsonSchema = zodToJsonSchema(schema, { target: 'openApi3' });
-          delete jsonSchema.$schema;
-        } else if (schema) {
-          jsonSchema = schema;
-        } else {
-          jsonSchema = { type: 'object', properties: {} };
-        }
-
-        return {
-          type: 'function',
-          function: {
-            name: tool.name,
-            description: tool.description || '',
-            parameters: jsonSchema,
-          },
-        };
-      });
-
-      return model;
-    },
-  };
-
-  return model;
+    { name: 'wire-spy', priority: 999 },
+  );
 }
 
 runReal('Real OpenAI Integration', () => {
-  let model: any;
-
-  beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
-  });
-
   describe('basic conversation', () => {
     it('should handle a simple message', async () => {
       const agent = createAgent({
         name: 'SimpleAgent',
-        model,
+        model: realModel(),
       });
 
       const result = await agent.invoke({
         messages: [{ role: 'user', content: 'Say "Hello World" and nothing else.' }],
       } as SmartState);
 
-      console.log('Response:', result.content);
       expect(result.messages.length).toBeGreaterThan(1);
-      expect(result.content.toLowerCase()).toContain('hello');
-    }, 30000);
+      // The user turn must be preserved and an assistant turn appended with content.
+      expect(result.messages[0].role).toBe('user');
+      const assistant = result.messages.filter((m: Message) => m.role === 'assistant');
+      expect(assistant.length).toBeGreaterThan(0);
+      expect(typeof result.content).toBe('string');
+      expect(result.content.length).toBeGreaterThan(0);
+      expect(result.content).toBe(assistant.at(-1)!.content);
+    }, 60000);
   });
 
   describe('tool execution', () => {
@@ -150,7 +89,6 @@ runReal('Real OpenAI Integration', () => {
         description: 'Echo back the given text',
         schema: z.object({ text: z.string().describe('Text to echo') }),
         func: async (args: { text: string }) => {
-          console.log('Tool called with:', args);
           toolCalledWith = args;
           return { echoed: args.text };
         },
@@ -158,7 +96,7 @@ runReal('Real OpenAI Integration', () => {
 
       const agent = createAgent({
         name: 'ToolAgent',
-        model,
+        model: realModel(),
         tools: [echoTool],
         limits: { maxToolCalls: 3 },
       });
@@ -167,13 +105,18 @@ runReal('Real OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Use the echo tool to echo "test message"' }],
       } as SmartState);
 
-      console.log('Final content:', result.content);
-      console.log('Tool was called with:', toolCalledWith);
-      console.log('Messages:', result.messages.map((m: Message) => ({ role: m.role, content: typeof m.content === 'string' ? m.content?.slice?.(0, 100) : m.content })));
-
       expect(toolCalledWith).not.toBeNull();
       expect(toolCalledWith.text).toContain('test');
-    }, 30000);
+
+      // The tool result has to come back through the transcript as a tool
+      // message tied to the assistant's tool call, or the model never sees it.
+      const toolMessages = result.messages.filter((m: Message) => m.role === 'tool');
+      expect(toolMessages.length).toBeGreaterThan(0);
+      const callIds = result.messages
+        .filter((m: Message) => Array.isArray((m as any).tool_calls))
+        .flatMap((m: Message) => (m as any).tool_calls.map((tc: any) => tc.id));
+      expect(callIds).toContain((toolMessages[0] as any).tool_call_id);
+    }, 60000);
 
     it('should execute calculator tool', async () => {
       const calculations: string[] = [];
@@ -187,7 +130,6 @@ runReal('Real OpenAI Integration', () => {
           b: z.number().describe('Second number'),
         }),
         func: async ({ operation, a, b }: { operation: string; a: number; b: number }) => {
-          console.log(`Calculator: ${a} ${operation} ${b}`);
           calculations.push(`${a} ${operation} ${b}`);
           switch (operation) {
             case 'add': return { result: a + b };
@@ -201,21 +143,20 @@ runReal('Real OpenAI Integration', () => {
 
       const agent = createAgent({
         name: 'CalculatorAgent',
-        model,
+        model: realModel(),
         tools: [calculator],
         limits: { maxToolCalls: 5 },
       });
 
       const result = await agent.invoke({
-        messages: [{ role: 'user', content: 'What is 15 multiplied by 7?' }],
+        messages: [{ role: 'user', content: 'What is 15 multiplied by 7? Use the calculator tool.' }],
       } as SmartState);
 
-      console.log('Calculations performed:', calculations);
-      console.log('Final answer:', result.content);
-
-      expect(calculations.length).toBeGreaterThan(0);
+      // The model must have driven the tool with the numbers from the question…
+      expect(calculations).toContain('15 multiply 7');
+      // …and the computed answer must survive back into the final reply.
       expect(result.content).toContain('105');
-    }, 30000);
+    }, 60000);
   });
 
   describe('structured output', () => {
@@ -228,7 +169,7 @@ runReal('Real OpenAI Integration', () => {
 
       const agent = createAgent({
         name: 'StructuredAgent',
-        model,
+        model: realModel(),
         outputSchema,
       });
 
@@ -236,40 +177,47 @@ runReal('Real OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Analyze: "TypeScript is amazing for large projects. It catches bugs early."' }],
       } as SmartState);
 
-      console.log('Structured output:', result.output);
-      console.log('Raw ctx:', (result.state as SmartState)?.ctx);
-
-      // Output might be in result.output or ctx.__structuredOutputParsed
       const output = result.output || (result.state as any)?.ctx?.__structuredOutputParsed;
-      
-      if (output) {
-        expect(output.summary).toBeDefined();
-        expect(['positive', 'negative', 'neutral']).toContain(output.sentiment);
-      }
-    }, 30000);
+
+      // The whole point of outputSchema is that a parsed object comes back and
+      // conforms — a soft "if (output)" made this test unable to fail.
+      expect(output).toBeDefined();
+      expect(() => outputSchema.parse(output)).not.toThrow();
+      expect(typeof output.summary).toBe('string');
+      expect(output.summary.length).toBeGreaterThan(0);
+      expect(['positive', 'negative', 'neutral']).toContain(output.sentiment);
+      expect(Array.isArray(output.keywords)).toBe(true);
+    }, 60000);
   });
 
   describe('smart agent', () => {
     it('should work with system prompt', async () => {
+      // Originally this asserted the reply contained pirate vocabulary, which is
+      // model wording. The property it was really checking is that a smart
+      // agent's `systemPrompt` is actually delivered to the provider as a system
+      // message ahead of the user turn, and that the run still answers.
+      const wire: Message[][] = [];
+      const systemPrompt = 'You are a pirate. Always respond like a pirate would speak.';
+
       const agent = createSmartAgent({
         name: 'PirateAgent',
-        model,
-        systemPrompt: 'You are a pirate. Always respond like a pirate would speak.',
+        model: realModel(),
+        systemPrompt,
+        plugins: [wireSpy(wire)],
       });
 
       const result = await agent.invoke({
         messages: [{ role: 'user', content: 'Hello, how are you?' }],
       } as SmartState);
 
-      console.log('Pirate response:', result.content);
-      
-      // Should contain pirate-like language
-      const pirateWords = ['arr', 'matey', 'ahoy', 'ye', 'aye', 'treasure', 'ship', 'sea', 'captain', 'sail'];
-      const hasAnyPirateWord = pirateWords.some(word => 
-        result.content.toLowerCase().includes(word)
-      );
-      expect(hasAnyPirateWord).toBe(true);
-    }, 30000);
+      expect(wire.length).toBeGreaterThan(0);
+      const sent = wire[0];
+      expect(sent[0].role).toBe('system');
+      expect(String(sent[0].content)).toContain(systemPrompt);
+      expect(sent.some((m) => m.role === 'user' && String(m.content).includes('Hello'))).toBe(true);
+
+      expect(result.content.length).toBeGreaterThan(0);
+    }, 60000);
 
     it('should execute tools with smart agent', async () => {
       let searchQuery: string | null = null;
@@ -279,7 +227,6 @@ runReal('Real OpenAI Integration', () => {
         description: 'Search for information',
         schema: z.object({ query: z.string().describe('Search query') }),
         func: async ({ query }: { query: string }) => {
-          console.log('Search called with:', query);
           searchQuery = query;
           return {
             results: [
@@ -292,7 +239,7 @@ runReal('Real OpenAI Integration', () => {
 
       const agent = createSmartAgent({
         name: 'SearchAgent',
-        model,
+        model: realModel(),
         systemPrompt: 'You are a helpful search assistant. Use the search tool when asked questions.',
         tools: [searchTool],
         limits: { maxToolCalls: 3 },
@@ -302,12 +249,14 @@ runReal('Real OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Search for information about TypeScript generics' }],
       } as SmartState);
 
-      console.log('Search query used:', searchQuery);
-      console.log('Final response:', result.content);
-
       expect(searchQuery).not.toBeNull();
       expect(searchQuery!.toLowerCase()).toContain('typescript');
-    }, 30000);
+
+      // A smart agent records every executed tool call in its state history.
+      const history = result.state?.toolHistory ?? [];
+      expect(history.some((entry: any) => entry.name === 'search' || entry.toolName === 'search')).toBe(true);
+      expect(result.content.length).toBeGreaterThan(0);
+    }, 60000);
   });
 
   describe('multi-tool scenario', () => {
@@ -339,7 +288,7 @@ runReal('Real OpenAI Integration', () => {
 
       const agent = createAgent({
         name: 'MultiToolAgent',
-        model,
+        model: realModel(),
         tools: [getCurrentTime, formatMessage],
         limits: { maxToolCalls: 5 },
       });
@@ -348,28 +297,38 @@ runReal('Real OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Get the current time and then format a greeting for John with that time.' }],
       } as SmartState);
 
-      console.log('Tool calls:', toolCalls);
-      console.log('Final response:', result.content);
-
       expect(toolCalls).toContain('get_current_time');
-      // Model might or might not use format_message depending on its decision
-    }, 45000);
+      // Model might or might not use format_message depending on its decision.
+      // What must hold either way: every tool call in the transcript got a
+      // matching tool result, so the multi-turn loop stayed well formed.
+      const callIds = result.messages
+        .filter((m: Message) => Array.isArray((m as any).tool_calls))
+        .flatMap((m: Message) => (m as any).tool_calls.map((tc: any) => tc.id));
+      const resultIds = result.messages
+        .filter((m: Message) => m.role === 'tool')
+        .map((m: Message) => (m as any).tool_call_id);
+      expect(callIds.length).toBeGreaterThan(0);
+      for (const id of callIds) expect(resultIds).toContain(id);
+      expect(result.content.length).toBeGreaterThan(0);
+    }, 90000);
   });
 
   describe('error handling', () => {
     it('should handle tool errors gracefully', async () => {
+      let attempts = 0;
       const failingTool = createTool({
         name: 'failing_operation',
         description: 'An operation that always fails',
         schema: z.object({ input: z.string() }),
         func: async () => {
+          attempts += 1;
           throw new Error('This operation failed intentionally');
         },
       });
 
       const agent = createAgent({
         name: 'ErrorHandlerAgent',
-        model,
+        model: realModel(),
         tools: [failingTool],
         limits: { maxToolCalls: 2 },
       });
@@ -378,10 +337,15 @@ runReal('Real OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Use the failing_operation tool with input "test"' }],
       } as SmartState);
 
-      console.log('Response after error:', result.content);
-      
-      // Agent should still complete, potentially mentioning the error
+      // The throw must not escape the run…
+      expect(attempts).toBeGreaterThan(0);
       expect(result.messages.length).toBeGreaterThan(1);
-    }, 30000);
+      // …it has to be surfaced to the model as a tool message so the transcript
+      // stays valid, and the run still has to finish with an answer.
+      const toolMessages = result.messages.filter((m: Message) => m.role === 'tool');
+      expect(toolMessages.length).toBeGreaterThan(0);
+      expect(JSON.stringify(toolMessages)).toContain('failed intentionally');
+      expect(result.content.length).toBeGreaterThan(0);
+    }, 60000);
   });
 });

@@ -1,88 +1,40 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import OpenAI from 'openai';
+/**
+ * Runtime profiles (fast / balanced / deep / research) against a REAL model.
+ *
+ *   OPENAI_API_KEY=sk-… npx vitest run tests/integration/smartAgentProfiles.integration.test.ts
+ *
+ * Any OpenAI-compatible endpoint works — a gateway, a proxy, or a local server:
+ *
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 \
+ *   PLUGIN_TEST_MODEL=qwen2.5 OPENAI_API_KEY=ignored npx vitest run …
+ *
+ * Skipped entirely without a key.
+ */
+
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createSmartAgent, createTool } from '../../src/index.js';
+import { createProvider, fromNativeProvider } from '../../src/providers/index.js';
 import type { RuntimeProfile, SmartState } from '../../src/types.js';
 
 const API_KEY = process.env.OPENAI_API_KEY;
 const runReal = API_KEY ? describe : describe.skip;
+const MODEL = process.env.PLUGIN_TEST_MODEL ?? 'gpt-4o-mini';
+const BASE_URL = process.env.OPENAI_BASE_URL;
 
-function createOpenAIModel(apiKey: string, modelName = 'gpt-4o-mini') {
-  const client = new OpenAI({ apiKey });
-  let boundTools: any[] | undefined;
-
-  const model: any = {
-    modelName,
-    async invoke(messages: any[]): Promise<any> {
-      const openaiMessages = messages.map((message: any) => {
-        const normalized: any = {
-          role: message.role,
-          content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
-        };
-        if (message.name) normalized.name = message.name;
-        if (Array.isArray(message.tool_calls)) {
-          normalized.tool_calls = message.tool_calls.map((toolCall: any) => ({
-            id: toolCall.id,
-            type: toolCall.type || 'function',
-            function: toolCall.function || {
-              name: toolCall.name,
-              arguments: typeof toolCall.args === 'string' ? toolCall.args : JSON.stringify(toolCall.args || {}),
-            },
-          }));
-        }
-        if (message.tool_call_id) normalized.tool_call_id = message.tool_call_id;
-        return normalized;
-      });
-
-      const response = await client.chat.completions.create({
-        model: modelName,
-        messages: openaiMessages,
-        tools: boundTools,
-        tool_choice: boundTools && boundTools.length > 0 ? 'auto' : undefined,
-      });
-      const choice = response.choices[0]?.message;
-      return {
-        role: 'assistant',
-        content: choice?.content || '',
-        usage: response.usage,
-        tool_calls: choice?.tool_calls?.map((toolCall: any) => ({
-          id: toolCall.id,
-          name: toolCall.function.name,
-          args: toolCall.function.arguments,
-        })),
-      };
-    },
-    bindTools(tools: any[]) {
-      boundTools = tools.map((tool) => {
-        const schema = tool.schema || tool.parameters;
-        const parameters = schema && typeof schema.parse === 'function'
-          ? zodToJsonSchema(schema, { target: 'openApi3' })
-          : schema || { type: 'object', properties: {} };
-        delete (parameters as any).$schema;
-        return {
-          type: 'function',
-          function: {
-            name: tool.name,
-            description: tool.description || '',
-            parameters,
-          },
-        };
-      });
-      return model;
-    },
-  };
-
-  return model;
+function realModel() {
+  return fromNativeProvider(
+    createProvider({
+      provider: 'openai',
+      apiKey: API_KEY!,
+      defaultModel: MODEL,
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    }),
+    { model: MODEL },
+  );
 }
 
 runReal('Smart Agent V2 Profiles', () => {
-  let model: any;
-
-  beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
-  });
-
   const profiles: RuntimeProfile[] = ['fast', 'balanced', 'deep', 'research'];
 
   for (const profile of profiles) {
@@ -101,9 +53,14 @@ runReal('Smart Agent V2 Profiles', () => {
 
       const agent = createSmartAgent({
         name: `Profile-${profile}`,
-        model,
+        model: realModel(),
         runtimeProfile: profile,
         tools: [projectSnapshot],
+        // The `deep`/`research` profiles allow 40-80 tool calls by default,
+        // which on a real endpoint is minutes of wall clock for a two-lookup
+        // task. Four still leaves room for the two the scenario needs plus a
+        // retry, so nothing the test asserts is out of reach.
+        limits: { maxToolCalls: 4 },
         summarization: {
           summaryTriggerTokens: 400,
           maxTokens: 700,

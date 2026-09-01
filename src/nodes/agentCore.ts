@@ -2,8 +2,10 @@ import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../t
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
 import { toToolDefinition } from "../providers/adapter.js";
+import { buildSystemPrompt } from "../prompts.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { detectVolatileContent } from "../smart/contextPilot/index.js";
+import type { PluginRunHost } from "../plugins/host.js";
 
 // Minimal agent node: no system prompt injection. Invokes model with messages as-is.
 export function createAgentCoreNode(opts: SmartAgentOptions) {
@@ -23,17 +25,25 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       responseFormat: undefined,
     };
 
-    const tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
+    // The tool menu and the wire message list are both mutable for one call: a
+    // preModelCall hook may narrow the menu or inject context. Everything
+    // derived from them — the binding, the trace menu, the prompt payload — is
+    // computed AFTER the hook, so the trace describes the request that was
+    // actually sent rather than the one we intended to send.
+    let tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
     const shouldUseStrictToolCalling = Boolean(
       runtime.responseFormat
       && (runtime.model as any)?.capabilities?.strictToolCalling
     );
-    const modelWithTools = (runtime.model)?.bindTools
-      ? (runtime.model).bindTools(
-          tools,
-          shouldUseStrictToolCalling ? { strict: true } : undefined,
-        )
-      : runtime.model;
+    const bindToolMenu = (menu: Array<ToolInterface<any, any, any>>) =>
+      (runtime.model)?.bindTools
+        ? (runtime.model).bindTools(
+            menu,
+            shouldUseStrictToolCalling ? { strict: true } : undefined,
+          )
+        : runtime.model;
+    /** bindTools is optional; without it a menu mutation never reaches the wire. */
+    const menuMutationReachesProvider = typeof (runtime.model)?.bindTools === "function";
 
     const traceSession = (state.ctx as any)?.__traceSession;
     const actorName = runtime.name ?? opts.name ?? "agent";
@@ -44,23 +54,26 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // turn?" (the menu can change between iterations). Built once per call;
     // a schema-conversion failure must never break the model invocation.
     let traceToolDefinitions: Array<{ name: string; description?: string; parameters?: Record<string, any> }> | undefined;
-    if (traceSession && traceSession.resolvedConfig.logData && tools.length > 0) {
+    const computeTraceToolDefinitions = (menu: Array<ToolInterface<any, any, any>>) => {
+      if (!traceSession || !traceSession.resolvedConfig.logData || menu.length === 0) return undefined;
       try {
-        traceToolDefinitions = tools.map((tool) => {
+        return menu.map((tool) => {
           const def = toToolDefinition(tool, shouldUseStrictToolCalling ? true : undefined);
           return { name: def.name, description: def.description || undefined, parameters: def.parameters };
         });
       } catch {
-        traceToolDefinitions = tools
+        return menu
           .map((tool: any) => ({ name: typeof tool?.name === "string" ? tool.name : "" }))
           .filter((tool) => tool.name.length > 0);
       }
-    }
+    };
 
-    const start = Date.now();
+    // Reassigned once the hook has run, so hook latency is not billed as model
+    // latency and the payload reflects the final wire messages.
+    let start = Date.now();
     const shouldLogPrompt = !!traceSession && traceSession.resolvedConfig.logData;
-    const promptPayload = shouldLogPrompt ? sanitizeTracePayload(state.messages) : undefined;
-    const promptBytes = promptPayload !== undefined ? estimatePayloadBytes(promptPayload) : undefined;
+    let promptPayload: any;
+    let promptBytes: number | undefined;
 
     // Bedrock (Claude) requires strict tool_use -> tool_result adjacency.
     // We both normalize (insert placeholder tool_result if missing) and log a compact dump.
@@ -219,7 +232,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // contract by another route.
     let traceResponseFormat: Record<string, any> | undefined = responseFormat;
     let traceResponseFormatStrategy: "native" | "tool_based" | undefined = responseFormat ? "native" : undefined;
-    if (!traceResponseFormat && (runtime as any).outputSchema) {
+    // Derived from the FINAL tool menu, so it must run after preModelCall.
+    const resolveTraceResponseFormat = () => {
+      if (traceResponseFormat || !(runtime as any).outputSchema) return;
       const responseTool = traceToolDefinitions?.find((tool) => tool.name === "response");
       if (responseTool?.parameters) {
         traceResponseFormat = {
@@ -228,7 +243,7 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         };
         traceResponseFormatStrategy = "tool_based";
       }
-    }
+    };
 
     // Unified reasoning pass-through: when the loop resolved a ReasoningConfig we
     // place the native shape on ctx.__reasoning. We forward it into invoke options
@@ -248,57 +263,271 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       return "";
     };
 
+    // ── Plugin gate: preModelCall ────────────────────────────────────────────
+    // Raised here rather than in the run loop because this is the only place
+    // where the tool menu, the wire messages and the invoke options all exist
+    // together. One consequence worth knowing: it therefore also covers the
+    // post-loop structured-output finalize call, which no guardrail reached
+    // before the plugin layer existed.
+    const host = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
+    const iteration = Number((state.ctx as any)?.__iteration) || ((state as any).usage?.perRequest?.length ?? 0) + 1;
+
+    // Wire messages are SEPARATE from the transcript: adjacency normalization
+    // and any hook injection apply to what the provider sees, never to what is
+    // persisted. `messagesWithResponse` below is still built from state.messages.
+    let wireMessages: any[] = [...(state.messages as any[])];
+
+    // A handoff replaces `state.agent` with the TARGET agent's runtime mid-run.
+    // The tool menu follows it; the persona has to follow it too, or the target
+    // answers under its predecessor's instructions and its own systemPrompt and
+    // name never reach the model — which reads as an agent ignoring the tools it
+    // was just handed.
+    //
+    // This is deliberately applied to `wireMessages` and never to the
+    // transcript: persisting the target's persona would leave the caller's
+    // returned messages describing an agent that is no longer in control, and
+    // the next turn would run the original agent under it.
+    //
+    // The originating agent's skill/subagent catalog is NOT carried over — those
+    // tools left the menu with the handoff. Plugin contributions ARE, because the
+    // plugins still govern the run and their hooks still fire.
+    const handoffActive = Boolean((state.ctx as any)?.__handoffActive);
+    if (
+      handoffActive
+      && runtime.name !== opts.name
+      && wireMessages[0]?.role === "system"
+      && ((runtime as any).systemPrompt || runtime.name)
+    ) {
+      let persona = buildSystemPrompt(
+        (runtime as any).systemPrompt,
+        (runtime as any).useTodoList === true,
+        runtime.name || "Agent",
+        (runtime as any).todoListPrompt,
+      );
+      const contribute = (state.ctx as any)?.__applySystemPromptContribution;
+      if (typeof contribute === "function") persona = contribute(persona);
+      const append = (state.ctx as any)?.__pluginSystemPromptAppend;
+      if (append) persona = `${persona}\n\n${append}`;
+      wireMessages = [{ ...wireMessages[0], content: persona }, ...wireMessages.slice(1)];
+    }
+
+    let invokeParams: Record<string, any> = {
+      signal: abortSignal,
+      cancellationToken,
+      ...(responseFormat || {}),
+      ...(reasoningInvokeOpts || {}),
+    };
+    let shortCircuited: any;
+
+    if (host?.has("preModelCall")) {
+      const gate = await host.runGate("preModelCall", {
+        messages: wireMessages as any,
+        tools,
+        params: invokeParams,
+        model: runtime.model,
+        iteration,
+      });
+
+      if (gate.input.tools !== tools) {
+        if (menuMutationReachesProvider) {
+          tools = gate.input.tools as any;
+        } else {
+          // Recording a restriction that never reached the wire would make the
+          // trace claim a guarantee the run does not have.
+          onEvent?.({
+            type: "metadata",
+            pluginWarning: "preModelCall tool-menu mutation ignored: this model has no bindTools()",
+          } as any);
+        }
+      }
+      wireMessages = gate.input.messages as any[];
+      invokeParams = gate.input.params as Record<string, any>;
+
+      if (gate.decision === "deny") {
+        const reason = gate.reason || "Model call blocked by a plugin policy.";
+        (state.ctx = state.ctx || {}).__guardrailBlocked = {
+          phase: "request",
+          incident: { reason, deniedBy: gate.deniedBy, hook: "preModelCall" },
+        };
+        recordTraceEvent(traceSession, {
+          type: "ai_call",
+          label: "Assistant Blocked (plugin)",
+          actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
+          // "skipped", never "error": a fail-open plugin denial is a policy
+          // outcome, and an "error" status would flip the whole trace session
+          // status to error for a run that behaved exactly as configured.
+          status: "skipped",
+          model: getModelName((runtime as any).model || (opts as any).model),
+          provider: getProviderName((runtime as any).model || (opts as any).model),
+          messageList: state.messages,
+        });
+        // Exactly one appended message, no tool_calls, so the loop terminates.
+        return {
+          messages: [
+            ...state.messages,
+            {
+              role: "assistant",
+              name: "guardrail",
+              content: reason,
+              metadata: { plugin: { hook: "preModelCall", deniedBy: gate.deniedBy, reason } },
+            } as any,
+          ],
+          usage: (state as any).usage,
+        };
+      }
+
+      if (gate.shortCircuit !== undefined) shortCircuited = gate.shortCircuit;
+    }
+
+    // Everything derived from the final menu / wire messages.
+    const modelWithTools = bindToolMenu(tools);
+    traceToolDefinitions = computeTraceToolDefinitions(tools);
+    resolveTraceResponseFormat();
+    promptPayload = shouldLogPrompt ? sanitizeTracePayload(wireMessages) : undefined;
+    promptBytes = promptPayload !== undefined ? estimatePayloadBytes(promptPayload) : undefined;
+
+    // A hook owns the semantic content of the message it returns, but not the
+    // accounting: dropping `usage` would silently zero the run's bill, so the
+    // provider's own fields are re-attached when the hook did not set them.
+    // `tool_calls` is deliberately NOT preserved — stripping them is a
+    // legitimate way to stop the model from acting.
+    const preserveProviderFields = (original: any, next: any): any => {
+      if (!next || typeof next !== "object") return next;
+      const merged: any = { ...next };
+      for (const key of ["usage", "usage_metadata", "response_metadata"]) {
+        if (merged[key] === undefined && original?.[key] !== undefined) merged[key] = original[key];
+      }
+      return merged;
+    };
+
     let response: any;
-    try {
-  const normalizedMessages = normalizeBedrockToolPairing([...(state.messages as any[])]);
-  debugToolPairing(normalizedMessages);
-  if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
-    let streamedText = "";
-    let streamedMessage: any | undefined;
-    const streamOptions = { signal: abortSignal, cancellationToken, ...responseFormat, ...reasoningInvokeOpts };
-    for await (const chunk of (modelWithTools as any).stream(normalizedMessages, streamOptions)) {
-      if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
+    let modelAttempt = 0;
+    const maxModelRetries = host?.maxModelRetries ?? 0;
+
+    while (true) {
+      start = Date.now();
+
+      if (shortCircuited !== undefined) {
+        response = shortCircuited;
+        recordTraceEvent(traceSession, {
+          type: "ai_call",
+          label: "Assistant (plugin short-circuit)",
+          actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
+          status: "skipped",
+          model: getModelName((runtime as any).model || (opts as any).model),
+          provider: getProviderName((runtime as any).model || (opts as any).model),
+          messageList: state.messages,
+          toolDefinitions: traceToolDefinitions,
+        });
+      } else {
+        try {
+          // Adjacency normalization stays the LAST transform before the wire.
+          const normalizedMessages = normalizeBedrockToolPairing([...wireMessages]);
+          debugToolPairing(normalizedMessages);
+          if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
+            let streamedText = "";
+            let streamedMessage: any | undefined;
+            for await (const chunk of (modelWithTools as any).stream(normalizedMessages, invokeParams)) {
+              if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
+                break;
+              }
+              if (chunk && typeof chunk === "object" && (chunk as any).role) {
+                streamedMessage = chunk;
+              }
+              const text = extractText(chunk);
+              // The provider adapter yields text deltas as plain strings and
+              // then closes the stream with the FULLY ASSEMBLED message. Its
+              // text is everything already sent, so emitting it as one more
+              // delta makes a consumer that concatenates chunks render the
+              // whole answer twice.
+              //
+              // Detected by value rather than by position, because a
+              // LangChain-style model yields role-bearing objects for every
+              // delta — there the text is a fragment, not the accumulation, so
+              // it still goes out.
+              const isAssembledMessage =
+                Boolean(chunk && typeof chunk === "object" && (chunk as any).role)
+                && text.length > 0
+                && text === streamedText;
+              if (text && !isAssembledMessage) {
+                streamedText += text;
+                onStream?.({ text });
+                onEvent?.({ type: "stream", text });
+              }
+            }
+            if (streamedMessage) {
+              response = { ...streamedMessage };
+              if (response.content == null || response.content === "") {
+                response.content = streamedText;
+              }
+            } else {
+              response = { role: "assistant", content: streamedText } as any;
+            }
+          } else {
+            response = await modelWithTools.invoke(normalizedMessages, invokeParams);
+          }
+        } catch (err: any) {
+          const durationMs = Date.now() - start;
+          recordTraceEvent(traceSession, {
+            type: "ai_call",
+            label: "Assistant Error",
+            actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
+            status: "error",
+            durationMs,
+            requestBytes: promptBytes,
+            model: getModelName((runtime as any).model || (opts as any).model),
+            provider: getProviderName((runtime as any).model || (opts as any).model),
+            error: { message: err?.message || String(err), stack: err?.stack },
+            messageList: state.messages,
+            toolDefinitions: traceToolDefinitions,
+            responseFormat: traceResponseFormat,
+            responseFormatStrategy: traceResponseFormatStrategy,
+          });
+          throw err;
+        }
+      }
+
+      // ── Plugin gate: postModelCall ─────────────────────────────────────────
+      // Before usage extraction and the trace event, so both describe the
+      // message that actually enters the transcript.
+      if (!host?.has("postModelCall")) break;
+
+      const postGate = await host.runGate("postModelCall", {
+        message: response,
+        usage: (response as any)?.usage,
+        durationMs: Date.now() - start,
+        iteration,
+        shortCircuited: shortCircuited !== undefined,
+      });
+
+      if (postGate.input.message !== response) {
+        response = preserveProviderFields(response, postGate.input.message);
+      }
+
+      if (postGate.decision === "deny") {
+        const reason = postGate.reason || "Response blocked by a plugin policy.";
+        (state.ctx = state.ctx || {}).__guardrailBlocked = {
+          phase: "response",
+          incident: { reason, deniedBy: postGate.deniedBy, hook: "postModelCall" },
+          replaced: response,
+        };
+        // REPLACE, never append: the unsafe turn must not stay in the
+        // transcript, and a dangling tool_calls tail must not survive.
+        response = {
+          role: "assistant",
+          name: "guardrail",
+          content: reason,
+          metadata: { plugin: { hook: "postModelCall", deniedBy: postGate.deniedBy, reason } },
+          usage: (response as any)?.usage,
+        };
         break;
       }
-      if (chunk && typeof chunk === "object" && (chunk as any).role) {
-        streamedMessage = chunk;
+
+      if (postGate.flags.retry && shortCircuited === undefined && modelAttempt < maxModelRetries) {
+        modelAttempt += 1;
+        continue;
       }
-      const text = extractText(chunk);
-      if (text) {
-        streamedText += text;
-        onStream?.({ text });
-        onEvent?.({ type: "stream", text });
-      }
-    }
-    if (streamedMessage) {
-      response = { ...streamedMessage };
-      if (response.content == null || response.content === "") {
-        response.content = streamedText;
-      }
-    } else {
-      response = { role: "assistant", content: streamedText } as any;
-    }
-  } else {
-    response = await modelWithTools.invoke(normalizedMessages, { signal: abortSignal, cancellationToken, ...responseFormat, ...reasoningInvokeOpts });
-  }
-    } catch (err: any) {
-      const durationMs = Date.now() - start;
-      recordTraceEvent(traceSession, {
-        type: "ai_call",
-        label: "Assistant Error",
-        actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
-        status: "error",
-        durationMs,
-        requestBytes: promptBytes,
-        model: getModelName((runtime as any).model || (opts as any).model),
-        provider: getProviderName((runtime as any).model || (opts as any).model),
-        error: { message: err?.message || String(err), stack: err?.stack },
-        messageList: state.messages,
-        toolDefinitions: traceToolDefinitions,
-        responseFormat: traceResponseFormat,
-        responseFormatStrategy: traceResponseFormatStrategy,
-      });
-      throw err;
+      break;
     }
     const messagesWithResponse: Message[] = [
       ...state.messages,

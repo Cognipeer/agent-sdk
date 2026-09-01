@@ -25,6 +25,47 @@ import { getResolvedSmartConfig } from "./smart/runtimeConfig.js";
 import { createContextPilotRuntime } from "./smart/contextPilot/index.js";
 import { seedChildMessages } from "./smart/subagents/registry.js";
 import { selectPendingToolCalls } from "./utils/pendingToolCalls.js";
+import { nanoid } from "nanoid";
+import { createPluginHost, type PluginRunHost } from "./plugins/host.js";
+import type { AgentPlugin } from "./plugins/types.js";
+import { openPluginSession } from "./plugins/session.js";
+import { createPluginTraceRecorder } from "./plugins/trace.js";
+
+/**
+ * Turn handoff descriptors into the tools that expose them to the model.
+ *
+ * Shared with createSmartAgent, which builds its own per-invoke tool set and
+ * would otherwise never see these — a typed, documented option doing nothing.
+ */
+export function buildHandoffTools(handoffs: HandoffDescriptor[]): any[] {
+  return handoffs.map((descriptor) => {
+    const schema = descriptor.schema || z.object({ reason: z.string().describe("Reason for handoff") });
+    return createTool({
+      name: descriptor.toolName,
+      description: descriptor.description || `Handoff to ${descriptor.target.__runtime.name || "agent"}`,
+      schema,
+      func: async () => ({ __handoff: { runtime: descriptor.target.__runtime } }),
+    });
+  });
+}
+
+/**
+ * Union by name, first occurrence wins. The agent's own tools take precedence
+ * over a contribution, so a plugin can never shadow a built-in (`ask_user_question`,
+ * `response`) and duplicate it on the wire — strict providers reject that.
+ */
+function mergeToolsByName(base: any[], extra: any[]): any[] {
+  if (extra.length === 0) return base;
+  const seen = new Set(base.map((tool) => tool?.name));
+  const merged = [...base];
+  for (const tool of extra) {
+    const name = tool?.name;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    merged.push(tool);
+  }
+  return merged;
+}
 
 function getLastAssistantMessage(messages: any[]): any | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -203,10 +244,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     model: opts.model,
     tools: toolsBase,
     guardrails: opts.guardrails,
-    systemPrompt: undefined,
+    // Carried on the runtime so a HANDOFF can restore this agent's persona.
+    // The core node never injects a system prompt itself (the smart driver
+    // seeds one), but a handoff hands this whole runtime to another loop —
+    // left undefined here, the target's own instructions and name are lost and
+    // it runs under whichever agent handed control to it.
+    systemPrompt: (opts as any).systemPrompt,
     todoListPrompt: opts.todoListPrompt,
     limits: opts.limits,
-    useTodoList: undefined,
+    useTodoList: (opts as any).useTodoList,
     outputSchema: opts.outputSchema as any,
     responseFormat: soManager?.getResponseFormat(),
     tracing: opts.tracing,
@@ -214,12 +260,31 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   };
   const summarizationThreshold = getActiveSummarizationThreshold(opts);
 
+  // Plugin host: agent-scoped. It validates the plugin set, resolves slots and
+  // contributions once, and owns setup/dispose. Everything run-scoped lives in
+  // the handle `beginRun` returns, so two concurrent invokes on this instance
+  // never share plugin state — the same rule the per-invoke tool set follows.
+  const inlinePlugins: AgentPlugin[] = [];
+  if ((opts as any).plugins) inlinePlugins.push(...((opts as any).plugins as AgentPlugin[]));
+  if ((opts as any).hooks) {
+    inlinePlugins.push({ name: "inline-hooks", hooks: (opts as any).hooks });
+  }
+  const pluginHost = createPluginHost(inlinePlugins, (opts as any).pluginOptions);
+  let pluginModel: unknown;
+
   async function runLoop(
     initial: AgentState,
     config: InvokeConfig | undefined,
-    emit?: (event: SmartAgentEvent) => void
+    emit?: (event: SmartAgentEvent) => void,
+    /** Live pointer so HookContext.state is never a stale snapshot. */
+    stateHolder?: { value: AgentState }
   ): Promise<AgentState> {
     let state = await resolver(initial);
+    const publish = (next: AgentState) => {
+      if (stateHolder) stateHolder.value = next;
+      return next;
+    };
+    publish(state);
     if (state.ctx?.__paused) {
       const nextCtx = { ...state.ctx };
       delete nextCtx.__paused;
@@ -265,7 +330,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const maxWallClockMs = mergedLimits?.maxWallClockMs && mergedLimits.maxWallClockMs > 0 ? mergedLimits.maxWallClockMs : undefined;
     const maxTotalOutputTokens = mergedLimits?.maxTotalOutputTokens && mergedLimits.maxTotalOutputTokens > 0 ? mergedLimits.maxTotalOutputTokens : undefined;
     const maxCostUsd = mergedLimits?.maxCostUsd && mergedLimits.maxCostUsd > 0 ? mergedLimits.maxCostUsd : undefined;
-    const costEstimator = (opts as any).costEstimator as ((args: { modelName?: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number }) => number) | undefined;
+    const costEstimator = ((opts as any).costEstimator ?? pluginHost.slots.costEstimator) as ((args: { modelName?: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number }) => number) | undefined;
     const checkBudgetBreached = (): { breached: false } | { breached: true; reason: string } => {
       if (maxWallClockMs && Date.now() - wallClockStart > maxWallClockMs) {
         return { breached: true, reason: `maxWallClockMs (${maxWallClockMs}ms) exceeded` };
@@ -379,11 +444,24 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     while (iterations < iterationLimit) {
       iterations++;
+      publish(state);
+      // agentCore reads this for the preModelCall payload; the node cannot see
+      // the loop's own counter any other way.
+      if (state.ctx) (state.ctx as any).__iteration = iterations;
       // Enforce budget limits before each iteration so we never spend extra
       // tokens after the cap has been hit.
       const budget = checkBudgetBreached();
       if (budget.breached) {
         emit?.({ type: "metadata", limitBreached: budget.reason });
+        const limitHost = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
+        if (limitHost?.has("notification")) {
+          // Observation only: a throwing handler must not turn a graceful
+          // budget exit into a thrown run.
+          await limitHost.runObservers("notification", {
+            kind: "limit",
+            detail: { reason: budget.reason, iteration: iterations },
+          });
+        }
         const ctx = { ...(state.ctx || {}), __limitBreached: budget.reason } as any;
         state = { ...state, ctx } as AgentState;
         break;
@@ -464,7 +542,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           // Agent step
           onProgress?.({ stage: "agent", message: "Invoking model" });
           if (cancelIfRequested("before_agent")) break;
-          state = { ...state, ...(await agentCore(state)) } as AgentState;
+          state = publish({ ...state, ...(await agentCore(state)) } as AgentState);
           onProgress?.({ stage: "agent", message: "Model response received" });
 
       if (checkpointIfRequested("after_agent")) break;
@@ -587,7 +665,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       // Run tools
       onProgress?.({ stage: "tools", message: "Running tools" });
       if (cancelIfRequested("before_tools")) break;
-      state = { ...state, ...(await toolsNode(state)) } as AgentState;
+      state = publish({ ...state, ...(await toolsNode(state)) } as AgentState);
       onProgress?.({ stage: "tools", message: "Tools finished" });
       if (state.ctx?.__awaitingApproval) break;
       if (state.ctx?.__awaitingUserQuestion) break;
@@ -688,6 +766,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           || state.ctx?.__awaitingUserQuestion
           || state.ctx?.__cancelled
           || (state.ctx as any)?.__limitBreached
+          // preModelCall/postModelCall now cover this path too, so a denial
+          // here has to end finalization instead of being retried.
+          || (state.ctx as any)?.__guardrailBlocked
         ) break;
 
         const last: any = state.messages[state.messages.length - 1];
@@ -747,6 +828,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       checkpointIfRequested("after_loop");
     }
 
+    publish(state);
     return state;
   }
 
@@ -754,12 +836,25 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     // Install custom token counter for the duration of this invoke. The
     // setter is process-wide but we restore it in `finally` below so nested
     // / concurrent invokes do not poison one another's counter.
-    const userTokenCounter = (opts as any).tokenCounter as ((text: string) => number) | undefined;
+    // The option wins over the slot: a caller who passed one explicitly meant it.
+    // Slots are resolved at host construction (not at setup), so this is safe
+    // before the await below.
+    const userTokenCounter = ((opts as any).tokenCounter
+      ?? pluginHost.slots.tokenCounter) as ((text: string) => number) | undefined;
     if (userTokenCounter) {
       // Lazy import to avoid circular deps when this module is preloaded.
       const { setTokenCounter } = await import("./utils/utilTokens.js");
       setTokenCounter(userTokenCounter);
     }
+    // Contributions are resolved on first use, not at construction: `tools` may
+    // be an async factory (an MCP server connecting, a registry fetch) while
+    // createAgent is synchronous. `setup` is idempotent, so this is a no-op on
+    // every invoke after the first.
+    await pluginHost.setup({ agentName: opts.name, agentVersion: opts.version, model: opts.model });
+    if (pluginModel === undefined) {
+      pluginModel = pluginHost.contributions.applyModelWrappers(opts.model);
+    }
+
     const callerOnEvent = config?.onEvent;
     const onEvent = askUserOnQuestion
       ? (event: SmartAgentEvent) => {
@@ -787,6 +882,51 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       __streaming: streamEnabled,
     };
     if (traceSession) ctx.__traceSession = traceSession;
+
+    // A session is never recovered from the incoming ctx. `invoke(previousState)`
+    // is the ordinary continuation and branching pattern, so a handle parked on
+    // ctx would hand a finished run's live host, its per-plugin stores and its
+    // state pointer back to the next call — and to two concurrent branches at
+    // once. The smart driver passes its session down explicitly instead.
+    delete ctx.__plugins;
+    delete (ctx as any).__applySystemPromptContribution;
+    delete ctx.__pluginState;
+
+    const inheritedSession = (config as any)?.__pluginSession as
+      | { host: PluginRunHost; runId: string; stateHolder: { value: AgentState } }
+      | undefined;
+
+    ctx.__runId = inheritedSession?.runId ?? traceSession?.sessionId ?? `run_${nanoid(10)}`;
+
+    const stateHolder: { value: AgentState } =
+      inheritedSession?.stateHolder ?? { value: undefined as unknown as AgentState };
+    const traceRecorder = createPluginTraceRecorder(() => traceSession);
+
+    const runHost: PluginRunHost | undefined =
+      inheritedSession?.host
+      ?? (pluginHost.hasAny()
+        ? pluginHost.beginRun({
+            runId: ctx.__runId,
+            agentName: opts.name,
+            getState: () => stateHolder.value as any,
+            emit,
+            recordTrace: traceRecorder.record,
+            signal: ctx.__abortSignal,
+            depth: Number(ctx.__delegationDepth) || 0,
+          })
+        : undefined);
+    if (runHost) ctx.__plugins = runHost;
+    // Separate from `__plugins`: a contribution-only plugin registers no hooks,
+    // so `beginRun` is skipped and there is no run host — but its `systemPrompt`
+    // contribution still has to survive a handoff, where the agent node rebuilds
+    // the leading system message from the target's runtime.
+    (ctx as any).__applySystemPromptContribution = (base: string) =>
+      pluginHost.contributions.applySystemPrompt(base);
+
+    // Only the creator of a session brackets it. A leg that inherited one is
+    // mid-turn by definition, so firing sessionStart/sessionEnd there would
+    // report a run start and a run end per driver iteration.
+    const ownsRun = !inheritedSession && !!runHost;
     if (config?.cancellationToken) ctx.__cancellationToken = config.cancellationToken;
     if ((config?.cancellationToken as AbortSignal | undefined)?.aborted !== undefined) {
       ctx.__abortSignal = config?.cancellationToken as AbortSignal;
@@ -801,9 +941,26 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       ctx.__contextPilot = createContextPilotRuntime(resolvedForContextPilot.contextPilot);
     }
 
+    // state.agent.tools is what BOTH the tools node and agentCore read, so
+    // merging here is what makes a contributed tool visible on the live loop,
+    // on resume, and on the asTool path alike.
+    const contributedTools = pluginHost.contributions.tools;
+    // A guardrail packaged inside a plugin has to reach the same evaluator the
+    // `guardrails:` option feeds; otherwise the plugin installs cleanly, shows
+    // up in host.plugins, and silently guards nothing.
+    const contributedGuardrails = pluginHost.contributions.guardrails;
+    const pluginRuntime: AgentRuntimeConfig =
+      contributedTools.length > 0 || contributedGuardrails.length > 0 || pluginModel !== opts.model
+        ? {
+            ...runtime,
+            tools: mergeToolsByName(runtime.tools as any[], contributedTools as any[]),
+            guardrails: [...(runtime.guardrails ?? []), ...contributedGuardrails],
+            model: pluginModel ?? runtime.model,
+          }
+        : runtime;
     const runtimeWithInvokeLimits: AgentRuntimeConfig = config?.limits
-      ? { ...runtime, limits: { ...(runtime.limits || {}), ...config.limits } }
-      : runtime;
+      ? { ...pluginRuntime, limits: { ...(pluginRuntime.limits || {}), ...config.limits } }
+      : pluginRuntime;
 
     const initial: AgentState = {
       messages: input.messages || [],
@@ -818,16 +975,99 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       usage: input.usage || { perRequest: [], totals: {} },
     };
 
+    stateHolder.value = initial;
+
+    // A resumed invoke is the only place these markers are still readable —
+    // runLoop strips __paused and __resumeStage on entry.
+    const resumed = Boolean(
+      input.ctx?.__restoredFromSnapshot
+      || input.ctx?.__paused
+      || input.ctx?.__resumeStage
+      || input.ctx?.__awaitingApproval
+      || input.ctx?.__awaitingUserQuestion
+    );
+
+    const startedAt = Date.now();
+    let sessionEnded = false;
+    /** Fires at most once per run, on every exit path. */
+    const endSession = async (
+      status: "success" | "error" | "paused" | "cancelled",
+      payload: { result?: AgentInvokeResult<TOutput>; error?: Error; state?: AgentState },
+    ) => {
+      if (!runHost || !ownsRun || sessionEnded) return;
+      sessionEnded = true;
+      await runHost.runObservers("sessionEnd", {
+        status,
+        result: payload.result as any,
+        error: payload.error,
+        usage: (payload.state as any)?.usage,
+        durationMs: Date.now() - startedAt,
+      });
+      traceRecorder.flush();
+      runHost.end();
+    };
+    const statusFor = (st?: AgentState): "success" | "paused" | "cancelled" => {
+      const c: any = st?.ctx || {};
+      if (c.__cancelled) return "cancelled";
+      if (c.__paused || c.__awaitingApproval || c.__awaitingUserQuestion) return "paused";
+      return "success";
+    };
+
+    if (runHost && ownsRun) {
+      const opened = await openPluginSession(runHost, {
+        messages: initial.messages,
+        resumed,
+        config,
+      });
+      if (opened.messages !== initial.messages) {
+        initial.messages = opened.messages as any;
+      }
+      if (opened.systemPromptAppend) ctx.__pluginSystemPromptAppend = opened.systemPromptAppend;
+      stateHolder.value = initial;
+
+      if (opened.denied) {
+        const reason = opened.denied.reason;
+        const blocked: AgentState = {
+          ...initial,
+          messages: [
+            ...initial.messages,
+            { role: "assistant", name: "guardrail", content: reason } as any,
+          ],
+          ctx: {
+            ...ctx,
+            __guardrailBlocked: {
+              phase: "request",
+              incident: { reason, deniedBy: opened.denied.deniedBy },
+            },
+          },
+        };
+        stateHolder.value = blocked;
+        await finalizeTraceSession(traceSession, { agentRuntime: runtime, status: "success" });
+        emit({ type: "finalAnswer", content: reason });
+        const denied: AgentInvokeResult<TOutput> = {
+          content: reason,
+          output: undefined,
+          outputError: undefined,
+          metadata: { usage: (blocked as any).usage },
+          messages: blocked.messages,
+          state: blocked,
+        };
+        await endSession("success", { result: denied, state: blocked });
+        return denied;
+      }
+    }
+
     let res: AgentState;
     try {
       await startStreamingSession(traceSession, runtimeWithInvokeLimits);
-      res = await runLoop(initial, config, emit);
+      res = await runLoop(initial, config, emit, stateHolder);
     } catch (err: any) {
       await finalizeTraceSession(traceSession, {
         agentRuntime: runtime,
         status: "error",
         error: { message: err?.message, stack: err?.stack },
       });
+      await endSession("error", { error: err instanceof Error ? err : new Error(String(err)), state: stateHolder.value });
       if (userTokenCounter) {
         const { setTokenCounter } = await import("./utils/utilTokens.js");
         setTokenCounter(undefined);
@@ -865,9 +1105,55 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const finalIsSyntheticSummary = !isTransientSummarizationExit
       && finalAssistantMsg
       && isSyntheticSummaryMessage(finalAssistantMsg);
-    const content = (isTransientSummarizationExit || finalIsSyntheticSummary)
+    let content = (isTransientSummarizationExit || finalIsSyntheticSummary)
       ? ""
       : extractMessageText(finalAssistantMsg);
+
+    // ── Plugin gate: preFinalAnswer ─────────────────────────────────────────
+    // Gated by the same predicate that blocks structured-output finalization:
+    // a paused, cancelled, over-budget or summarization-bounce exit is not a
+    // final answer, and running the hook there would let a deny overwrite the
+    // assistant turn of a run that is still waiting on a human.
+    const finalAnswerBlocked = Boolean(
+      isTransientSummarizationExit
+      || res.ctx?.__awaitingApproval
+      || res.ctx?.__awaitingUserQuestion
+      || res.ctx?.__cancelled
+      || (res.ctx as any)?.__paused
+      || (res.ctx as any)?.__limitBreached
+    );
+    if (runHost && ownsRun && !finalAnswerBlocked && runHost.has("preFinalAnswer")) {
+      // Guarded by ownsRun only because an inherited leg is mid-turn; the smart
+      // driver fires this itself on the leg that actually returns the answer.
+      const finalGate = await runHost.runGate("preFinalAnswer", {
+        content,
+        message: finalAssistantMsg,
+      });
+      if (finalGate.decision === "deny") {
+        content = finalGate.reason || "Response blocked by policy.";
+      } else if (finalGate.input.content !== content) {
+        // Applied BEFORE the structured-output parse below, so `output` and
+        // `content` can never disagree — a redaction that only reached one of
+        // them would leak the unredacted payload through the other.
+        content = finalGate.input.content as string;
+      }
+      const continueWith = (finalGate as unknown as { continueWith?: string }).continueWith;
+      if (continueWith) {
+        // Re-entering runLoop would restart the wall-clock, iteration and
+        // reflection budgets, so this is not implemented on either agent yet.
+        emit({
+          type: "metadata",
+          pluginWarning: "preFinalAnswer.continueWith is not implemented yet and was ignored.",
+        } as any);
+      }
+      if (finalGate.decision === "deny") {
+        // A denied answer must not leave a parsed structured output behind —
+        // returning `output` while `content` says "blocked" hands the caller
+        // the very payload the policy refused.
+        const deniedCtx = (res.ctx = res.ctx || {});
+        delete (deniedCtx as any).__structuredOutputParsed;
+      }
+    }
 
     let parsed: TOutput | undefined = undefined;
     let outputError: StructuredOutputError | undefined = undefined;
@@ -904,7 +1190,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
     }
 
-    return {
+    const result: AgentInvokeResult<TOutput> = {
       content,
       output: parsed as TOutput | undefined,
       outputError,
@@ -912,6 +1198,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       messages: res.messages,
       state: res as AgentState,
     };
+    // A summarization bounce is a transient exit: the smart driver is still
+    // mid-turn and will call back in. Ending the session here would tell every
+    // plugin the run finished while it is still running.
+    if (!isTransientSummarizationExit) {
+      await endSession(statusFor(res), { result, state: res });
+    }
+    return result;
   };
 
   const snapshotState = (state: AgentState, options?: SnapshotOptions) => captureSnapshot(state, options);
@@ -929,6 +1222,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
   const instance: AgentInstance<TOutput> = {
     invoke: invokeAgent,
+    dispose: () => pluginHost.dispose(),
+    __plugins: pluginHost,
     snapshot: snapshotState,
     resume: resumeAgent,
     resolveToolApproval,
@@ -1026,16 +1321,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
   };
 
   if (opts.handoffs && Array.isArray(opts.handoffs)) {
-    const handoffTools = opts.handoffs.map(h => {
-      const schema = h.schema || z.object({ reason: z.string().describe('Reason for handoff') });
-  return createTool({
-        name: h.toolName,
-        description: h.description || `Handoff to ${h.target.__runtime.name || 'agent'}`,
-        schema,
-        func: async (_args: any) => ({ __handoff: { runtime: h.target.__runtime } })
-      });
-    });
-    runtime.tools = [...runtime.tools, ...handoffTools];
+    runtime.tools = mergeToolsByName(runtime.tools as any[], buildHandoffTools(opts.handoffs));
   }
 
   return instance;

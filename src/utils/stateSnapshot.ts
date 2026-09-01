@@ -9,6 +9,20 @@ const DISALLOWED_CTX_KEYS = new Set([
   "__cancellationToken",
   "__abortSignal",
   "__contextPilot",
+  // The plugin host holds handler closures and disposers; structuredClone
+  // throws DataCloneError on functions, and a host must be rebuilt per invoke
+  // (exactly like __contextPilot) rather than resurrected from a snapshot.
+  "__plugins",
+  // The composed plugin systemPrompt contribution — a closure over the agent's
+  // host, for the same reason and with the same fate as __plugins.
+  "__applySystemPromptContribution",
+  // Holds a live reference to the whole state (circular), and is rebuilt per
+  // invoke alongside the host.
+  "__pluginState",
+  // Session bookkeeping: a resumed run must open its OWN session, so these
+  // must not travel in a snapshot.
+  "__pluginRunStarted",
+  "__pluginRunEnded",
 ]);
 
 const clone = <T>(value: T): T => {

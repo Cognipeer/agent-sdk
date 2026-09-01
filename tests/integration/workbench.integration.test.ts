@@ -1,7 +1,7 @@
 /**
  * Workbench Integration Tests
  *
- * Tests SmartAgent with real OpenAI GPT model to verify:
+ * Tests SmartAgent with a real model to verify:
  * 1. invoke returns non-empty content
  * 2. Tool calls work (manage_todo_list)
  * 3. onEvent callbacks fire (plan events, tool_call events, finalAnswer)
@@ -9,112 +9,44 @@
  * 5. System prompt is followed
  *
  * Run: OPENAI_API_KEY=sk-xxx npx vitest run tests/integration/workbench.integration.test.ts
+ *
+ * Any OpenAI-compatible endpoint works — a gateway, a proxy, or a local server:
+ *
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 \
+ *   PLUGIN_TEST_MODEL=qwen2.5 OPENAI_API_KEY=ignored npx vitest run …
+ *
+ * Skipped entirely without a key. The model is built through the SDK's own
+ * provider layer (rather than a hand-rolled OpenAI adapter) so the run also
+ * exercises real streaming and real tool-call normalization.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { createSmartAgent, createTool } from "../../src/index.js";
-import OpenAI from "openai";
+import { createProvider, fromNativeProvider } from "../../src/providers/index.js";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import type { SmartState, SmartAgentEvent } from "../../src/types.js";
 
 const API_KEY = process.env.OPENAI_API_KEY;
 const runReal = API_KEY ? describe : describe.skip;
+const MODEL = process.env.PLUGIN_TEST_MODEL ?? "gpt-4o-mini";
+const BASE_URL = process.env.OPENAI_BASE_URL;
 
-/**
- * Direct OpenAI SDK adapter (same approach as realOpenAI test)
- */
-function createOpenAIModel(apiKey: string, modelName = "gpt-4o-mini") {
-  const client = new OpenAI({ apiKey });
-  let boundTools: any[] | undefined;
-
-  const model: any = {
-    modelName,
-
-    async invoke(messages: any[]): Promise<any> {
-      const openaiMessages = messages.map((m: any) => {
-        const msg: any = {
-          role: m.role as "system" | "user" | "assistant" | "tool",
-          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-        };
-        if (m.name && m.role === "tool") msg.name = m.name;
-        if (m.tool_calls && Array.isArray(m.tool_calls)) {
-          msg.tool_calls = m.tool_calls.map((tc: any) => ({
-            id: tc.id,
-            type: tc.type || "function",
-            function: tc.function || {
-              name: tc.name,
-              arguments: typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args || {}),
-            },
-          }));
-        }
-        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-        return msg;
-      });
-
-      const params: any = {
-        model: modelName,
-        messages: openaiMessages,
-      };
-
-      if (boundTools && boundTools.length > 0) {
-        params.tools = boundTools;
-        params.tool_choice = "auto";
-      }
-
-      const response = await client.chat.completions.create(params);
-      const choice = response.choices[0];
-      const msg = choice.message;
-
-      const result: any = {
-        role: "assistant",
-        content: msg.content || "",
-        usage: response.usage,
-      };
-
-      if (msg.tool_calls && msg.tool_calls.length > 0) {
-        result.tool_calls = msg.tool_calls.map((tc: any) => ({
-          id: tc.id,
-          name: tc.function.name,
-          args: tc.function.arguments,
-        }));
-      }
-
-      return result;
-    },
-
-    bindTools(tools: any[]) {
-      boundTools = tools.map((tool) => {
-        const schema = tool.schema || tool.parameters;
-        let jsonSchema: any;
-        if (schema && typeof schema.parse === "function") {
-          jsonSchema = zodToJsonSchema(schema, { target: "openApi3" });
-          delete jsonSchema.$schema;
-        } else if (schema) {
-          jsonSchema = schema;
-        } else {
-          jsonSchema = { type: "object", properties: {} };
-        }
-        return {
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description || "",
-            parameters: jsonSchema,
-          },
-        };
-      });
-      return model;
-    },
-  };
-
-  return model;
+function realModel() {
+  return fromNativeProvider(
+    createProvider({
+      provider: "openai",
+      apiKey: API_KEY!,
+      defaultModel: MODEL,
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    }),
+    { model: MODEL },
+  );
 }
 
-runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
+runReal("Workbench SmartAgent Integration (Real Model)", () => {
   let model: any;
 
   beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
+    model = realModel();
   });
 
   describe("basic invoke", () => {
@@ -142,7 +74,7 @@ runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
       expect(result.content).toBeTruthy();
       expect(result.content.length).toBeGreaterThan(0);
       expect(result.content).toContain("4");
-    }, 30000);
+    }, 60000);
   });
 
   describe("invoke with tools", () => {
@@ -177,7 +109,7 @@ runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
       expect(toolCalledWith).not.toBeNull();
       expect(result.content).toBeTruthy();
       expect(result.content.length).toBeGreaterThan(0);
-    }, 30000);
+    }, 60000);
   });
 
   describe("invoke with streaming", () => {
@@ -210,7 +142,7 @@ runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
       expect(result.content.length).toBeGreaterThan(0);
       // Streaming should produce at least 1 chunk
       expect(streamChunks.length).toBeGreaterThan(0);
-    }, 30000);
+    }, 60000);
   });
 
   describe("invoke with streaming + tools", () => {
@@ -268,7 +200,7 @@ runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
       expect(result.content).toBeTruthy();
       expect(result.content.length).toBeGreaterThan(0);
       expect(result.content).toContain("105");
-    }, 45000);
+    }, 90000);
   });
 
   describe("invoke with useTodoList", () => {
@@ -354,7 +286,7 @@ runReal("Workbench SmartAgent Integration (Real OpenAI)", () => {
       console.log("Content:", result.content);
       expect(result.content).toBeTruthy();
       expect(result.content.toLowerCase()).toContain("paris");
-    }, 30000);
+    }, 60000);
   });
 
   describe("full workbench simulation", () => {
@@ -418,6 +350,9 @@ Break down the task into steps. Then execute the steps.
         systemPrompt,
         useTodoList: true,
         summarization: { enable: true, maxTokens: 50000 },
+        // Bounded so a chatty real model cannot turn this into a long run; the
+        // scenario needs a plan write plus a save_file, well inside the ceiling.
+        limits: { maxToolCalls: 8 },
       });
 
       const result = await agent.invoke(

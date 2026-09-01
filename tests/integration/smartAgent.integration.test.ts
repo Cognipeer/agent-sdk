@@ -330,9 +330,14 @@ describe('SmartAgent Integration', () => {
   });
 
   describe('tool execution with smart agent', () => {
-    it.todo('should execute custom tools - requires deeper mock model investigation');
-
-    it.skip('should execute custom tools', async () => {
+    // Un-skipped: the old "requires deeper mock model investigation" note was
+    // stale, not a real defect. The mock emits OpenAI-shaped tool calls
+    // (`function.name` plus a JSON-string `function.arguments`), and
+    // `normalizeToolCall` in src/nodes/tools.ts already reads that shape and
+    // JSON.parses a string `arguments` before schema validation. The original
+    // assertion passes unchanged, and it also passes against the tree as it
+    // stood before the plugin work — no src/ change was needed to revive it.
+    it('should execute custom tools', async () => {
       let searchCalledWith: any = null;
 
       const searchTool = createTool({

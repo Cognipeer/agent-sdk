@@ -1,19 +1,27 @@
 /**
  * Integration Tests for Tracing (Batched & Streaming)
  *
- * These tests hit a real cgate instance running at localhost:3001.
+ * These tests hit a real Cognipeer Console / cgate tracing ingest. The ingest
+ * path is the SDK's own default shape: `{base}/api/client/v1/tracing/sessions`
+ * (see DEFAULT_COGNIPEER_URL in src/utils/tracing.ts), plus the streaming
+ * sub-routes `/stream/{sessionId}/{start,events,end}`.
  *
  * Prerequisites:
- *   1. cgate running on localhost:3001  (`npm run dev` in cgate)
- *   2. A valid API token set as env variable:
+ *   1. An ingest reachable at the base URL (cgate `npm run dev`, or a local
+ *      Console instance on http://localhost:3000).
+ *   2. A valid API token in the environment.
  *
- *        CGATE_API_TOKEN=<your-token> npx vitest run tests/integration/tracing.integration.test.ts
+ * Env vars (the CGATE_* names are the originals and still take precedence; the
+ * COGNIPEER_* names are accepted so a run configured for the Console ingest
+ * works without a second set of variables):
+ *   CGATE_API_TOKEN / COGNIPEER_API_KEY  – bearer token (required; suite skips without it)
+ *   CGATE_BASE_URL  / COGNIPEER_BASE_URL – ingest origin (default: http://localhost:3001)
  *
- * Optional env vars:
- *   CGATE_BASE_URL   – Override base URL (default: http://localhost:3001)
+ *   CGATE_API_TOKEN=<token> npx vitest run tests/integration/tracing.integration.test.ts
+ *   COGNIPEER_BASE_URL=http://localhost:3000 COGNIPEER_API_KEY=<token> npx vitest run …
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import {
   createTraceSession,
   recordTraceEvent,
@@ -31,19 +39,83 @@ import type {
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
 
-const CGATE_BASE_URL = process.env.CGATE_BASE_URL || "http://localhost:3001";
-const TRACING_URL = `${CGATE_BASE_URL}/api/client/v1/tracing/sessions`;
-const API_TOKEN = process.env.CGATE_API_TOKEN || "";
+const CGATE_BASE_URL =
+  process.env.CGATE_BASE_URL || process.env.COGNIPEER_BASE_URL || "http://localhost:3001";
+const TRACING_URL = `${CGATE_BASE_URL.replace(/\/$/, "")}/api/client/v1/tracing/sessions`;
+const API_TOKEN = process.env.CGATE_API_TOKEN || process.env.COGNIPEER_API_KEY || "";
+
+/** Generous per-test budget: each test does several real HTTP round-trips. */
+const TEST_TIMEOUT_MS = 60_000;
 
 function skipIfNoToken() {
   if (!API_TOKEN) {
     console.warn(
-      "\n⚠️  CGATE_API_TOKEN not set – skipping tracing integration tests.\n" +
-        "   Run with:  CGATE_API_TOKEN=<token> npx vitest run tests/integration/tracing.integration.test.ts\n"
+      "\n⚠️  No tracing ingest token set – skipping tracing integration tests.\n" +
+        "   Run with:  CGATE_API_TOKEN=<token> npx vitest run tests/integration/tracing.integration.test.ts\n" +
+        "   or:        COGNIPEER_BASE_URL=<origin> COGNIPEER_API_KEY=<token> npx vitest run …\n"
     );
     return true;
   }
   return false;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ingest delivery recorder                                          */
+/*                                                                    */
+/*  The tracing helpers deliberately swallow sink failures so a broken */
+/*  ingest never breaks an agent run. That means asserting only on the */
+/*  returned session object would let these tests pass against an      */
+/*  endpoint that rejected every POST. We wrap globalThis.fetch (which */
+/*  src/utils/tracing.ts resolves per call) to record the real request */
+/*  URLs and response statuses, and assert the ingest actually         */
+/*  accepted the traffic.                                             */
+/* ------------------------------------------------------------------ */
+
+type IngestCall = { url: string; status: number; error?: string };
+
+let ingestCalls: IngestCall[] = [];
+let originalFetch: typeof globalThis.fetch | undefined;
+
+function installIngestRecorder() {
+  if (originalFetch) return;
+  originalFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : input?.url ?? String(input);
+    const isIngest = typeof url === "string" && url.startsWith(TRACING_URL);
+    try {
+      const response = await originalFetch!(input, init);
+      if (isIngest) ingestCalls.push({ url, status: response.status });
+      return response;
+    } catch (err) {
+      if (isIngest) {
+        ingestCalls.push({ url, status: 0, error: err instanceof Error ? err.message : String(err) });
+      }
+      throw err;
+    }
+  }) as typeof globalThis.fetch;
+}
+
+function restoreIngestRecorder() {
+  if (originalFetch) {
+    globalThis.fetch = originalFetch;
+    originalFetch = undefined;
+  }
+}
+
+/** Ingest calls whose URL ends with the given sub-path, for a given session. */
+function callsFor(sessionId: string, suffix?: string): IngestCall[] {
+  return ingestCalls.filter(
+    (call) => call.url.includes(sessionId) && (suffix === undefined || call.url.endsWith(suffix))
+  );
+}
+
+/** Assert every recorded ingest POST was accepted (2xx), with a useful message. */
+function expectAllIngestCallsAccepted(calls: IngestCall[]) {
+  const rejected = calls.filter((call) => call.status < 200 || call.status >= 300);
+  expect(
+    rejected,
+    `tracing ingest rejected ${rejected.length} request(s): ${JSON.stringify(rejected)}`
+  ).toEqual([]);
 }
 
 /** Build a minimal SmartAgentOptions for creating a trace session */
@@ -140,6 +212,12 @@ describe("Tracing Integration – Batched Mode", () => {
     if (shouldSkip) return;
     console.log(`🔗 Testing against: ${TRACING_URL}`);
     console.log(`🔑 Token: ${API_TOKEN.slice(0, 8)}...`);
+    installIngestRecorder();
+  });
+
+  afterAll(() => restoreIngestRecorder());
+  beforeEach(() => {
+    ingestCalls = [];
   });
 
   it.skipIf(shouldSkip)("should create session, record events, and POST full session to cgate", async () => {
@@ -178,8 +256,13 @@ describe("Tracing Integration – Batched Mode", () => {
     expect(result!.summary.totalInputTokens).toBe(300);
     expect(result!.summary.totalOutputTokens).toBe(80);
 
+    // 4. The ingest must actually have received and accepted the session.
+    //    Batched mode delivers the whole session in exactly one POST.
+    expect(ingestCalls.map((call) => call.url)).toEqual([TRACING_URL]);
+    expectAllIngestCallsAccepted(ingestCalls);
+
     console.log(`  ✅ Batched session finalized: status=${result!.status}, events=${result!.events.length}`);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it.skipIf(shouldSkip)("should handle session with errors", async () => {
     const tracingConfig: TracingConfig = {
@@ -235,8 +318,11 @@ describe("Tracing Integration – Batched Mode", () => {
     expect(result!.status).toBe("error");
     expect(result!.errors.length).toBeGreaterThanOrEqual(1);
 
+    expect(ingestCalls.map((call) => call.url)).toEqual([TRACING_URL]);
+    expectAllIngestCallsAccepted(ingestCalls);
+
     console.log(`  ✅ Error session finalized: status=${result!.status}, errors=${result!.errors.length}`);
-  });
+  }, TEST_TIMEOUT_MS);
 });
 
 /* ------------------------------------------------------------------ */
@@ -250,6 +336,12 @@ describe("Tracing Integration – Streaming Mode", () => {
     if (shouldSkip) return;
     console.log(`🔗 Testing streaming against: ${TRACING_URL}/stream/...`);
     console.log(`🔑 Token: ${API_TOKEN.slice(0, 8)}...`);
+    installIngestRecorder();
+  });
+
+  afterAll(() => restoreIngestRecorder());
+  beforeEach(() => {
+    ingestCalls = [];
   });
 
   it.skipIf(shouldSkip)("should start session, stream events, and end session on cgate", async () => {
@@ -297,8 +389,16 @@ describe("Tracing Integration – Streaming Mode", () => {
     expect(result!.summary.totalInputTokens).toBe(300);
     expect(result!.summary.totalOutputTokens).toBe(80);
 
+    // Streaming mode must have hit the three distinct ingest routes: one
+    // /start, one /events POST per recorded event, and one /end.
+    const sessionId = session!.sessionId;
+    expect(callsFor(sessionId, `/stream/${sessionId}/start`).length).toBe(1);
+    expect(callsFor(sessionId, `/stream/${sessionId}/events`).length).toBe(3);
+    expect(callsFor(sessionId, `/stream/${sessionId}/end`).length).toBe(1);
+    expectAllIngestCallsAccepted(callsFor(sessionId));
+
     console.log(`  ✅ Streaming session ended: status=${result!.status}`);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it.skipIf(shouldSkip)("should stream events individually and verify order", async () => {
     const tracingConfig: TracingConfig = {
@@ -359,8 +459,15 @@ describe("Tracing Integration – Streaming Mode", () => {
       expect(result!.events[i].sequence).toBe(i + 1);
     }
 
+    // Each of the 5 events was streamed as its own accepted POST.
+    const sessionId = session!.sessionId;
+    expect(callsFor(sessionId, `/stream/${sessionId}/start`).length).toBe(1);
+    expect(callsFor(sessionId, `/stream/${sessionId}/events`).length).toBe(5);
+    expect(callsFor(sessionId, `/stream/${sessionId}/end`).length).toBe(1);
+    expectAllIngestCallsAccepted(callsFor(sessionId));
+
     console.log(`  ✅ 5 events streamed in order, session ended`);
-  });
+  }, TEST_TIMEOUT_MS);
 });
 
 /* ------------------------------------------------------------------ */
@@ -369,6 +476,16 @@ describe("Tracing Integration – Streaming Mode", () => {
 
 describe("Tracing Integration – Cognipeer Sink", () => {
   const shouldSkip = skipIfNoToken();
+
+  beforeAll(() => {
+    if (shouldSkip) return;
+    installIngestRecorder();
+  });
+
+  afterAll(() => restoreIngestRecorder());
+  beforeEach(() => {
+    ingestCalls = [];
+  });
 
   it.skipIf(shouldSkip)("should work with cognipeerSink helper (batched)", async () => {
     const tracingConfig: TracingConfig = {
@@ -396,8 +513,11 @@ describe("Tracing Integration – Cognipeer Sink", () => {
     expect(result).toBeDefined();
     expect(result!.status).toBe("success");
 
+    expect(ingestCalls.map((call) => call.url)).toEqual([TRACING_URL]);
+    expectAllIngestCallsAccepted(ingestCalls);
+
     console.log(`  ✅ Cognipeer sink batched: status=${result!.status}`);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it.skipIf(shouldSkip)("should work with cognipeerSink helper (streaming)", async () => {
     const tracingConfig: TracingConfig = {
@@ -430,6 +550,12 @@ describe("Tracing Integration – Cognipeer Sink", () => {
     expect(result).toBeDefined();
     expect(result!.status).toBe("success");
 
+    const sessionId = session!.sessionId;
+    expect(callsFor(sessionId, `/stream/${sessionId}/start`).length).toBe(1);
+    expect(callsFor(sessionId, `/stream/${sessionId}/events`).length).toBe(3);
+    expect(callsFor(sessionId, `/stream/${sessionId}/end`).length).toBe(1);
+    expectAllIngestCallsAccepted(callsFor(sessionId));
+
     console.log(`  ✅ Cognipeer sink streaming: status=${result!.status}`);
-  });
+  }, TEST_TIMEOUT_MS);
 });

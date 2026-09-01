@@ -460,3 +460,47 @@ describe('guardrails/engine', () => {
     });
   });
 });
+
+describe("guardrail failureMode", () => {
+  it("blocks on a thrown rule by default, preserving the historical behaviour", async () => {
+    const outcome = await evaluateGuardrails({
+      guardrails: [
+        {
+          id: "flaky",
+          appliesTo: [GuardrailPhase.Request],
+          rules: [{ id: "r", evaluate: async () => { throw new Error("policy backend down"); } }],
+        },
+      ],
+      phase: GuardrailPhase.Request,
+      state: { messages: [{ role: "user", content: "hi" }] } as any,
+      runtime: {} as any,
+      options: {} as any,
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.incidents[0].disposition).toBe("block");
+  });
+
+  it("warns instead of blocking when the guardrail declares failureMode open", async () => {
+    // A rule that reaches a database or a policy service fails transiently.
+    // Under the default, one blip hard-blocks every turn until it clears.
+    const outcome = await evaluateGuardrails({
+      guardrails: [
+        {
+          id: "flaky",
+          appliesTo: [GuardrailPhase.Request],
+          failureMode: "open",
+          rules: [{ id: "r", evaluate: async () => { throw new Error("policy backend down"); } }],
+        },
+      ],
+      phase: GuardrailPhase.Request,
+      state: { messages: [{ role: "user", content: "hi" }] } as any,
+      runtime: {} as any,
+      options: {} as any,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.incidents[0].disposition).toBe("warn");
+    expect(outcome.incidents[0].details?.thrown).toBe(true);
+  });
+});

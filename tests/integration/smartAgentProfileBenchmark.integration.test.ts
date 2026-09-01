@@ -1,12 +1,40 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import OpenAI from 'openai';
+/**
+ * Cross-profile benchmark against a REAL model: every runtime profile (plus two
+ * custom ones) is driven through the same five scenarios and scored.
+ *
+ *   OPENAI_API_KEY=sk-… npx vitest run tests/integration/smartAgentProfileBenchmark.integration.test.ts
+ *
+ * Any OpenAI-compatible endpoint works — a gateway, a proxy, or a local server:
+ *
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 \
+ *   PLUGIN_TEST_MODEL=qwen2.5 OPENAI_API_KEY=ignored npx vitest run …
+ *
+ * Skipped entirely without a key.
+ */
+
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createSmartAgent, createTool } from '../../src/index.js';
+import { createProvider, fromNativeProvider } from '../../src/providers/index.js';
 import type { BuiltInRuntimeProfile, RuntimeProfile, SmartAgentCustomProfileConfig, SmartAgentEvent, SmartState } from '../../src/types.js';
 
 const API_KEY = process.env.OPENAI_API_KEY;
 const runReal = API_KEY ? describe : describe.skip;
+const MODEL = process.env.PLUGIN_TEST_MODEL ?? 'gpt-4o-mini';
+const BASE_URL = process.env.OPENAI_BASE_URL;
+
+function realModel() {
+  return fromNativeProvider(
+    createProvider({
+      provider: 'openai',
+      apiKey: API_KEY!,
+      defaultModel: MODEL,
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    }),
+    { model: MODEL },
+  );
+}
+
 type BenchmarkProfileTarget = {
   label: string;
   runtimeProfile: RuntimeProfile;
@@ -74,75 +102,6 @@ type ProfileBenchmarkReport = {
   };
   scenarios: ScenarioReport[];
 };
-
-function createOpenAIModel(apiKey: string, modelName = 'gpt-4o-mini') {
-  const client = new OpenAI({ apiKey });
-  let boundTools: any[] | undefined;
-
-  const model: any = {
-    modelName,
-    async invoke(messages: any[]): Promise<any> {
-      const openaiMessages = messages.map((message: any) => {
-        const normalized: any = {
-          role: message.role,
-          content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
-        };
-        if (message.name) normalized.name = message.name;
-        if (Array.isArray(message.tool_calls)) {
-          normalized.tool_calls = message.tool_calls.map((toolCall: any) => ({
-            id: toolCall.id,
-            type: toolCall.type || 'function',
-            function: toolCall.function || {
-              name: toolCall.name,
-              arguments: typeof toolCall.args === 'string' ? toolCall.args : JSON.stringify(toolCall.args || {}),
-            },
-          }));
-        }
-        if (message.tool_call_id) normalized.tool_call_id = message.tool_call_id;
-        return normalized;
-      });
-
-      const response = await client.chat.completions.create({
-        model: modelName,
-        messages: openaiMessages,
-        tools: boundTools,
-        tool_choice: boundTools && boundTools.length > 0 ? 'auto' : undefined,
-      });
-
-      const choice = response.choices[0]?.message;
-      return {
-        role: 'assistant',
-        content: choice?.content || '',
-        usage: response.usage,
-        tool_calls: choice?.tool_calls?.map((toolCall: any) => ({
-          id: toolCall.id,
-          name: toolCall.function.name,
-          args: toolCall.function.arguments,
-        })),
-      };
-    },
-    bindTools(tools: any[]) {
-      boundTools = tools.map((tool) => {
-        const schema = tool.schema || tool.parameters;
-        const parameters = schema && typeof schema.parse === 'function'
-          ? zodToJsonSchema(schema, { target: 'openApi3' })
-          : schema || { type: 'object', properties: {} };
-        delete (parameters as any).$schema;
-        return {
-          type: 'function',
-          function: {
-            name: tool.name,
-            description: tool.description || '',
-            parameters,
-          },
-        };
-      });
-      return model;
-    },
-  };
-
-  return model;
-}
 
 function normalizeText(value: string | undefined): string {
   return (value || '').toLowerCase();
@@ -231,16 +190,10 @@ function aggregateProfile(target: BenchmarkProfileTarget, scenarios: ScenarioRep
 }
 
 runReal('Smart Agent Profile Benchmark', () => {
-  let model: any;
-
-  beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
-  });
-
   function createBenchmarkAgent(target: BenchmarkProfileTarget, nameSuffix: string, tools: any[], extra?: Omit<Parameters<typeof createSmartAgent>[0], 'name' | 'model' | 'runtimeProfile' | 'customProfile' | 'tools'>) {
     return createSmartAgent({
       name: `Benchmark-${target.label}-${nameSuffix}`,
-      model,
+      model: realModel(),
       runtimeProfile: target.runtimeProfile,
       customProfile: target.customProfile,
       tools,
@@ -263,6 +216,11 @@ runReal('Smart Agent Profile Benchmark', () => {
     });
 
     const agent = createBenchmarkAgent(target, 'long-session', [projectSnapshot], {
+      // `deep`/`research` default to 40-80 tool calls, which against a real
+      // endpoint is minutes of wall clock for a two-lookup task. Four leaves
+      // room for both lookups plus a retry, so every fact the scenario scores
+      // is still reachable.
+      limits: { maxToolCalls: 4 },
       summarization: {
         summaryTriggerTokens: 420,
         maxTokens: 760,
@@ -316,6 +274,9 @@ runReal('Smart Agent Profile Benchmark', () => {
     });
 
     const agent = createBenchmarkAgent(target, 'multi-turn', [fetchProjectSnapshot], {
+      // Two turns, two lookups each — six is generous and keeps the deep and
+      // research profiles from wandering.
+      limits: { maxToolCalls: 6 },
       summarization: {
         summaryTriggerTokens: 380,
         maxTokens: 680,

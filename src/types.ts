@@ -129,6 +129,17 @@ export type ConversationGuardrail = {
   description?: string;
   appliesTo: GuardrailPhase[];
   rules: GuardrailRule[];
+  /**
+   * What a rule THROWING means. `"closed"` (the default, and the historical
+   * behaviour) turns the error into a block. `"open"` records a warning and
+   * lets the turn continue.
+   *
+   * The distinction matters because a rule that reaches a database or a policy
+   * service fails transiently, and under `"closed"` one blip hard-blocks every
+   * turn until it clears — a availability decision the guardrail author should
+   * be making deliberately rather than inheriting.
+   */
+  failureMode?: "open" | "closed";
   haltOnViolation?: boolean;
   onViolation?: (
     incident: GuardrailIncident,
@@ -304,6 +315,19 @@ export type AgentOptions = {
    * passed explicitly.
    */
   contextPilot?: ContextPilotConfig;
+  /**
+   * Plugins: named bundles of hooks, contributions and strategy slots. See
+   * {@link AgentPlugin} and docs/guide/plugins.md.
+   */
+  plugins?: import("./plugins/types.js").AgentPlugin[];
+  /**
+   * Inline hooks, for the cases where naming a plugin would be ceremony. They
+   * are wrapped into an anonymous plugin that runs at the default priority,
+   * after any explicitly lower-priority plugin.
+   */
+  hooks?: import("./plugins/types.js").HookRegistrations;
+  /** Tuning for the plugin host (retry/continuation caps, debug events). */
+  pluginOptions?: import("./plugins/types.js").PluginHostOptions;
 };
 
 // ─── Reasoning + Reflection ──────────────────────────────────────────────────
@@ -727,6 +751,12 @@ export type SmartAgentOptions = {
    * catalog block. See {@link PromptHooks}.
    */
   promptHooks?: PromptHooks;
+  /** See AgentOptions.plugins. */
+  plugins?: import("./plugins/types.js").AgentPlugin[];
+  /** See AgentOptions.hooks. */
+  hooks?: import("./plugins/types.js").HookRegistrations;
+  /** See AgentOptions.pluginOptions. */
+  pluginOptions?: import("./plugins/types.js").PluginHostOptions;
 };
 
 /**
@@ -1537,6 +1567,7 @@ export type SmartAgentEvent = (
   | CancelledEvent
   | SubagentEvent
   | ReflectionEvent
+  | import("./plugins/types.js").PluginEvent
 ) & DelegationEventStamp;
 
 export type ReflectionEvent = {
@@ -1605,6 +1636,21 @@ export type InvokeConfig = RunnableConfig & {
    * unavailable keys are skipped. Ignored when the agent has no `skills`.
    */
   preopenedSkills?: string[];
+  /**
+   * @internal Session handle threaded from createSmartAgent's driver into each
+   * `base.invoke()` leg. It is what makes one logical turn one plugin session:
+   * whoever creates it owns sessionStart/sessionEnd/preFinalAnswer, and the
+   * legs that inherit it fire none of the three.
+   *
+   * Deliberately NOT carried on `state.ctx`. A handle on ctx rides out on
+   * `result.state` and comes back in on the next `invoke(previousState)`, which
+   * makes two concurrent continuations share one store and one run id.
+   */
+  __pluginSession?: {
+    host: import("./plugins/host.js").PluginRunHost;
+    runId: string;
+    stateHolder: { value: SmartState };
+  };
 };
 
 export type SnapshotRuntimeHint = {
@@ -1658,6 +1704,15 @@ export type AgentInvokeResult<TOutput = unknown> = {
 
 // Base Agent instance (minimal)
 export type AgentInstance<TOutput = unknown> = {
+  /**
+   * Release plugin-held resources (HTTP clients, MCP connections, batch
+   * buffers). Safe to skip for plugin-free agents; safe to call twice.
+   */
+  dispose?: () => Promise<void>;
+  /** Internal: the agent's plugin host, used to seed child agents. */
+  __plugins?: unknown;
+  /** Composed plugin systemPrompt contribution; run-scoped, never serialized. */
+  __applySystemPromptContribution?: unknown;
   invoke: (input: SmartState, config?: InvokeConfig) => Promise<AgentInvokeResult<TOutput>>;
   snapshot: (state: SmartState, options?: SnapshotOptions) => AgentSnapshot;
   resume: (snapshot: AgentSnapshot, config?: InvokeConfig, restoreOptions?: RestoreSnapshotOptions) => Promise<AgentInvokeResult<TOutput>>;

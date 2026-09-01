@@ -81,6 +81,15 @@ const CTX_CALLBACK_KEYS = new Set([
   "__cancellationToken",
   "__abortSignal",
   "__deadline",
+  // Live runtimes, never data: a child state carrying either of these is
+  // stored and snapshotted by the parent, where structuredClone throws on
+  // their function members. Kept in sync with DISALLOWED_CTX_KEYS in
+  // utils/stateSnapshot.ts — the two lists are separate on purpose but must
+  // agree about anything holding closures.
+  "__contextPilot",
+  "__plugins",
+  "__applySystemPromptContribution",
+  "__pluginState",
 ]);
 
 /** Strip non-serializable parts from a child state so it can be stored/snapshotted. */
@@ -167,6 +176,30 @@ async function runChild(
   const parentOnEvent = parentCtx.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
   const spawnId = `sa_${nanoid(6)}`;
   const start = Date.now();
+
+  // The parent's run host, reached the same way every node reaches it. Children
+  // build their own host from the inherited plugin list; this gate belongs to
+  // the PARENT, which is the agent deciding whether to delegate at all.
+  const parentHost = parentCtx.__plugins as
+    | import("../../plugins/host.js").PluginRunHost
+    | undefined;
+  const childDepth = (Number(parentCtx.__delegationDepth) || 0) + 1;
+
+  // Charged on a fresh spawn only. Firing this on the HITL resume path too
+  // would re-ask a gate that already said yes, and a deny there would abandon a
+  // child the host has already answered a question for.
+  if (!opts.isResume && parentHost?.has("subagentStart")) {
+    const gate = await parentHost.runGate("subagentStart", {
+      name: spec.name,
+      task: input,
+      depth: childDepth,
+    });
+    if (gate.decision === "deny") {
+      const reason = gate.reason || `Delegation to "${spec.name}" was blocked by policy.`;
+      return { kind: "result", result: { name: spec.name, mode: spec.mode, input, error: reason } };
+    }
+    if (gate.input.task !== input) input = gate.input.task as string;
+  }
 
   const child = deps.buildChild({
     name: spec.name,
@@ -326,6 +359,14 @@ async function runChild(
   };
   deps.registryRef.results.push(result);
   parentOnEvent?.({ type: "subagent", phase: "result", name: spec.name, id: spawnId, mode: spec.mode, content: res.content, durationMs: result.durationMs, parentToolCallId: opts.parentToolCallId } as any);
+  if (parentHost?.has("subagentStop")) {
+    await parentHost.runObservers("subagentStop", {
+      name: spec.name,
+      result,
+      depth: childDepth,
+      durationMs: result.durationMs,
+    });
+  }
   return { kind: "result", result };
 }
 

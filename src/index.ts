@@ -19,6 +19,12 @@ export * from "./smart/memory.js";
 export * from "./smart/runtimeConfig.js";
 export * from "./smart/contextPilot/index.js";
 export * from "./guardrails/index.js";
+// Plugin layer: hooks, contributions, strategy slots, and the built-in plugins.
+export * from "./plugins/index.js";
+// Content helpers for multimodal-aware plugins: rewrite text without
+// flattening a message's attachments away.
+export { collectAttachments, contentToString, extractMessageText, mapTextParts, replaceTextContent, textFromContent } from "./utils/content.js";
+export type { MediaAttachment } from "./utils/content.js";
 export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 export { resolveToolApprovalState } from "./utils/toolApprovals.js";
@@ -165,6 +171,7 @@ export type {
 	GuardrailOutcome,
 	GuardrailIncident,
 	GuardrailRule,
+	GuardrailRuleResult,
 	GuardrailContext,
 	GuardrailDisposition,
 	GuardrailEvent,

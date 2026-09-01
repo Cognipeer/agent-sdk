@@ -68,11 +68,15 @@ export async function evaluateGuardrails(
       try {
         result = await rule.evaluate(context);
       } catch (err) {
+        // A throw is an availability event, not a verdict. Which one it becomes
+        // is the guardrail author's call: "closed" (the default, and the
+        // historical behaviour) blocks, "open" records a warning and continues,
+        // so a transient backend blip does not hard-block every turn.
         result = {
           passed: false,
           reason: err instanceof Error ? err.message : String(err ?? "Unknown error"),
           details: { thrown: true },
-          disposition: "block" as GuardrailDisposition,
+          disposition: (guardrail.failureMode === "open" ? "warn" : "block") as GuardrailDisposition,
         } as Awaited<ReturnType<GuardrailRule["evaluate"]>>;
       }
 

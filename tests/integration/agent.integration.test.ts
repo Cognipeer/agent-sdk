@@ -80,9 +80,14 @@ describe('createAgent Integration', () => {
   });
 
   describe('tool execution', () => {
-    it.todo('should execute tools when model requests them - requires deeper mock model investigation');
-
-    it.skip('should execute tools when model requests them', async () => {
+    // Un-skipped: the old "requires deeper mock model investigation" note was
+    // stale, not a real defect. The mock emits OpenAI-shaped tool calls
+    // (`function.name` plus a JSON-string `function.arguments`), and
+    // `normalizeToolCall` in src/nodes/tools.ts already reads that shape and
+    // JSON.parses a string `arguments` before schema validation. The original
+    // assertion passes unchanged, and it also passes against the tree as it
+    // stood before the plugin work — no src/ change was needed to revive it.
+    it('should execute tools when model requests them', async () => {
       let toolCalledWith: any = null;
       
       const testTool = createTool({

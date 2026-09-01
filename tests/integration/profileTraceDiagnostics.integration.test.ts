@@ -1,82 +1,41 @@
+/**
+ * File-sink tracing per runtime profile, against a REAL model.
+ *
+ *   OPENAI_API_KEY=sk-… npx vitest run tests/integration/profileTraceDiagnostics.integration.test.ts
+ *
+ * Any OpenAI-compatible endpoint works — a gateway, a proxy, or a local server:
+ *
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 \
+ *   PLUGIN_TEST_MODEL=qwen2.5 OPENAI_API_KEY=ignored npx vitest run …
+ *
+ * Skipped entirely without a key. Traces are written under a per-run temp
+ * directory (never into the repo) and removed again in `afterAll`.
+ */
+
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
-import OpenAI from 'openai';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createSmartAgent, createTool } from '../../src/index.js';
+import { createProvider, fromNativeProvider } from '../../src/providers/index.js';
 import type { RuntimeProfile, SmartState } from '../../src/types.js';
 
 const API_KEY = process.env.OPENAI_API_KEY;
 const runReal = API_KEY ? describe : describe.skip;
+const MODEL = process.env.PLUGIN_TEST_MODEL ?? 'gpt-4o-mini';
+const BASE_URL = process.env.OPENAI_BASE_URL;
 
-function createOpenAIModel(apiKey: string, modelName = 'gpt-4o-mini') {
-  const client = new OpenAI({ apiKey });
-  let boundTools: any[] | undefined;
-
-  const model: any = {
-    modelName,
-    async invoke(messages: any[]): Promise<any> {
-      const openaiMessages = messages.map((message: any) => {
-        const normalized: any = {
-          role: message.role,
-          content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
-        };
-        if (message.name) normalized.name = message.name;
-        if (Array.isArray(message.tool_calls)) {
-          normalized.tool_calls = message.tool_calls.map((toolCall: any) => ({
-            id: toolCall.id,
-            type: toolCall.type || 'function',
-            function: toolCall.function || {
-              name: toolCall.name,
-              arguments: typeof toolCall.args === 'string' ? toolCall.args : JSON.stringify(toolCall.args || {}),
-            },
-          }));
-        }
-        if (message.tool_call_id) normalized.tool_call_id = message.tool_call_id;
-        return normalized;
-      });
-
-      const response = await client.chat.completions.create({
-        model: modelName,
-        messages: openaiMessages,
-        tools: boundTools,
-        tool_choice: boundTools && boundTools.length > 0 ? 'auto' : undefined,
-      });
-
-      const choice = response.choices[0]?.message;
-      return {
-        role: 'assistant',
-        content: choice?.content || '',
-        usage: response.usage,
-        tool_calls: choice?.tool_calls?.map((toolCall: any) => ({
-          id: toolCall.id,
-          name: toolCall.function.name,
-          args: toolCall.function.arguments,
-        })),
-      };
-    },
-    bindTools(tools: any[]) {
-      boundTools = tools.map((tool) => {
-        const schema = tool.schema || tool.parameters;
-        const parameters = schema && typeof schema.parse === 'function'
-          ? zodToJsonSchema(schema, { target: 'openApi3' })
-          : schema || { type: 'object', properties: {} };
-        delete (parameters as any).$schema;
-        return {
-          type: 'function',
-          function: {
-            name: tool.name,
-            description: tool.description || '',
-            parameters,
-          },
-        };
-      });
-      return model;
-    },
-  };
-
-  return model;
+function realModel() {
+  return fromNativeProvider(
+    createProvider({
+      provider: 'openai',
+      apiKey: API_KEY!,
+      defaultModel: MODEL,
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    }),
+    { model: MODEL },
+  );
 }
 
 function latestSessionDir(baseDir: string): string | undefined {
@@ -92,17 +51,23 @@ function latestSessionDir(baseDir: string): string | undefined {
 }
 
 runReal('Profile Trace Diagnostics', () => {
-  let model: any;
+  // Traces land in a throwaway temp directory so a run never leaves artefacts
+  // behind in the working tree.
+  let traceRoot: string;
 
   beforeAll(() => {
-    model = createOpenAIModel(API_KEY!);
+    traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-trace-diagnostics-'));
+  });
+
+  afterAll(() => {
+    if (traceRoot) fs.rmSync(traceRoot, { recursive: true, force: true });
   });
 
   const profiles: RuntimeProfile[] = ['deep', 'research'];
 
   for (const profile of profiles) {
     it(`should record trace logs for profile=${profile}`, async () => {
-      const baseDir = path.join(process.cwd(), 'logs', 'profile-diagnostics', profile);
+      const baseDir = path.join(traceRoot, profile);
 
       const fetchProjectSnapshot = createTool({
         name: 'fetch_project_snapshot',
@@ -118,9 +83,12 @@ runReal('Profile Trace Diagnostics', () => {
 
       const agent = createSmartAgent({
         name: `Trace-${profile}`,
-        model,
+        model: realModel(),
         runtimeProfile: profile,
         tools: [fetchProjectSnapshot],
+        // `deep`/`research` default to 40-80 tool calls; the scenario needs two
+        // lookups per turn, so six is ample and keeps a real run bounded.
+        limits: { maxToolCalls: 6 },
         summarization: {
           summaryTriggerTokens: 380,
           maxTokens: 680,

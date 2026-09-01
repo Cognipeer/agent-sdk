@@ -5,6 +5,7 @@
  * prove: native tool-calling, structured output, and token streaming.
  *
  *   OPENAI_API_KEY=...        npm run test:matrix
+ *   OPENAI_API_KEY=... OPENAI_BASE_URL=...   (an OpenAI-compatible gateway)
  *   ANTHROPIC_API_KEY=...     npm run test:matrix
  *   AZURE_OPENAI_API_KEY=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_DEPLOYMENT=...
  *   AWS_REGION=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
@@ -24,7 +25,16 @@ const PROVIDERS: ProviderEntry[] = [
   {
     name: "openai",
     enabled: !!env.OPENAI_API_KEY,
-    build: () => model({ provider: "openai", apiKey: env.OPENAI_API_KEY!, defaultModel: env.OPENAI_MODEL || "gpt-4o-mini" }),
+    // OPENAI_BASE_URL points this block at an OpenAI-compatible gateway. Without
+    // honouring it the block gates on OPENAI_API_KEY and then sends that key to
+    // api.openai.com — so a gateway token fails with a 401 from a host the run
+    // never meant to touch, and the failure reads as a provider bug.
+    build: () => model({
+      provider: "openai",
+      apiKey: env.OPENAI_API_KEY!,
+      baseURL: env.OPENAI_BASE_URL,
+      defaultModel: env.OPENAI_MODEL || env.PLUGIN_TEST_MODEL || "gpt-4o-mini",
+    }),
   },
   {
     name: "anthropic",

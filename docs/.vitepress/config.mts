@@ -53,6 +53,7 @@ export default defineConfig({
             { text: 'Sub-Agents & Delegation', link: '/guide/sub-agents' },
             { text: 'Tool Development', link: '/guide/tool-development' },
             { text: 'Guardrails', link: '/guide/guardrails' },
+            { text: 'Plugins & Hooks', link: '/guide/plugins' },
             { text: 'State Management', link: '/guide/state-management' },
             { text: 'Structured Output', link: '/guide/structured-output' },
             { text: 'Tool Approvals', link: '/guide/tool-approvals' },

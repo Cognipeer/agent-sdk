@@ -19,6 +19,7 @@ import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolRespons
 import { compressToolOutput, extractLatestUserQuery } from "../smart/contextPilot/index.js";
 import type { ContextPilotCompressionStats, ContextPilotRuntime } from "../smart/contextPilot/index.js";
 import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
+import type { PluginRunHost } from "../plugins/host.js";
 
 /**
  * Does this specific call need a human first?
@@ -251,6 +252,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       maxParallelTools: Math.max(1, (runtime.limits?.maxParallelTools ?? resolved.limits.maxParallelTools ?? 1) as number),
     };
     const appended: Message[] = [];
+    const host = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
     const onEvent = (state.ctx as any)?.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
     const onProgress = (state.ctx as any)?.__onProgress as ((progress: { stage?: string; message?: string; percent?: number; detail?: any }) => void) | undefined;
     const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
@@ -381,6 +383,84 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         delete toolStateRef.__awaitingApproval;
       }
 
+      // ── Plugin gate: preToolUse ─────────────────────────────────────────
+      // Placed after argument normalization and validation, and before the
+      // approval gate and the cache key: a hook must see the real arguments,
+      // and a rewritten argument must be the one that gets approved, cached
+      // and executed — otherwise the human approves a payload that is not
+      // what runs.
+      let hookAskedForApproval = false;
+      let hookApprovalPrompt: string | undefined;
+      let hookResult: unknown;
+      if (host?.has("preToolUse")) {
+        const gate = await host.runGate("preToolUse", {
+          toolName,
+          toolCallId,
+          args,
+          tool,
+          executionCount: countSuccessfulToolExecutions(toolHistory, toolName),
+        });
+
+        if (gate.input.args !== args) {
+          // Re-validate: a hook can hand back something the tool's schema
+          // rejects, and running that is worse than refusing the call.
+          const revalidated = validateToolArgs(tool, gate.input.args);
+          if (!revalidated.ok && resolved.toolResponses.schemaValidation === "strict") {
+            const message = `Tool argument validation failed after a plugin rewrite for ${toolName}: ${revalidated.message}`;
+            push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name });
+            markToolFailure(message, toolName, toolCallId);
+            onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args: gate.input.args, error: { message } });
+            toolCount += 1;
+            return { status: "error" };
+          }
+          args = revalidated.ok ? revalidated.value : gate.input.args;
+        }
+
+        if (gate.decision === "deny") {
+          const reason = gate.reason || `Tool call blocked by policy: ${toolName}`;
+          // Modelled on the rejected-approval path: exactly one tool message so
+          // the tool_use is resolved and the transcript stays valid, a
+          // "rejected" history entry so the per-run execution budget is not
+          // consumed, and exactly one toolCount increment.
+          push({ role: "tool", content: reason, tool_call_id: toolCallId, name: tc.name });
+          toolHistory.push({
+            executionId: nanoid(),
+            toolName,
+            args,
+            output: reason,
+            timestamp: new Date().toISOString(),
+            tool_call_id: toolCallId,
+            status: "rejected",
+          });
+          onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args, error: { message: reason } });
+          recordTraceEvent(traceSession, {
+            type: "tool_call",
+            label: `Tool Denied - ${toolName}`,
+            actor: { scope: "tool", name: toolName, role: "tool" },
+            status: "skipped",
+            toolDetails,
+            toolExecutionId: toolCallId,
+            sections: buildToolTraceSections({
+              args,
+              executionId: toolCallId,
+              output: reason,
+              status: "skipped",
+              summary: reason,
+              toolDetails,
+              toolName,
+            }),
+          });
+          toolCount += 1;
+          return { status: "error" };
+        }
+
+        if (gate.decision === "ask") {
+          hookAskedForApproval = true;
+          hookApprovalPrompt = (gate as unknown as { approvalPrompt?: string }).approvalPrompt;
+        }
+        if (gate.shortCircuit !== undefined) hookResult = gate.shortCircuit;
+      }
+
       const maxExecutionsPerRun = normalizeMaxExecutionsPerRun((tool as any).maxExecutionsPerRun);
       if (maxExecutionsPerRun !== null) {
         const currentExecutions = countSuccessfulToolExecutions(toolHistory, toolName);
@@ -411,7 +491,12 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
 
       let approvalEntry = pendingByCallId.get(toolCallId);
-      const needsApproval = resolveNeedsApproval(tool, args);
+      // A hook-raised approval has to survive the resume turn. `needsApproval`
+      // recomputes to false there — the tool itself never required approval —
+      // so an existing ledger entry is what keeps the gate closed. Without the
+      // `|| approvalEntry` term, a call a human REJECTED would execute normally
+      // on resume.
+      const needsApproval = resolveNeedsApproval(tool, args) || hookAskedForApproval || !!approvalEntry;
       if (needsApproval) {
         if (!approvalEntry) {
           approvalEntry = {
@@ -421,13 +506,24 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             args,
             status: "pending",
             requestedAt: new Date().toISOString(),
-            metadata: resolveApprovalPrompt(tool, args) !== undefined || (tool as any).approvalDefaults !== undefined
-              ? { prompt: resolveApprovalPrompt(tool, args), defaults: (tool as any).approvalDefaults }
+            metadata: (resolveApprovalPrompt(tool, args) ?? hookApprovalPrompt) !== undefined || (tool as any).approvalDefaults !== undefined
+              ? {
+                  // The tool's own wording wins; the hook's is the fallback for
+                  // an approval the tool never asked for.
+                  prompt: resolveApprovalPrompt(tool, args) ?? hookApprovalPrompt,
+                  defaults: (tool as any).approvalDefaults,
+                }
               : undefined,
           };
           pendingApprovals.push(approvalEntry);
           pendingByCallId.set(toolCallId, approvalEntry);
           onEvent?.({ type: "tool_approval", status: "pending", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, args });
+          if (host?.has("notification")) {
+            await host.runObservers("notification", {
+              kind: "approval",
+              detail: { id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, args },
+            });
+          }
         } else if (!approvalEntry.args) {
           approvalEntry.args = args;
         }
@@ -493,6 +589,16 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         }
       }
 
+      // A plugin-supplied result short-circuits execution exactly like a cache
+      // hit — identical bookkeeping, different provenance. Resolved here so the
+      // circuit breaker below still wins, matching the precedence a cached
+      // value already has.
+      let shortCircuitSource: "cache" | "plugin" | undefined = cachedHit !== undefined ? "cache" : undefined;
+      if (cachedHit === undefined && hookResult !== undefined) {
+        cachedHit = hookResult;
+        shortCircuitSource = "plugin";
+      }
+
       // ── Circuit breaker (consecutive failure cap per tool) ────────────────
       const retryCfg = (tool as any).retry;
       const failureStats = (state.ctx as any).__toolFailureCounts ||= {} as Record<string, number>;
@@ -542,7 +648,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             originalTokenCount: responsePolicy.tokenCount,
             classification: responsePolicy.classification,
             retentionPolicy: "keep_full",
-            fromCache: true,
+            fromCache: shortCircuitSource === "cache",
             status: "success",
             contextPilot: cachedContextPilotStats,
           });
@@ -552,7 +658,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           const outputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedCachedHit) : undefined;
           recordTraceEvent(traceSession, {
             type: "tool_call",
-            label: `Tool Execution - ${toolName}`,
+            label: shortCircuitSource === "plugin" ? `Tool Short-Circuited - ${toolName}` : `Tool Execution - ${toolName}`,
             actor: { scope: "tool", name: toolName, role: "tool" },
             durationMs: 0,
             requestBytes: inputBytes,
@@ -564,7 +670,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
               classification: responsePolicy.classification,
               durationMs: 0,
               executionId,
-              fromCache: true,
+              fromCache: shortCircuitSource === "cache",
               output: sanitizedCachedHit,
               retentionPolicy: "keep_full",
               status: "cached",
@@ -577,7 +683,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
               retentionPolicy: "keep_full",
               originalTokenCount: responsePolicy.tokenCount,
               truncated: responsePolicy.truncated,
-              fromCache: true,
+              fromCache: shortCircuitSource === "cache",
+              shortCircuitSource,
               contextPilot: cachedContextPilotStats,
             },
           });
@@ -622,10 +729,6 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           }
         }
 
-        if (cacheKey) {
-          toolCache[cacheKey] = { value: output, timestamp: Date.now() };
-        }
-
         const durationMs = Date.now() - start;
         const executionId = nanoid();
 
@@ -647,9 +750,25 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         }
 
         if (output && typeof output === "object" && output.__handoff && output.__handoff.runtime) {
-          toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: output, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
+          // NOT `output`: that is `{ __handoff: { runtime } }`, and the runtime
+          // carries the target's model and tool closures. captureSnapshot does a
+          // structuredClone of toolHistory, which throws DataCloneError on a
+          // function — so any run that handed off could not be snapshotted or
+          // checkpointed, and a `checkpointing` plugin with failureMode "open"
+          // swallowed that throw and silently wrote nothing.
+          toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: { __handoff: { to: (output.__handoff.runtime as any)?.name } }, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
           push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
-          state.agent = output.__handoff.runtime as AgentRuntimeConfig;
+          const handoffRuntime = output.__handoff.runtime as AgentRuntimeConfig;
+          state.agent = handoffRuntime;
+          // The menu follows the runtime and the persona has to follow it too,
+          // but ONLY on the wire: the agent node rebuilds the leading system
+          // message from the active runtime for each model call (see
+          // `wireMessages` in nodes/agentCore.ts). Rewriting the transcript here
+          // instead would persist the TARGET's persona into the caller's
+          // returned messages, and the next turn — which seeds no new system
+          // message because one is already present — would run the ORIGINATING
+          // agent's tools under the target's instructions, permanently.
+          (state.ctx = state.ctx || {}).__handoffActive = true;
           onEvent?.({ type: "handoff", from: runtime.name, to: state.agent?.name, toolName });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: "handoff", durationMs });
           if (needsApproval && approvalEntry) {
@@ -696,16 +815,65 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           }
 
           awaitingUserQuestion = true;
+          if (host?.has("notification")) {
+            await host.runObservers("notification", {
+              kind: "user_question",
+              detail: { id: pendingQuestion.id, toolCallId: pendingQuestion.toolCallId },
+            });
+          }
           return {
             status: "awaiting_user_question",
             userQuestion: pendingQuestion,
           };
         }
 
-        if (output && typeof output === "object" && output.__finalStructuredOutput) {
+        const structuredOutputMarkerSeen = Boolean(
+          output && typeof output === "object" && (output as any).__finalStructuredOutput,
+        );
+
+        // ── Plugin gate: postToolUse ────────────────────────────────────
+        // Runs on the RAW output, after every control marker has been consumed
+        // above (a hook must never see — let alone rewrite — a __handoff or a
+        // pause marker) and before ContextPilot compression and the hard cap,
+        // so a redaction applies to what gets persisted rather than to a
+        // compressed rendering of it.
+        if (host?.has("postToolUse")) {
+          const postGate = await host.runGate("postToolUse", {
+            toolName,
+            toolCallId,
+            args,
+            output,
+            durationMs,
+            executionId,
+          });
+          if (postGate.decision === "deny") {
+            output = postGate.reason || `Tool output withheld by policy: ${toolName}`;
+          } else if (postGate.input.output !== output) {
+            output = postGate.input.output;
+          }
+        }
+
+        // Read from the POST-hook output on purpose. This marker's payload
+        // becomes `result.output` for the caller, so extracting it before the
+        // gate would hand back the raw object while the transcript showed the
+        // redacted one — a redaction that covers what the model sees and leaks
+        // what the caller gets.
+        if (output && typeof output === "object" && (output as any).__finalStructuredOutput) {
           if (!state.ctx) state.ctx = {};
-          state.ctx.__structuredOutputParsed = output.data;
+          state.ctx.__structuredOutputParsed = (output as any).data;
           state.ctx.__finalizedDueToStructuredOutput = true;
+        } else if (structuredOutputMarkerSeen) {
+          // The hook rewrote or denied a structured-output result. Honour that
+          // rather than finalizing with a payload the policy just rejected.
+          if (!state.ctx) state.ctx = {};
+          delete state.ctx.__structuredOutputParsed;
+          delete state.ctx.__finalizedDueToStructuredOutput;
+        }
+
+        // Cached AFTER the hook, so a later hit serves the redacted value and
+        // the hook is not re-applied to an already-processed payload.
+        if (cacheKey) {
+          toolCache[cacheKey] = { value: output, timestamp: Date.now() };
         }
 
         const { output: compressedOutput, stats: contextPilotStats } = maybeCompressToolOutput(toolName, output, executionId);
@@ -777,13 +945,42 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       } catch (error: any) {
         const durationMs = Date.now() - start;
         const executionId = nanoid();
-        const message = error?.message || String(error);
+        let message = error?.message || String(error);
+
+        // A failed transport is exactly where credentials leak — a 401 quoting
+        // the request URL, a DSN with a password, a stack frame carrying a
+        // bearer header. The error text lands in the transcript, the history,
+        // the event stream and the trace, so a redaction hook has to see it.
+        if (host?.has("postToolUse")) {
+          try {
+            const errorGate = await host.runGate("postToolUse", {
+              toolName,
+              toolCallId,
+              args,
+              output: message,
+              error: error instanceof Error ? error : new Error(message),
+              durationMs,
+              executionId,
+            });
+            if (errorGate.decision === "deny") {
+              message = errorGate.reason || `Tool error withheld by policy: ${toolName}`;
+            } else if (typeof errorGate.input.output === "string" && errorGate.input.output !== message) {
+              message = errorGate.input.output;
+            }
+          } catch {
+            // The tool already failed; a hook failure on top must not replace
+            // the original error with its own.
+          }
+        }
+
         toolHistory.push({ executionId, toolName, args, output: `Error executing tool: ${message}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "error" });
         push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
         markToolFailure(message, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message } });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: message } });
-        const errorOutput = { message, stack: error?.stack };
+        // Stack frames can quote the same secret the message did, so the
+        // redacted message is what goes out and the raw stack does not.
+        const errorOutput = { message, stack: host?.has("postToolUse") ? undefined : error?.stack };
         recordTraceEvent(traceSession, {
           type: "tool_call",
           label: `Tool Error - ${toolName}`,
@@ -794,7 +991,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           responseBytes: traceSession?.resolvedConfig.logData ? estimatePayloadBytes(errorOutput) : undefined,
           toolDetails,
           toolExecutionId: executionId,
-          error: { message, stack: error?.stack },
+          error: { message, stack: host?.has("postToolUse") ? undefined : error?.stack },
           sections: buildToolTraceSections({
             args: sanitizedArgs,
             durationMs,
@@ -824,7 +1021,12 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       // predicate-bearing tool as approval-bearing so it runs sequentially —
       // the real decision is then made once, with parsed args, where the pause
       // can actually short-circuit the turn.
-      if (t && (t as any).needsApproval) approvalIndices.push(idx);
+      // A preToolUse hook that can escalate to `ask` has the same problem the
+      // predicate has, one level worse: the decision is not knowable here at
+      // all. Route every call through the sequential group in that case, so a
+      // pause cannot be raised after its siblings have already run. Plugins
+      // that only redact or audit opt out with `mayRequireApproval: false`.
+      if ((t && (t as any).needsApproval) || host?.mayPauseOnToolUse) approvalIndices.push(idx);
       else parallelIndices.push(idx);
     });
 
@@ -891,6 +1093,38 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       }
       await Promise.all(workers);
       if (workerError.err) throw workerError.err;
+    }
+
+    // A cancellation abandons whatever was still planned. Those tool_use blocks
+    // would otherwise stay unanswered in the transcript the caller persists,
+    // and an assistant turn whose tool_calls are only partly answered is a hard
+    // 400 on every OpenAI-compatible provider the next time that transcript is
+    // sent — so the run "succeeds" and the NEXT one fails.
+    //
+    // The pause paths are deliberately excluded: an unanswered tool_call is
+    // exactly how a paused call gets re-selected on resume.
+    if ((state.ctx as any)?.__cancelled && !awaitingApproval && !awaitingUserQuestion) {
+      planned.forEach((tc, idx) => {
+        if (orderedSlots[idx].length > 0) return;
+        const cancelMessage = `Cancelled before execution: ${tc.name}`;
+        orderedSlots[idx].push({
+          role: "tool",
+          content: cancelMessage,
+          tool_call_id: tc.id || `${tc.name}_cancelled_${idx}`,
+          name: tc.name,
+        } as Message);
+        // "rejected", not "error": the tool never ran, so it must not consume
+        // the per-run execution budget the way a real failure does.
+        toolHistory.push({
+          executionId: nanoid(),
+          toolName: tc.name,
+          args: tc.args,
+          output: cancelMessage,
+          timestamp: new Date().toISOString(),
+          tool_call_id: tc.id,
+          status: "rejected",
+        });
+      });
     }
 
     // Flatten per-planned-index slots into the canonical appended order so

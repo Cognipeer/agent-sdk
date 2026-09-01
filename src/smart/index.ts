@@ -1,6 +1,10 @@
 import type { AgentInvokeResult, InvokeConfig, SmartAgentOptions, SmartState, SmartAgentInstance, HumanInTheLoopAskUserConfig } from "../types.js";
 import type { ZodSchema } from "zod";
-import { createAgent } from "../agent.js";
+import { createAgent, buildHandoffTools } from "../agent.js";
+import { nanoid } from "nanoid";
+import { countMessagesTokens } from "../utils/utilTokens.js";
+import { openPluginSession } from "../plugins/session.js";
+import { createPluginTraceRecorder } from "../plugins/trace.js";
 import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from "../contextTools.js";
 import { createAskUserQuestionTool } from "../humanLoop.js";
 import { createContextSummarizeNode } from "../nodes/contextSummarize.js";
@@ -25,7 +29,11 @@ import type { PromptHooks, ToolInterface } from "../types.js";
 export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> }): SmartAgentInstance<TOutput> {
   const resolved = normalizeSmartAgentOptions(opts);
   const planningEnabled = resolved.planning.mode !== 'off';
-  const memoryStore = resolveMemoryStore(resolved);
+  // Reassigned by ensurePluginSetup when a plugin fills the slot and the caller
+  // passed no `memory.store` of their own. It is a `let` because the host does
+  // not exist yet at this point — the core agent owns it, and the core agent is
+  // built further down.
+  let memoryStore = resolveMemoryStore(resolved);
   const runtimeOpts: SmartAgentOptions & { outputSchema?: ZodSchema<TOutput> } = {
     ...opts,
     runtimeProfile: resolved.runtimeProfile,
@@ -43,6 +51,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   // Each invoke replaces these with fresh per-call instances so concurrent
   // invocations of the same agent do not clobber each other's plan/todo state.
   const userTools = ((opts.tools as any) ?? []) as any[];
+  const handoffTools = Array.isArray(opts.handoffs) ? buildHandoffTools(opts.handoffs) : [];
   const factoryStateRef: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
   const factoryContextTools = createContextTools(factoryStateRef, { planningEnabled, includeGetToolResponse: false });
 
@@ -57,7 +66,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     };
   })();
 
-  const factoryToolsWithoutRecovery = [...userTools, ...factoryContextTools];
+  const factoryToolsWithoutRecovery = [...userTools, ...handoffTools, ...factoryContextTools];
   if (askUserConfig) {
     factoryToolsWithoutRecovery.push(createAskUserQuestionTool(factoryStateRef, askUserConfig));
   }
@@ -94,6 +103,10 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     tokenCounter: (opts as any).tokenCounter,
     costEstimator: (opts as any).costEstimator,
     promptHooks,
+    // A policy a delegation can shed is not a policy: children inherit every
+    // plugin that has not explicitly opted out with inheritToSubagents: false.
+    plugins: pluginHost?.childPlugins(),
+    pluginOptions: (opts as any).pluginOptions,
     // Sub-agents are single-level by design: a child never gets its own spawn
     // tools, so it cannot delegate further. This keeps decomposition bounded and
     // is why the depth guard mainly governs `asTool`-composed nesting (which seeds
@@ -105,7 +118,15 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   // Apply description overrides uniformly to any tool (clones the few user/skill
   // tools that have an override so shared tool objects are never mutated).
   const decorateToolDescriptions = (tools: ToolInterface[]): ToolInterface[] => {
-    const overrides = promptHooks?.toolDescriptions;
+    // Plugin overrides first, then the legacy promptHooks map, so a caller's
+    // own promptHooks still has the last word. Applied exactly once over the
+    // fully composed set — a second pass would feed an already-overridden
+    // string into a function-form override that expects the real default.
+    const pluginOverrides = pluginHost?.contributions.toolDescriptions;
+    const overrides =
+      pluginOverrides && Object.keys(pluginOverrides).length > 0
+        ? { ...pluginOverrides, ...(promptHooks?.toolDescriptions ?? {}) }
+        : promptHooks?.toolDescriptions;
     if (!overrides) return tools;
     return tools.map((tool) => {
       const override = overrides[(tool as any)?.name];
@@ -128,7 +149,18 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     ? soManagerFactory.getResponseTool()
     : undefined;
 
+  // Declared before buildInvokeToolSet so the closure can read it; populated by
+  // ensurePluginSetup(), which every invoke awaits before building its tool set.
   type InvokeToolSet = {
+    /** The last runtime this loop wrote its tools onto — see syncRuntimeTools. */
+    ownedRuntime?: any;
+    /**
+     * Stamped onto every runtime this loop builds. Object identity alone is not
+     * enough: the tools node clones the runtime when a skill injects tools
+     * (`__runtimeToolsDelta`), and a clone would look foreign and freeze the
+     * tool set for the rest of the run.
+     */
+    ownerToken?: symbol;
     stateRef: any;
     toolsWithoutRecovery: any[];
     toolsWithRecovery: any[];
@@ -139,7 +171,16 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     const ref: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
     const ctxTools = createContextTools(ref, { planningEnabled, includeGetToolResponse: false });
     const recoveryTool = createGetToolResponseTool(ref);
-    const coreBase = [...userTools, ...ctxTools];
+    // Plugin `tools` contributions land in THREE places or they exist in some
+    // runs and not others: the per-agent factory list (resume / asTool), this
+    // per-invoke list (the live loop), and the skill rebuild closure below.
+    // The core agent covers the first; this covers the other two.
+    // Handoff tools belong to every tool set this agent builds. createAgent
+    // appends them to its own runtime, but the smart loop OVERWRITES
+    // state.agent.tools with this set on every iteration, so anything missing
+    // here is invisible to the model — which is how a typed, documented
+    // `handoffs` option came to do nothing at all on a smart agent.
+    const coreBase = [...userTools, ...handoffTools, ...pluginContributedTools, ...ctxTools];
     if (responseFinalizeTool) coreBase.push(responseFinalizeTool);
     if (askUserConfig) coreBase.push(createAskUserQuestionTool(ref, askUserConfig));
 
@@ -223,6 +264,22 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   // Compose base agent – pass summarization config so createAgent's token-budget
   // guard and __needsSummarization throw know summarization is handled externally.
   const base = createAgent<TOutput>({ ...runtimeOpts, tools: factoryToolsWithoutRecovery });
+
+  // The core agent owns the plugin host; the smart layer borrows its resolved
+  // contributions rather than building a second host (two hosts would mean two
+  // setups, two slot registries and two decision paths).
+  const pluginHost = (base as any).__plugins as import("../plugins/host.js").PluginHost | undefined;
+  let pluginContributedTools: any[] = [];
+  const ensurePluginSetup = async () => {
+    if (!pluginHost) return;
+    await pluginHost.setup({ agentName: opts.name, agentVersion: opts.version, model: opts.model });
+    pluginContributedTools = pluginHost.contributions.tools as any[];
+    // An explicit `memory.store` always wins; the slot only replaces the
+    // implicit in-memory default that every profile falls back to.
+    if (pluginHost.slots.memoryStore && !opts.memory?.store) {
+      memoryStore = pluginHost.slots.memoryStore;
+    }
+  };
   base.__runtime.runtimeProfile = resolved.runtimeProfile;
   base.__runtime.smart = resolved;
 
@@ -287,13 +344,17 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     };
   }
 
-  function systemMessage(extraBlock?: string): any {
+  function systemMessage(extraBlock?: string, pluginAppend?: string): any {
     let sys = buildSystemPrompt(
       [opts.systemPrompt, runtimeHint, structuredOutputHint, extraBlock].filter(Boolean).join("\n"),
       planningEnabled,
       opts.name || "Agent",
       opts.todoListPrompt,
     );
+    // Plugin contributions compose BEFORE the legacy transform, whose
+    // documented contract is that it receives the fully-composed prompt.
+    if (pluginHost) sys = pluginHost.contributions.applySystemPrompt(sys);
+    if (pluginAppend) sys = `${sys}\n\n${pluginAppend}`;
     // Prompt-override hook: let callers intercept the otherwise-static prompt.
     if (promptHooks?.transformSystemPrompt) {
       try {
@@ -314,17 +375,43 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     const nextTools = needsRecoveryTool ? toolSet.toolsWithRecovery : toolSet.toolsWithoutRecovery;
     const currentRuntime = currentState.agent || base.__runtime;
 
+    // A handoff replaces state.agent with the TARGET agent's runtime. Writing
+    // this agent's tools onto it would hand the target its predecessor's tool
+    // set and silently undo the handoff on the next iteration, so a runtime
+    // this loop did not produce is left exactly as it is.
+    if (
+      toolSet.ownerToken
+      && (currentRuntime as any).__ownerToken !== toolSet.ownerToken
+      && currentRuntime !== base.__runtime
+    ) {
+      return currentState;
+    }
+
     if (currentRuntime.tools === nextTools) {
       return currentState;
     }
 
-    return {
-      ...currentState,
-      agent: {
-        ...currentRuntime,
-        tools: nextTools,
-      },
+    if (!toolSet.ownerToken) toolSet.ownerToken = Symbol("smart-runtime-owner");
+    // Tools a TOOL put on the runtime — `open_skill` and friends, via
+    // `__runtimeToolsDelta` — are not in either of this loop's sets, so writing
+    // a set over the runtime would drop them and the model would lose a skill it
+    // had just opened. They are carried across every sync instead.
+    const loopToolNames = new Set<string>([
+      ...toolSet.toolsWithoutRecovery.map((tool: any) => tool?.name),
+      ...toolSet.toolsWithRecovery.map((tool: any) => tool?.name),
+    ]);
+    const injected = ((currentRuntime.tools as any[]) ?? []).filter(
+      (tool) => tool?.name && !loopToolNames.has(tool.name),
+    );
+    // The token rides on the object, so a clone the tools node makes is still
+    // recognised as ours.
+    const nextRuntime = {
+      ...currentRuntime,
+      tools: injected.length > 0 ? [...nextTools, ...injected] : nextTools,
+      __ownerToken: toolSet.ownerToken,
     };
+    toolSet.ownedRuntime = nextRuntime;
+    return { ...currentState, agent: nextRuntime };
   }
 
   function producedTerminalAssistantTurn(messages: any[]) {
@@ -341,6 +428,35 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     ref: any,
   ): Promise<{ state: SmartState; rawMessages: any[]; compressed: boolean }> {
     if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
+
+    // Read from ctx rather than a closure: this helper runs per compaction pass
+    // and the host is per-invoke, so binding it at factory time would share one
+    // host across concurrent invokes of the same agent.
+    const compactHost = (currentState.ctx as any)?.__plugins as
+      | import("../plugins/host.js").PluginRunHost
+      | undefined;
+    const tokensBefore = countMessagesTokens((currentState.messages || []) as any);
+
+    if (compactHost?.has("preCompact")) {
+      const gate = await compactHost.runGate("preCompact", {
+        reason: "token_pressure",
+        messages: (currentState.messages || []) as any,
+        tokenCount: tokensBefore,
+        threshold: resolved.summarization.summaryTriggerTokens,
+      });
+      if (gate.flags.skip) {
+        // Mapped onto the SAME shape an empty delta produces, so the
+        // exhaustion stamp still lands and the driver does not re-arm
+        // compaction every iteration.
+        const ctx = {
+          ...(currentState.ctx || {}),
+          __summarizationExhausted: true,
+          __summarizationExhaustedAtToolCount: (currentState.toolHistory || []).length,
+        };
+        return { state: { ...currentState, ctx } as SmartState, rawMessages: currentRawMessages, compressed: false };
+      }
+    }
+
     const delta = await summarizer(currentState);
     if (!delta || Object.keys(delta).length === 0) {
       // Stamp the tool-history size: the summarizer could not reclaim anything at
@@ -359,6 +475,17 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     delete ctx.__summarizationExhausted;
     delete (ctx as any).__summarizationExhaustedAtToolCount;
     const updated = await persistLatestSummary(syncPlanStateWith(ref, { ...currentState, ...delta, ctx } as SmartState));
+
+    const latestSummary = updated.summaryRecords?.[updated.summaryRecords.length - 1];
+    if (compactHost?.has("postCompact") && latestSummary) {
+      await compactHost.runObservers("postCompact", {
+        summary: latestSummary,
+        tokensBefore,
+        tokensAfter: countMessagesTokens((updated.messages || []) as any),
+        strategy: "builtin",
+      });
+    }
+
     return { state: updated, rawMessages: [...(updated.messages || currentRawMessages)], compressed: true };
   }
 
@@ -366,6 +493,117 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     invoke: async (input: SmartState, config?: InvokeConfig): Promise<AgentInvokeResult<TOutput>> => {
       // Per-invoke tool set + stateRef so concurrent invocations on the same
       // agent instance never share planning/todo/tool-history state.
+      await ensurePluginSetup();
+
+      // ── Plugin session ────────────────────────────────────────────────────
+      // The driver below calls base.invoke() repeatedly for one logical turn,
+      // so the session is opened HERE and threaded down. A base leg that
+      // receives `__pluginSession` fires neither sessionStart, sessionEnd nor
+      // preFinalAnswer — it is mid-turn by definition.
+      const sessionHolder: { value: SmartState } = { value: input };
+      const emitSessionEvent = (event: any) => {
+        try { (config?.onEvent as ((e: any) => void) | undefined)?.(event); } catch { /* host callback */ }
+      };
+      const sessionRunId = `run_${nanoid(10)}`;
+      const traceRecorder = createPluginTraceRecorder(
+        () => (sessionHolder.value as any)?.ctx?.__traceSession,
+      );
+      const runHost = pluginHost?.hasAny()
+        ? pluginHost.beginRun({
+            runId: sessionRunId,
+            agentName: opts.name,
+            getState: () => sessionHolder.value,
+            emit: emitSessionEvent,
+            // Looked up lazily: the trace session is created inside the first
+            // base leg, after the input guardrail has already had its say.
+            recordTrace: traceRecorder.record,
+            signal: (config?.cancellationToken as AbortSignal | undefined)?.aborted !== undefined
+              ? (config?.cancellationToken as AbortSignal)
+              : undefined,
+            depth: Number((input as any).ctx?.__delegationDepth) || 0,
+          })
+        : undefined;
+
+      const sessionStartedAt = Date.now();
+      let sessionEnded = false;
+      const endSession = async (
+        status: "success" | "error" | "paused" | "cancelled",
+        payload: { result?: AgentInvokeResult<TOutput>; error?: Error },
+      ) => {
+        if (!runHost || sessionEnded) return;
+        sessionEnded = true;
+        try {
+          await runHost.runObservers("sessionEnd", {
+            status,
+            result: payload.result as any,
+            error: payload.error,
+            usage: sessionHolder.value?.usage,
+            durationMs: Date.now() - sessionStartedAt,
+          });
+        } finally {
+          traceRecorder.flush();
+          runHost.end();
+        }
+      };
+
+      let turnConfig = config;
+      if (runHost) {
+        turnConfig = {
+          ...(config || {}),
+          __pluginSession: {
+            host: runHost,
+            runId: sessionRunId,
+            stateHolder: sessionHolder,
+          },
+        } as InvokeConfig;
+
+        const resumed = Boolean(
+          (input as any).ctx?.__restoredFromSnapshot
+          || (input as any).ctx?.__paused
+          || (input as any).ctx?.__resumeStage
+          || (input as any).ctx?.__awaitingApproval
+          || (input as any).ctx?.__awaitingUserQuestion
+        );
+        const opened = await openPluginSession(runHost, {
+          messages: (input.messages || []) as any,
+          resumed,
+          config,
+        });
+
+        if (opened.denied) {
+          const reason = opened.denied.reason;
+          const blocked = {
+            ...input,
+            messages: [...(opened.messages as any[]), { role: "assistant", name: "guardrail", content: reason }],
+          } as SmartState;
+          sessionHolder.value = blocked;
+          const deniedResult = {
+            content: reason,
+            output: undefined,
+            outputError: undefined,
+            metadata: { usage: (blocked as any).usage },
+            messages: blocked.messages,
+            state: blocked,
+          } as AgentInvokeResult<TOutput>;
+          emitSessionEvent({ type: "finalAnswer", content: reason });
+          await endSession("success", { result: deniedResult });
+          return deniedResult;
+        }
+
+        // Applied BEFORE seedMessages so the system prompt is prepended to the
+        // hydrated transcript and the driver's `modelMessages.length` slice
+        // boundary is computed from the same array the run actually starts with.
+        input = { ...input, messages: opened.messages as any } as SmartState;
+        sessionHolder.value = input;
+        if (opened.systemPromptAppend) {
+          input = {
+            ...input,
+            ctx: { ...((input as any).ctx || {}), __pluginSystemPromptAppend: opened.systemPromptAppend },
+          } as SmartState;
+        }
+      }
+
+      try {
       const toolSet = buildInvokeToolSet();
       const stateRef = toolSet.stateRef;
       stateRef.toolHistory = input.toolHistory;
@@ -416,7 +654,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
       // Prepend a single system message once
       const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
-      const seedMessages = alreadyHasSystem ? [...(input.messages || [])] : [systemMessage(disclosureBlock), ...(input.messages || [])];
+      const seedMessages = alreadyHasSystem
+        ? [...(input.messages || [])]
+        : [
+            systemMessage(disclosureBlock, (input as any).ctx?.__pluginSystemPromptAppend as string | undefined),
+            ...(input.messages || []),
+          ];
 
       // Deterministic pre-opening: skills the caller requires for this run are
       // opened here, after the user message and before the first model call, as
@@ -440,7 +683,19 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         }
       }
 
-      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, messages: seedMessages, toolHistory: seedToolHistory } as SmartState), seedMessages, toolSet);
+      // A handoff is scoped to ONE invoke. Both `state.agent` and the handoff
+      // marker ride out on the returned state, so a caller doing the ordinary
+      // multi-turn continuation would otherwise open the next turn already
+      // holding the TARGET's runtime, while this loop binds its OWN tools onto
+      // it — the target's model driven by the originating agent's menu, and a
+      // transcript describing neither. Control starts each turn with this agent.
+      const carriedCtx = (input as any).ctx as Record<string, any> | undefined;
+      let freshCtx = carriedCtx;
+      if (carriedCtx && carriedCtx.__handoffActive) {
+        freshCtx = { ...carriedCtx };
+        delete freshCtx.__handoffActive;
+      }
+      let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, ctx: freshCtx, agent: base.__runtime, messages: seedMessages, toolHistory: seedToolHistory } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
       let rawMessages = [...seedMessages];
       const effectiveMaxToolCalls = (config?.limits?.maxToolCalls ?? resolved.limits.maxToolCalls ?? 10) as number;
@@ -459,7 +714,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
         const modelMessages = buildModelMessages(state, resolved);
-        const res = await base.invoke({ ...state, messages: modelMessages } as SmartState, config);
+        const res = await base.invoke({ ...state, messages: modelMessages } as SmartState, turnConfig);
         lastResult = res as AgentInvokeResult<TOutput>;
         // Preserve summaries from current state when merging with result state
         const currentSummaries = state.summaries;
@@ -480,6 +735,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           state = { ...state, plan: currentPlan };
         }
         state = syncRuntimeTools(syncPlanFromRef(await syncMemory(state)), rawMessages, toolSet);
+
         stateRef.toolHistory = state.toolHistory;
         stateRef.toolHistoryArchived = state.toolHistoryArchived;
 
@@ -529,7 +785,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
       // Fall back if base was never invoked (edge case)
       if (!lastResult) {
-        const res = await base.invoke(state, config);
+        const res = await base.invoke(state, turnConfig);
         lastResult = res as AgentInvokeResult<TOutput>;
       }
 
@@ -553,8 +809,73 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         }
       }
 
+      sessionHolder.value = (lastResult.state as SmartState) ?? sessionHolder.value;
+
+      // ── Plugin gate: preFinalAnswer ─────────────────────────────────────
+      // Fired here, on the leg that actually returns the answer, rather than
+      // inside a base leg — the base agent is mid-turn on every iteration but
+      // the last, and gating it there would skip the hook on exactly the runs
+      // that compacted or paused.
+      const finalCtx: any = (lastResult.state as any)?.ctx || {};
+      const finalBlocked = Boolean(
+        finalCtx.__awaitingApproval
+        || finalCtx.__awaitingUserQuestion
+        || finalCtx.__cancelled
+        || finalCtx.__paused
+        || finalCtx.__limitBreached
+      );
+      if (runHost && !finalBlocked && runHost.has("preFinalAnswer")) {
+        const finalGate = await runHost.runGate("preFinalAnswer", {
+          content: lastResult.content ?? "",
+          output: lastResult.output,
+        });
+        const continueWith = (finalGate as unknown as { continueWith?: string }).continueWith;
+        if (continueWith) {
+          emitSessionEvent({
+            type: "metadata",
+            pluginWarning: "preFinalAnswer.continueWith is not implemented yet and was ignored.",
+          });
+        }
+        if (finalGate.decision === "deny") {
+          const reason = finalGate.reason || "Response blocked by policy.";
+          // A denied answer must not leave a parsed structured output behind:
+          // returning `output` while `content` says "blocked" would hand the
+          // caller the very payload the policy refused.
+          lastResult = { ...lastResult, content: reason, output: undefined, outputError: undefined };
+        } else if (finalGate.input.content !== lastResult.content) {
+          if (lastResult.output !== undefined) {
+            emitSessionEvent({
+              type: "metadata",
+              pluginWarning:
+                "preFinalAnswer rewrote `content` but `output` is produced by the structured-output schema and was left unchanged.",
+            });
+          }
+          lastResult = { ...lastResult, content: finalGate.input.content as string };
+        }
+      }
+
+      const endStatus: "success" | "paused" | "cancelled" = finalCtx.__cancelled
+        ? "cancelled"
+        : (finalCtx.__paused || finalCtx.__awaitingApproval || finalCtx.__awaitingUserQuestion)
+          ? "paused"
+          : "success";
+      await endSession(endStatus, { result: lastResult as AgentInvokeResult<TOutput> });
+
       return lastResult as AgentInvokeResult<TOutput>;
+      } catch (err) {
+        // The driver itself can throw between base legs — a memory store, the
+        // summarizer's model call, buildModelMessages. Without this the run
+        // would end with sessionStart fired and sessionEnd never fired, and
+        // checkpointing() (which only persists on sessionEnd) would save
+        // nothing for precisely the failure it exists to capture.
+        await endSession("error", { error: err instanceof Error ? err : new Error(String(err)) });
+        throw err;
+      }
     },
+    // Re-exported one by one, so anything new on AgentInstance has to be added
+    // here too or it is silently missing for smart agents.
+    dispose: base.dispose,
+    __plugins: (base as any).__plugins,
     snapshot: base.snapshot,
     resume: base.resume,
     resolveToolApproval: base.resolveToolApproval,
