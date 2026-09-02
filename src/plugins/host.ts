@@ -117,6 +117,9 @@ const SLOT_NAMES: SlotName[] = [
 
 const DECISION_RANK: Record<HookDecision, number> = { allow: 0, ask: 1, deny: 2 };
 
+const isHookDecision = (value: unknown): value is HookDecision =>
+  typeof value === "string" && Object.prototype.hasOwnProperty.call(DECISION_RANK, value);
+
 function escalate(current: HookDecision, next: HookDecision): HookDecision {
   return DECISION_RANK[next] > DECISION_RANK[current] ? next : current;
 }
@@ -125,6 +128,25 @@ export class HookTimeoutError extends Error {
   constructor(label: string, ms: number) {
     super(`${label} timed out after ${ms}ms`);
     this.name = "HookTimeoutError";
+  }
+}
+
+/**
+ * A handler returned a `decision` outside allow | ask | deny ("block",
+ * "DENY", true, …). `DECISION_RANK[value]` is undefined for those, so the
+ * escalation compare used to be false and the chain silently proceeded as
+ * allow — while the `plugin` event echoed the string as if a verdict had been
+ * taken. It is a contract violation by the handler, and is handled exactly like
+ * a handler that threw: R5 decides, so a fail-closed plugin denies.
+ */
+export class InvalidHookDecisionError extends Error {
+  constructor(plugin: string, hook: string, value: unknown) {
+    const shown = typeof value === "string" ? JSON.stringify(value) : String(value);
+    super(
+      `plugin "${plugin}" hook "${hook}" returned an unknown decision ${shown}; ` +
+        `expected "allow", "ask" or "deny"`,
+    );
+    this.name = "InvalidHookDecisionError";
   }
 }
 
@@ -564,10 +586,23 @@ export function createPluginHost(
                 `plugin "${entry.plugin}" hook "${hook}"`,
               );
               output = (raw ?? undefined) as Record<string, unknown> | undefined;
+              // Validated INSIDE the try so an unknown decision lands on the same
+              // R5 path as a throw, rather than being silently read as allow.
+              if (output && typeof output === "object" && output.decision !== undefined && !isHookDecision(output.decision)) {
+                throw new InvalidHookDecisionError(entry.plugin, hook, output.decision);
+              }
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
               const timedOut = err instanceof HookTimeoutError;
-              logger.warn(`plugin "${entry.plugin}" hook "${hook}" failed:`, message);
+              const badDecision = err instanceof InvalidHookDecisionError;
+              if (badDecision) {
+                // Louder than a transport hiccup: this is a bug in the plugin
+                // (or in a policy service's vocabulary) and it will recur on
+                // every call until someone reads this line.
+                logger.error(`plugin "${entry.plugin}" hook "${hook}" returned an invalid decision:`, message);
+              } else {
+                logger.warn(`plugin "${entry.plugin}" hook "${hook}" failed:`, message);
+              }
               emitPluginEvent(entry, hook, {
                 phase: timedOut ? "timeout" : "error",
                 error: { message },
@@ -579,8 +614,9 @@ export function createPluginHost(
                 durationMs: performanceNow() - startedAt,
               });
               if (entry.failureMode === "closed") {
+                const cause = timedOut ? "timed out" : badDecision ? "invalid decision" : "hook error";
                 result.decision = "deny";
-                result.reason = `${entry.plugin}: ${timedOut ? "timed out" : "hook error"} (fail-closed) — ${message}`;
+                result.reason = `${entry.plugin}: ${cause} (fail-closed) — ${message}`;
                 result.deniedBy = entry.plugin;
                 result.input = current as HookMap[K]["input"];
                 return result;
@@ -644,13 +680,28 @@ export function createPluginHost(
               result.metadata = { ...(result.metadata ?? {}), ...(output.metadata as object) };
             }
 
-            const decision = output.decision as HookDecision | undefined;
+            let decision = output.decision as HookDecision | undefined;
+            if (decision === "ask" && hook !== "preToolUse") {
+              // `ask` means "park this for a human", and only the tool gate has
+              // a ledger to park it in. Every other caller tests for deny alone,
+              // so an `ask` there used to fall through as allow — the opposite
+              // of what a handler asking for review meant. Deny is the safe
+              // reading; the log says why the run stopped.
+              logger.warn(
+                `plugin "${entry.plugin}" returned "ask" from "${hook}", which cannot pause for approval; treating it as "deny".`,
+              );
+              decision = "deny";
+            }
             const escalated = decision ? escalate(result.decision, decision) : result.decision;
-            // The handler that raised the bar owns the explanation: otherwise a
-            // deny would be surfaced with an earlier, non-blocking reason.
             const escalatesHere = escalated !== result.decision;
             result.decision = escalated;
-            if (typeof output.reason === "string" && (escalatesHere || !result.reason)) {
+            // The handler that raised the bar owns the explanation. A reason-less
+            // escalation CLEARS the earlier, non-blocking reason rather than
+            // inheriting it — otherwise a deny by B is surfaced as "A: looks
+            // fine" — and the caller falls back to its own hook-specific default.
+            if (escalatesHere) {
+              result.reason = typeof output.reason === "string" ? `${entry.plugin}: ${output.reason}` : undefined;
+            } else if (typeof output.reason === "string" && !result.reason) {
               result.reason = `${entry.plugin}: ${output.reason}`;
             }
             if (mutatedHere) {

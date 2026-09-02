@@ -60,6 +60,17 @@ export function auditLog(config: AuditLogConfig = {}): AgentPlugin {
     }
   };
 
+  // A notification's `detail` carries the tool arguments for an approval
+  // (`{ id, toolName, toolCallId, args }`). They go through the same policy as
+  // `tool_attempt` args — `includeArgs: false` has to mean no arguments in the
+  // sink, whichever hook delivered them.
+  const renderDetail = (detail: unknown): unknown => {
+    if (!detail || typeof detail !== "object" || Array.isArray(detail) || !("args" in detail)) return detail;
+    const { args, ...rest } = detail as Record<string, unknown>;
+    const rendered = renderArgs(args);
+    return rendered === undefined ? rest : { ...rest, args: rendered };
+  };
+
   return {
     name: config.name ?? "audit-log",
     // Lowest number: runs first, so denials by later plugins are still recorded
@@ -90,7 +101,7 @@ export function auditLog(config: AuditLogConfig = {}): AgentPlugin {
           at: new Date().toISOString(),
           kind: "notification",
           status: kind,
-          detail,
+          detail: renderDetail(detail),
         });
       },
 

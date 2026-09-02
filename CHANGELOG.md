@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2]
+
+### Fixed
+- **`userPromptSubmit` was skipped on every turn after a snapshot restore.** `__restoredFromSnapshot` was written by `restoreSnapshot` and never cleared or stripped, so every later `invoke()` on the restored state read as a resume and the input guardrail never ran again for that conversation. The marker is now consumed at invoke entry and excluded from snapshots; a genuine in-process resume (`__paused` / `__awaiting*` / `__resumeStage`) is still exempt. A snapshot taken at the pre-model checkpoint and then restored is gated once more on the same user message — the safe direction.
+- **An unknown `decision` string from a hook was read as `allow`.** `DECISION_RANK[unknown]` is `undefined`, and `undefined > 0` is false, so `"block"`, `"DENY"` or `true` fell through the chain with no warning. An unrecognised decision is now a handler error: it follows the plugin's `failureMode` and is logged at error level with the plugin, hook and value.
+- **`ask` from a hook without approval semantics degraded to `allow`.** Every caller except `preToolUse` tests only `=== "deny"`. `runGate` now coerces `ask` to `deny` (with a warning) on every hook except `preToolUse`.
+- **A deny under `outputSchema` (tool-based strategy) did not end the run.** The refusal carried no `tool_calls`, so the structured-output nudge re-entered the loop and the provider was called once more. The nudge guard now also stops on `__guardrailBlocked`.
+- **`__guardrailBlocked` leaked into the next turn and into snapshots.** It is now cleared at invoke entry on both factories and stripped from snapshots.
+- **A reason-less deny inherited an earlier plugin's non-blocking reason**, and `deniedBy` named the wrong plugin. The reason is reset on escalation unless the escalating handler supplied one.
+- **Reviewer-edited `approvedArgs` skipped schema validation and the `preToolUse` gate.** Edited arguments are re-validated and re-gated before the tool runs; an unedited approval is not re-gated.
+- **`postToolUse` did not run on a `preToolUse.result` short-circuit or on a tool-cache hit.** It now runs on both paths; the input carries `source: "tool" | "hook" | "cache"`.
+- **`auditLog` wrote tool arguments through `notification.detail` even with `includeArgs: false`.** `detail.args` now goes through the same rendering/redaction as the direct path.
+
 ## [0.10.1]
 
 ### Fixed

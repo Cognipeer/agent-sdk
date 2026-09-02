@@ -22,7 +22,19 @@ export type OpenedSession = {
 
 export async function openPluginSession(
   runHost: PluginRunHost,
-  params: { messages: Message[]; resumed: boolean; config?: InvokeConfig },
+  params: {
+    messages: Message[];
+    /** Continues a paused OR snapshot-restored run. Reported to `sessionStart`. */
+    resumed: boolean;
+    /**
+     * A LIVE pause marker is present (`__paused`, `__resumeStage`,
+     * `__awaitingApproval`, `__awaitingUserQuestion`) — the run is mid-turn and
+     * its user turn was already gated. Unlike `__restoredFromSnapshot` these
+     * are stripped on entry, so they cannot outlive the invoke they belong to.
+     */
+    pausedMidRun?: boolean;
+    config?: InvokeConfig;
+  },
 ): Promise<OpenedSession> {
   let messages = params.messages;
 
@@ -37,11 +49,18 @@ export async function openPluginSession(
   const appended = (startGate.collected.systemPromptAppend ?? []) as string[];
   const systemPromptAppend = appended.length > 0 ? appended.join("\n\n") : undefined;
 
-  // Input guardrail point. Deliberately skipped on resume: the tail of a
-  // resumed transcript is a tool result or an answered question, not a new user
-  // turn, and rewriting it would break tool_call/tool_result adjacency.
+  // Input guardrail point. Skipped when the tail is not a user turn (a genuine
+  // resume ends in a tool result or an answered question, and rewriting that
+  // tail would break tool_call/tool_result adjacency) and when a LIVE pause
+  // marker says the run is mid-turn (a checkpoint before the first model call
+  // leaves a user tail that was already gated). Deliberately NOT keyed on
+  // `resumed`: that also covers `__restoredFromSnapshot`, which used to ride
+  // out on every later `result.state`, so one restore silently switched the
+  // input guardrail off for the rest of the conversation. After a snapshot
+  // round-trip a paused user turn and a freshly appended one look identical,
+  // and gating both is the safe reading.
   const last = messages[messages.length - 1];
-  if (params.resumed || last?.role !== "user" || !runHost.has("userPromptSubmit")) {
+  if (params.pausedMidRun || last?.role !== "user" || !runHost.has("userPromptSubmit")) {
     return { messages, systemPromptAppend };
   }
 

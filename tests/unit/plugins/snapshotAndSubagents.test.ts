@@ -273,7 +273,10 @@ describe("plugins × pause/resume round trip", () => {
     expect(starts).toHaveLength(2);
     expect(starts[1].messageCount).toBeGreaterThan(0);
     expect(ends).toEqual(["paused", "success"]);
-    expect(done.state?.ctx?.__restoredFromSnapshot).toBe(true);
+    // The marker is CONSUMED by the resumed invoke, not carried on. Left on ctx
+    // it would ride out on `done.state`, flag every later `invoke({ ...done.state })`
+    // as a resume, and be re-persisted by the next snapshot.
+    expect(done.state?.ctx).not.toHaveProperty("__restoredFromSnapshot");
   });
 
   // `resumed` has to read `__restoredFromSnapshot`, which is the only marker
@@ -294,6 +297,181 @@ describe("plugins × pause/resume round trip", () => {
 
     expect(starts).toHaveLength(2);
     expect(starts[1].resumed).toBe(true);
+  });
+});
+
+// ─── Snapshot restore × the input guardrail ──────────────────────────────────
+
+/**
+ * `__restoredFromSnapshot` used to be sticky: nothing deleted it and the
+ * snapshot filter did not strip it, so ONE restore turned every later turn of
+ * the conversation into a "resume" — and `userPromptSubmit` is skipped on a
+ * resume. The input guardrail was silently off for every snapshot-backed
+ * conversation from that point on.
+ */
+describe("userPromptSubmit after a snapshot restore", () => {
+  const buildGuardedAgent = () => {
+    const promptsSeen: string[] = [];
+    const sessionStarts: boolean[] = [];
+    let modelCalls = 0;
+    const guard: AgentPlugin = {
+      name: "forbidden-word",
+      hooks: {
+        sessionStart: (input) => {
+          sessionStarts.push(input.resumed);
+        },
+        userPromptSubmit: ({ text }) => {
+          promptsSeen.push(text);
+          return text.includes("forbidden") ? { decision: "deny", reason: "that word is not allowed" } : undefined;
+        },
+      },
+    };
+    const model = {
+      modelName: "counting",
+      bindTools() { return this; },
+      async invoke() {
+        modelCalls += 1;
+        return { role: "assistant", content: `answer-${modelCalls}` };
+      },
+    } as any;
+    const agent = createAgent({ name: "guarded", model, plugins: [guard] });
+    return { agent, promptsSeen, sessionStarts, modelCalls: () => modelCalls };
+  };
+
+  it("runs the guardrail on a NEW user turn appended to a restored state, and a deny halts before the provider", async () => {
+    const { agent, promptsSeen, sessionStarts, modelCalls } = buildGuardedAgent();
+
+    const first = await agent.invoke({ messages: [{ role: "user", content: "hello" }] } as SmartState);
+    expect(first.content).toBe("answer-1");
+    expect(promptsSeen).toEqual(["hello"]);
+
+    // The host persists the conversation and restores it — once.
+    const overWire = JSON.parse(JSON.stringify(agent.snapshot(first.state!)));
+    const restored = restoreSnapshot(overWire);
+    expect(restored.ctx?.__restoredFromSnapshot).toBe(true);
+    // The marker never travels INSIDE a snapshot, only out of a restore.
+    expect(agent.snapshot(restored).state.ctx ?? {}).not.toHaveProperty("__restoredFromSnapshot");
+
+    // ...then continues it the ordinary way: the restored state plus a new turn.
+    const second = await agent.invoke({
+      ...restored,
+      messages: [...restored.messages, { role: "user", content: "say something forbidden" }],
+    } as SmartState);
+
+    // Before the fix the guardrail was skipped here (resumed:true), the prompt
+    // reached the model and the turn came back as an ordinary answer.
+    expect(promptsSeen).toEqual(["hello", "say something forbidden"]);
+    expect(modelCalls()).toBe(1);
+    expect(second.content).toContain("that word is not allowed");
+    expect((second.state?.ctx as any)?.__guardrailBlocked?.phase).toBe("request");
+    // sessionStart still learns that this invoke continued a restored state.
+    expect(sessionStarts).toEqual([false, true]);
+    // ...and the marker is consumed, so the NEXT turn is not a "resume" either.
+    expect(second.state?.ctx).not.toHaveProperty("__restoredFromSnapshot");
+
+    const third = await agent.invoke({
+      ...second.state,
+      messages: [...second.messages, { role: "user", content: "and now something fine" }],
+    } as SmartState);
+    expect(third.content).toBe("answer-2");
+    expect(promptsSeen).toHaveLength(3);
+    expect(sessionStarts).toEqual([false, true, false]);
+  });
+
+  // The first checkpoint ("before_guardrails") precedes the first model call,
+  // so a checkpoint pause can leave a USER tail on a genuinely mid-turn run.
+  // In process, the live `__paused` marker still says so and the already-gated
+  // turn is not gated twice.
+  it("does not re-run the guardrail on an in-process checkpoint resume of an already-gated user turn", async () => {
+    const { agent, promptsSeen, sessionStarts, modelCalls } = buildGuardedAgent();
+
+    let pauseOnce = true;
+    const paused = await agent.invoke(
+      { messages: [{ role: "user", content: "hello" }] } as SmartState,
+      { onStateChange: () => (pauseOnce ? ((pauseOnce = false), true) : false) },
+    );
+    expect(paused.state?.ctx?.__paused).toBeDefined();
+    expect(modelCalls()).toBe(0);
+    expect(promptsSeen).toEqual(["hello"]);
+
+    const done = await agent.invoke(paused.state!);
+
+    expect(done.content).toBe("answer-1");
+    expect(modelCalls()).toBe(1);
+    expect(promptsSeen).toEqual(["hello"]);
+    expect(sessionStarts).toEqual([false, true]);
+  });
+
+  // Across a snapshot the live marker is gone (captureSnapshot keeps it as
+  // metadata only) and `__restoredFromSnapshot` is all that is left — the same
+  // thing a "restore, then append a new user turn" continuation carries. The
+  // two cannot be told apart, so the paused turn is gated once more on its way
+  // to the model: the harmless direction, pinned here so a future change to it
+  // is a visible one.
+  it("gates the user tail again when that pause is resumed from a snapshot (the marker cannot tell it from a new turn)", async () => {
+    const { agent, promptsSeen, sessionStarts, modelCalls } = buildGuardedAgent();
+
+    let pauseOnce = true;
+    const paused = await agent.invoke(
+      { messages: [{ role: "user", content: "hello" }] } as SmartState,
+      { onStateChange: () => (pauseOnce ? ((pauseOnce = false), true) : false) },
+    );
+    const overWire = JSON.parse(JSON.stringify(agent.snapshot(paused.state!)));
+    expect(overWire.state.ctx).not.toHaveProperty("__paused");
+
+    const done = await agent.resume(overWire);
+
+    expect(done.content).toBe("answer-1");
+    expect(modelCalls()).toBe(1);
+    expect(promptsSeen).toEqual(["hello", "hello"]);
+    expect(sessionStarts).toEqual([false, true]);
+    expect(done.state?.ctx).not.toHaveProperty("__restoredFromSnapshot");
+  });
+
+  it("still skips the guardrail on a resume whose transcript tail is a tool result", async () => {
+    // A tool that needs approval parks the run with an assistant tool-call
+    // turn as the tail; the resume runs the tool and answers — no user turn
+    // is entering the transcript anywhere on that path.
+    let asks = 0;
+    const promptsSeen: string[] = [];
+    const guard: AgentPlugin = {
+      name: "prompt-counter",
+      hooks: {
+        userPromptSubmit: ({ text }) => {
+          promptsSeen.push(text);
+          return undefined;
+        },
+        preToolUse: () => {
+          asks += 1;
+          return asks === 1 ? { decision: "ask" } : undefined;
+        },
+      },
+    };
+    const model = {
+      modelName: "tool-then-done",
+      bindTools() { return this; },
+      async invoke(msgs: Message[]) {
+        if (msgs.some((m) => m.role === "tool")) return { role: "assistant", content: "finished" };
+        return {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "tc_1", type: "function", function: { name: "deploy", arguments: JSON.stringify({}) } }],
+        };
+      },
+    } as any;
+    const deploy = createTool({ name: "deploy", description: "deploys", schema: z.object({}), func: async () => "DEPLOYED" });
+    const agent = createAgent({ name: "tool-resume", model, tools: [deploy], plugins: [guard] });
+
+    const paused = await agent.invoke({ messages: [{ role: "user", content: "ship it" }] } as SmartState);
+    expect(paused.state?.pendingApprovals?.[0]?.status).toBe("pending");
+    expect(promptsSeen).toEqual(["ship it"]);
+
+    const overWire = JSON.parse(JSON.stringify(agent.snapshot(paused.state!)));
+    const approved = agent.resolveToolApproval(overWire.state, { id: overWire.state.pendingApprovals[0].id, approved: true });
+    const done = await agent.resume({ ...overWire, state: approved });
+
+    expect(done.content).toBe("finished");
+    expect(promptsSeen).toEqual(["ship it"]);
   });
 });
 

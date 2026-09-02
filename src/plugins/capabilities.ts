@@ -39,7 +39,7 @@ const HOOKS: Record<HookName, CapabilityStatus> = {
   sessionStart: { implemented: true },
   userPromptSubmit: {
     implemented: true,
-    notes: "Fires once per run for a new user turn. Skipped on resume, where the transcript tail is a tool result rather than a user message.",
+    notes: "Fires once per run whenever the transcript tail is a NEW user turn — including a turn appended to a state that was restored from a snapshot. Skipped on a genuine resume, where the tail is a tool result rather than a user message.",
   },
   preModelCall: {
     implemented: true,
@@ -52,7 +52,7 @@ const HOOKS: Record<HookName, CapabilityStatus> = {
   },
   postToolUse: {
     implemented: true,
-    notes: "Raw output, before compression and the hard cap. Also fires on a tool ERROR. Does NOT fire for a call that parks the run.",
+    notes: "Raw output, before compression and the hard cap. Also fires on a tool ERROR, on a preToolUse `result` short-circuit and on a tool-cache hit (`input.source` says which). Does NOT fire for a call that parks the run.",
   },
   preCompact: { implemented: true },
   postCompact: { implemented: true },

@@ -13,8 +13,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createAgent, createTool } from "../../../src/index.js";
-import { createPluginHost, mcp, sessionMetrics } from "../../../src/plugins/index.js";
-import type { AgentPlugin, PluginLogger, SessionMetrics } from "../../../src/plugins/index.js";
+import { auditLog, createPluginHost, mcp, sessionMetrics } from "../../../src/plugins/index.js";
+import type { AgentPlugin, AuditEntry, PluginLogger, SessionMetrics } from "../../../src/plugins/index.js";
 import type { Message, ToolInterface } from "../../../src/types.js";
 
 afterEach(() => {
@@ -212,6 +212,69 @@ describe("sessionMetrics", () => {
 });
 
 // ─── mcp ─────────────────────────────────────────────────────────────────────
+
+// ─── auditLog ────────────────────────────────────────────────────────────────
+
+describe("auditLog", () => {
+  /**
+   * A tool that parks the run for approval: that is the path on which the
+   * tools node hands the ARGUMENTS to `notification` (kind "approval"), a
+   * second route into the sink besides `tool_attempt`.
+   */
+  function approvalRun(plugin: AgentPlugin) {
+    const tool = createTool({
+      name: "deploy",
+      description: "deploy (needs approval)",
+      schema: z.object({ message: z.string() }),
+      needsApproval: true,
+      func: async () => "DEPLOYED",
+    });
+    const { model } = scriptedModel([
+      { tool: "deploy", args: { message: "SECRET_ARG_VALUE" }, id: "tc_1" },
+      { text: "done" },
+    ]);
+    const agent = createAgent({ name: "audited", model, tools: [tool], plugins: [plugin] });
+    return agent.invoke({ messages: [{ role: "user", content: "ship" }] } as any);
+  }
+
+  it("keeps tool arguments out of the sink by default — on the approval notification as well as the attempt", async () => {
+    const entries: AuditEntry[] = [];
+    const paused = await approvalRun(auditLog({ sink: (entry) => void entries.push(entry) }));
+    expect(paused.state?.pendingApprovals?.[0]?.status).toBe("pending");
+
+    const attempt = entries.find((entry) => entry.kind === "tool_attempt");
+    const notification = entries.find((entry) => entry.kind === "notification" && entry.status === "approval");
+    expect(attempt).toBeDefined();
+    expect(notification).toBeDefined();
+    expect(attempt!.args).toBeUndefined();
+
+    // `detail` arrived with `args` inside; the default policy applies to it too,
+    // while the rest of the detail is still written.
+    const detail = notification!.detail as Record<string, unknown>;
+    expect(detail.toolName).toBe("deploy");
+    expect(detail.toolCallId).toBe("tc_1");
+    expect(detail).not.toHaveProperty("args");
+    expect(JSON.stringify(entries)).not.toContain("SECRET_ARG_VALUE");
+  });
+
+  it("includes them on both paths when includeArgs is on, truncated by maxArgChars", async () => {
+    const entries: AuditEntry[] = [];
+    await approvalRun(auditLog({ sink: (entry) => void entries.push(entry), includeArgs: true, maxArgChars: 12 }));
+
+    const attempt = entries.find((entry) => entry.kind === "tool_attempt")!;
+    const notification = entries.find((entry) => entry.kind === "notification")!;
+    expect(String(attempt.args)).toContain("…[truncated]");
+    expect(String((notification.detail as Record<string, unknown>).args)).toContain("…[truncated]");
+  });
+
+  it("writes the full arguments when includeArgs is on and they fit", async () => {
+    const entries: AuditEntry[] = [];
+    await approvalRun(auditLog({ sink: (entry) => void entries.push(entry), includeArgs: true }));
+
+    const notification = entries.find((entry) => entry.kind === "notification")!;
+    expect((notification.detail as Record<string, unknown>).args).toEqual({ message: "SECRET_ARG_VALUE" });
+  });
+});
 
 describe("mcp", () => {
   it("contributes the discovered tools to the agent's bound menu", async () => {

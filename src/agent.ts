@@ -290,6 +290,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       delete nextCtx.__paused;
       state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
     }
+    // Consumed: `invokeAgent` already folded this into `resumed` for the plugin
+    // session. Left on ctx it would ride out on `result.state`, into the next
+    // `invoke({ ...result.state })`, and into the next snapshot — marking every
+    // later turn of the conversation as a resume.
+    if (state.ctx?.__restoredFromSnapshot) {
+      const nextCtx = { ...state.ctx };
+      delete nextCtx.__restoredFromSnapshot;
+      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
+    }
     let resumeStage: "tools" | null = null;
     if (state.ctx?.__resumeStage) {
       const nextCtx = { ...state.ctx };
@@ -623,10 +632,16 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
 
       if (toolCalls.length === 0) {
+        // A plugin denial (preModelCall / postModelCall) ends the turn with a
+        // refusal that has no tool_calls. Without the last term the tool-based
+        // branch below would read that as "the model forgot to call `response`",
+        // nudge it, and re-enter agentCore — one more provider call after a
+        // deny, and an `output` populated next to `__guardrailBlocked`.
         if (
           soManager &&
           !(state as any).ctx?.__finalizedDueToStructuredOutput &&
-          !(state as any).ctx?.__structuredOutputForceFinalize
+          !(state as any).ctx?.__structuredOutputForceFinalize &&
+          !(state as any).ctx?.__guardrailBlocked
         ) {
           // Native strategy: the provider API (e.g. OpenAI `response_format:
           // json_schema` with strict=true) guarantees the text content is valid
@@ -891,6 +906,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     delete ctx.__plugins;
     delete (ctx as any).__applySystemPromptContribution;
     delete ctx.__pluginState;
+    // A verdict about the PREVIOUS turn. Carried in, it would report this
+    // turn's ordinary answer as blocked and keep structured-output finalization
+    // disabled for the rest of the conversation. Cleared before any hook runs,
+    // so the flag on `result.state` always describes the run that returned it.
+    delete (ctx as any).__guardrailBlocked;
 
     const inheritedSession = (config as any)?.__pluginSession as
       | { host: PluginRunHost; runId: string; stateHolder: { value: AgentState } }
@@ -979,13 +999,17 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     // A resumed invoke is the only place these markers are still readable —
     // runLoop strips __paused and __resumeStage on entry.
-    const resumed = Boolean(
-      input.ctx?.__restoredFromSnapshot
-      || input.ctx?.__paused
+    const pausedMidRun = Boolean(
+      input.ctx?.__paused
       || input.ctx?.__resumeStage
       || input.ctx?.__awaitingApproval
       || input.ctx?.__awaitingUserQuestion
     );
+    const resumed = Boolean(input.ctx?.__restoredFromSnapshot || pausedMidRun);
+    // Consumed here, on every exit path — including the session-denial return
+    // below, which never reaches runLoop's own strip. Left on ctx it would
+    // ride out on `result.state` and mark every later turn as a resume.
+    delete ctx.__restoredFromSnapshot;
 
     const startedAt = Date.now();
     let sessionEnded = false;
@@ -1017,6 +1041,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       const opened = await openPluginSession(runHost, {
         messages: initial.messages,
         resumed,
+        pausedMidRun,
         config,
       });
       if (opened.messages !== initial.messages) {

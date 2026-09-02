@@ -383,25 +383,81 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         delete toolStateRef.__awaitingApproval;
       }
 
+      const stableJson = (value: any): string => {
+        try {
+          if (value === null || typeof value !== "object") return JSON.stringify(value);
+          if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+          const keys = Object.keys(value).sort();
+          return `{${keys.map((k) => JSON.stringify(k) + ":" + stableJson(value[k])).join(",")}}`;
+        } catch {
+          return String(value);
+        }
+      };
+
+      // A policy refusal. Modelled on the rejected-approval path: exactly one
+      // tool message so the tool_use is resolved and the transcript stays
+      // valid, a "rejected" history entry so the per-run execution budget is
+      // not consumed, and exactly one toolCount increment. Shared by the gate
+      // on the model's arguments and the re-gate on reviewer-edited ones.
+      const rejectByPolicy = (gateReason: string | undefined, gatedArgs: unknown): ToolExecutionResult => {
+        const reason = gateReason || `Tool call blocked by policy: ${toolName}`;
+        push({ role: "tool", content: reason, tool_call_id: toolCallId, name: tc.name });
+        toolHistory.push({
+          executionId: nanoid(),
+          toolName,
+          args: gatedArgs,
+          output: reason,
+          timestamp: new Date().toISOString(),
+          tool_call_id: toolCallId,
+          status: "rejected",
+        });
+        onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args: gatedArgs, error: { message: reason } });
+        recordTraceEvent(traceSession, {
+          type: "tool_call",
+          label: `Tool Denied - ${toolName}`,
+          actor: { scope: "tool", name: toolName, role: "tool" },
+          status: "skipped",
+          toolDetails,
+          toolExecutionId: toolCallId,
+          sections: buildToolTraceSections({
+            args: gatedArgs,
+            executionId: toolCallId,
+            output: reason,
+            status: "skipped",
+            summary: reason,
+            toolDetails,
+            toolName,
+          }),
+        });
+        toolCount += 1;
+        return { status: "error" };
+      };
+
+      type PreToolUseOutcome =
+        | { ok: true; args: any; ask: boolean; approvalPrompt?: string; result?: unknown }
+        | { ok: false; outcome: ToolExecutionResult };
+
       // ── Plugin gate: preToolUse ─────────────────────────────────────────
-      // Placed after argument normalization and validation, and before the
-      // approval gate and the cache key: a hook must see the real arguments,
-      // and a rewritten argument must be the one that gets approved, cached
-      // and executed — otherwise the human approves a payload that is not
-      // what runs.
-      let hookAskedForApproval = false;
-      let hookApprovalPrompt: string | undefined;
-      let hookResult: unknown;
-      if (host?.has("preToolUse")) {
+      // Runs on the model's arguments after normalization and validation, and
+      // before the approval gate and the cache key: a hook must see the real
+      // arguments, and a rewritten argument must be the one that gets approved,
+      // cached and executed — otherwise the human approves a payload that is
+      // not what runs. Runs AGAIN on reviewer-edited arguments after the
+      // approval ledger, for the mirror-image reason: an edit has seen neither
+      // the schema nor the policy, and "approve with changes" must not be a way
+      // to execute what the gate denied.
+      const applyPreToolUseGate = async (candidate: any): Promise<PreToolUseOutcome> => {
+        if (!host?.has("preToolUse")) return { ok: true, args: candidate, ask: false };
         const gate = await host.runGate("preToolUse", {
           toolName,
           toolCallId,
-          args,
+          args: candidate,
           tool,
           executionCount: countSuccessfulToolExecutions(toolHistory, toolName),
         });
 
-        if (gate.input.args !== args) {
+        let next = candidate;
+        if (gate.input.args !== candidate) {
           // Re-validate: a hook can hand back something the tool's schema
           // rejects, and running that is worse than refusing the call.
           const revalidated = validateToolArgs(tool, gate.input.args);
@@ -411,54 +467,34 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             markToolFailure(message, toolName, toolCallId);
             onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args: gate.input.args, error: { message } });
             toolCount += 1;
-            return { status: "error" };
+            return { ok: false, outcome: { status: "error" } };
           }
-          args = revalidated.ok ? revalidated.value : gate.input.args;
+          next = revalidated.ok ? revalidated.value : gate.input.args;
         }
 
         if (gate.decision === "deny") {
-          const reason = gate.reason || `Tool call blocked by policy: ${toolName}`;
-          // Modelled on the rejected-approval path: exactly one tool message so
-          // the tool_use is resolved and the transcript stays valid, a
-          // "rejected" history entry so the per-run execution budget is not
-          // consumed, and exactly one toolCount increment.
-          push({ role: "tool", content: reason, tool_call_id: toolCallId, name: tc.name });
-          toolHistory.push({
-            executionId: nanoid(),
-            toolName,
-            args,
-            output: reason,
-            timestamp: new Date().toISOString(),
-            tool_call_id: toolCallId,
-            status: "rejected",
-          });
-          onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args, error: { message: reason } });
-          recordTraceEvent(traceSession, {
-            type: "tool_call",
-            label: `Tool Denied - ${toolName}`,
-            actor: { scope: "tool", name: toolName, role: "tool" },
-            status: "skipped",
-            toolDetails,
-            toolExecutionId: toolCallId,
-            sections: buildToolTraceSections({
-              args,
-              executionId: toolCallId,
-              output: reason,
-              status: "skipped",
-              summary: reason,
-              toolDetails,
-              toolName,
-            }),
-          });
-          toolCount += 1;
-          return { status: "error" };
+          return { ok: false, outcome: rejectByPolicy(gate.reason, next) };
         }
 
-        if (gate.decision === "ask") {
-          hookAskedForApproval = true;
-          hookApprovalPrompt = (gate as unknown as { approvalPrompt?: string }).approvalPrompt;
-        }
-        if (gate.shortCircuit !== undefined) hookResult = gate.shortCircuit;
+        return {
+          ok: true,
+          args: next,
+          ask: gate.decision === "ask",
+          approvalPrompt: (gate as unknown as { approvalPrompt?: string }).approvalPrompt,
+          result: gate.shortCircuit,
+        };
+      };
+
+      let hookAskedForApproval = false;
+      let hookApprovalPrompt: string | undefined;
+      let hookResult: unknown;
+      {
+        const gated = await applyPreToolUseGate(args);
+        if (!gated.ok) return gated.outcome;
+        args = gated.args;
+        hookAskedForApproval = gated.ask;
+        hookApprovalPrompt = gated.approvalPrompt;
+        if (gated.result !== undefined) hookResult = gated.result;
       }
 
       const maxExecutionsPerRun = normalizeMaxExecutionsPerRun((tool as any).maxExecutionsPerRun);
@@ -555,7 +591,42 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         }
 
         if (approvalEntry.status === "approved" && approvalEntry.approvedArgs !== undefined) {
-          args = approvalEntry.approvedArgs;
+          const approvedArgs = approvalEntry.approvedArgs;
+          // `resolveToolApprovalState` fills approvedArgs with the original
+          // arguments when the reviewer did not edit them, and those were gated
+          // above in this very turn. Only an EDIT is new input.
+          if (stableJson(approvedArgs) !== stableJson(args)) {
+            const settleRefused = (resolution: string) => {
+              approvalEntry!.metadata = { ...(approvalEntry!.metadata || {}), resolution };
+              approvalEntry!.status = "executed";
+              approvalEntry!.resolvedAt = new Date().toISOString();
+              pendingByCallId.set(toolCallId, approvalEntry!);
+            };
+
+            const revalidated = validateToolArgs(tool, approvedArgs);
+            if (!revalidated.ok && resolved.toolResponses.schemaValidation === "strict") {
+              const message = `Tool argument validation failed for reviewer-edited arguments of ${toolName}: ${revalidated.message}`;
+              push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name });
+              markToolFailure(message, toolName, toolCallId);
+              settleRefused("invalid_args");
+              onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args: approvedArgs, error: { message } });
+              toolCount += 1;
+              return { status: "error", approval: approvalEntry };
+            }
+
+            // Same gate, same handling as for the model's arguments. An `ask`
+            // from the re-gate is already satisfied — the human who supplied
+            // these arguments IS the approval — so only deny and rewrite matter.
+            const gated = await applyPreToolUseGate(revalidated.ok ? revalidated.value : approvedArgs);
+            if (!gated.ok) {
+              settleRefused("policy_denied");
+              return { ...gated.outcome, approval: approvalEntry } as ToolExecutionResult;
+            }
+            args = gated.args;
+            if (gated.result !== undefined && hookResult === undefined) hookResult = gated.result;
+          } else {
+            args = approvedArgs;
+          }
           onEvent?.({ type: "tool_approval", status: "approved", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, decidedBy: approvalEntry.decidedBy, comment: approvalEntry.comment });
         }
       }
@@ -568,16 +639,6 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const cacheCfg = (tool as any).cache;
       const cacheEnabled = cacheCfg === true || (cacheCfg && typeof cacheCfg === "object");
       const cacheKeyFn: ((a: any) => string) | undefined = cacheEnabled && typeof cacheCfg === "object" ? cacheCfg.keyFn : undefined;
-      const stableJson = (value: any): string => {
-        try {
-          if (value === null || typeof value !== "object") return JSON.stringify(value);
-          if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-          const keys = Object.keys(value).sort();
-          return `{${keys.map((k) => JSON.stringify(k) + ":" + stableJson(value[k])).join(",")}}`;
-        } catch {
-          return String(value);
-        }
-      };
       const cacheKey = cacheEnabled ? `${toolName}|${cacheKeyFn ? cacheKeyFn(args) : stableJson(args)}` : undefined;
       const toolCache = (state.toolCache = state.toolCache || {});
       let cachedHit: any = undefined;
@@ -634,6 +695,30 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         if (cachedHit !== undefined) {
           // Short-circuit: serve from cache without re-invoking the tool.
           const executionId = nanoid();
+
+          // ── Plugin gate: postToolUse (short-circuit) ──────────────────
+          // A stub's payload, or a cached value stored under an earlier
+          // policy, is still tool output the model is about to read — it does
+          // not get to skip the redactor because no tool ran. `source` tells a
+          // hook which case it is looking at (a cached value already passed
+          // this gate once, on its way into the cache).
+          if (host?.has("postToolUse")) {
+            const shortGate = await host.runGate("postToolUse", {
+              toolName,
+              toolCallId,
+              args,
+              output: cachedHit,
+              durationMs: 0,
+              executionId,
+              source: shortCircuitSource === "plugin" ? "hook" : "cache",
+            });
+            if (shortGate.decision === "deny") {
+              cachedHit = shortGate.reason || `Tool output withheld by policy: ${toolName}`;
+            } else if (shortGate.input.output !== cachedHit) {
+              cachedHit = shortGate.input.output;
+            }
+          }
+
           const { output: compressedCachedHit, stats: cachedContextPilotStats } = maybeCompressToolOutput(toolName, cachedHit, executionId);
           const responsePolicy = applyToolResponseHardCap(toolName, compressedCachedHit, executionId, resolved);
           toolHistory.push({
@@ -845,6 +930,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             output,
             durationMs,
             executionId,
+            source: "tool",
           });
           if (postGate.decision === "deny") {
             output = postGate.reason || `Tool output withheld by policy: ${toolName}`;
@@ -870,8 +956,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           delete state.ctx.__finalizedDueToStructuredOutput;
         }
 
-        // Cached AFTER the hook, so a later hit serves the redacted value and
-        // the hook is not re-applied to an already-processed payload.
+        // Cached AFTER the hook, so a later hit serves the redacted value. The
+        // hit runs the gate again (flagged `source: "cache"`), so a policy that
+        // changed since the value was stored still applies to it.
         if (cacheKey) {
           toolCache[cacheKey] = { value: output, timestamp: Date.now() };
         }
@@ -961,6 +1048,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
               error: error instanceof Error ? error : new Error(message),
               durationMs,
               executionId,
+              source: "tool",
             });
             if (errorGate.decision === "deny") {
               message = errorGate.reason || `Tool error withheld by policy: ${toolName}`;

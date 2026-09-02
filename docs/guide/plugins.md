@@ -42,11 +42,11 @@ const agent = createSmartAgent({
 | Hook | Fires | Can |
 | --- | --- | --- |
 | `sessionStart` | Start of a run, once, including on resume | Replace the transcript, append to the system prompt |
-| `userPromptSubmit` | A new user message enters the transcript | Rewrite the text, add context, deny |
+| `userPromptSubmit` | A new user message is the transcript tail — including one appended to a state restored from a snapshot | Rewrite the text, add context, deny |
 | `preModelCall` | Before every model call | Rewrite wire messages, narrow the tool menu, merge invoke params, short-circuit, deny |
 | `postModelCall` | After the assistant turn comes back | Rewrite the message, deny, retry |
-| `preToolUse` | After argument validation, before the approval gate | Rewrite args, deny, escalate to approval, short-circuit with a result |
-| `postToolUse` | On the raw tool output, before compression | Rewrite the output, deny |
+| `preToolUse` | After argument validation, before the approval gate — and again on reviewer-edited `approvedArgs` | Rewrite args, deny, escalate to approval, short-circuit with a result |
+| `postToolUse` | On the raw tool output, before compression — also on a `preToolUse` short-circuit and on a cache hit (`input.source` says which) | Rewrite the output, deny |
 | `preCompact` / `postCompact` | Around summarization | Pin messages, skip a pass, observe |
 | `preFinalAnswer` | Before the answer returns to the caller | Rewrite, deny |
 | `subagentStart` / `subagentStop` | Around a sub-agent task | Rewrite the task, deny, observe |
@@ -82,11 +82,17 @@ export const officeHours = definePlugin<{ from: number; to: number }>((cfg) => (
    what makes "mask, then scan the masked text" work.
 3. **Decisions escalate: `deny` > `ask` > `allow`.** The first `deny` ends the
    chain. `allow` never downgrades anything — a plugin cannot switch off a
-   tool's own `needsApproval`.
+   tool's own `needsApproval`. `ask` has meaning only on `preToolUse`; from any
+   other hook it is read as `deny` (with a warning), never as `allow`. A
+   reason-less escalation clears an earlier plugin's non-blocking reason — the
+   caller falls back to its hook default and `deniedBy` names the plugin.
 4. **First short-circuit wins.** A second one is dropped and reported.
 5. **Failure posture is per plugin.** `failureMode: "open"` (the default) logs
    and continues; `"closed"` turns an error or a timeout into a deny. Guardrail
    plugins ship as `"closed"` — silently not guarding is worse than stopping.
+   A `decision` outside `allow | ask | deny` (`"block"`, `"DENY"`, `true`, …) is
+   a handler error under this rule, logged at `error` level: fail-open skips
+   that handler, fail-closed denies.
 6. **Timeouts are per handler.** `timeoutMs` defaults to 10s; the guardrail
    presets use 3s, because they sit on the critical path of every turn.
 7. **Observers never block.** `sessionEnd`, `notification`, `postCompact` and
@@ -103,8 +109,15 @@ the model sees the refusal and can recover:
 | `preModelCall` | Model is not called; one assistant turn carries the reason |
 | `postModelCall` | The offending assistant turn is **replaced**, not appended |
 | `preToolUse` | Tool does not run; the reason returns as the tool result and `toolHistory` records `status: "rejected"` |
-| `postToolUse` | The output is replaced by the reason before it reaches the model |
+| `postToolUse` | The output is replaced by the reason before it reaches the model — on a real execution, a short-circuit or a cache hit alike |
 | `preFinalAnswer` | The answer is replaced by the reason, and a parsed `output` is cleared with it |
+
+A denied turn is marked on `state.ctx.__guardrailBlocked` (`phase`, `incident`
+with `reason`, `deniedBy`, `hook`). It describes **that turn only**: the next
+`invoke({ ...result.state })` clears it before any hook runs, and it never
+travels in a snapshot. With `outputSchema` a denied turn also ends the loop —
+the tool-based finalizer does not nudge the model for a `response` call after a
+deny, so `output` is never populated next to the flag.
 
 ## Contributions
 
@@ -169,6 +182,10 @@ combine with OR — a hook can escalate a call, never wave one through. The
 escalation survives the resume: `needsApproval` recomputes to `false` on the
 resumed turn (the tool itself never required it), so the pending-approval ledger
 entry is what keeps the gate closed. A call a human **rejected** does not run.
+A call a human **approved with edited arguments** runs the edit through the
+schema and through `preToolUse` again before it executes — "approve with
+changes" is not a way to run what the gate denied; a deny there ends the call
+like any other `preToolUse` deny (`metadata.resolution: "policy_denied"`).
 
 An approval pause ends the plugin session with `status: "paused"`, and the
 resume opens a new one with `resumed: true`. A plugin metering runs therefore

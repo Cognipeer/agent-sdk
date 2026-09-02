@@ -496,6 +496,16 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       // agent instance never share planning/todo/tool-history state.
       await ensurePluginSetup();
 
+      // Last turn's verdict, not this one's. `invoke({ ...result.state })` is
+      // the ordinary continuation, and the base legs below clear it on entry
+      // too — but the session-denial branch of THIS driver never reaches a
+      // base leg, so it has to be gone before the first hook runs here.
+      if ((input as any)?.ctx?.__guardrailBlocked !== undefined) {
+        const clearedCtx = { ...((input as any).ctx as Record<string, any>) };
+        delete clearedCtx.__guardrailBlocked;
+        input = { ...input, ctx: clearedCtx } as SmartState;
+      }
+
       // ── Plugin session ────────────────────────────────────────────────────
       // The driver below calls base.invoke() repeatedly for one logical turn,
       // so the session is opened HERE and threaded down. A base leg that
@@ -558,16 +568,26 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           },
         } as InvokeConfig;
 
-        const resumed = Boolean(
-          (input as any).ctx?.__restoredFromSnapshot
-          || (input as any).ctx?.__paused
+        const pausedMidRun = Boolean(
+          (input as any).ctx?.__paused
           || (input as any).ctx?.__resumeStage
           || (input as any).ctx?.__awaitingApproval
           || (input as any).ctx?.__awaitingUserQuestion
         );
+        const resumed = Boolean((input as any).ctx?.__restoredFromSnapshot || pausedMidRun);
+        // Consumed into `resumed`. The base legs strip it on entry as well, but
+        // the denial branch below returns before any leg runs and would
+        // otherwise hand the marker back on `result.state`.
+        if ((input as any).ctx?.__restoredFromSnapshot) {
+          const consumedCtx = { ...((input as any).ctx as Record<string, any>) };
+          delete consumedCtx.__restoredFromSnapshot;
+          input = { ...input, ctx: consumedCtx } as SmartState;
+          sessionHolder.value = input;
+        }
         const opened = await openPluginSession(runHost, {
           messages: (input.messages || []) as any,
           resumed,
+          pausedMidRun,
           config,
         });
 

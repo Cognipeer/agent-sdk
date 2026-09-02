@@ -242,6 +242,13 @@ export interface HookMap {
       error?: Error;
       durationMs: number;
       executionId: string;
+      /**
+       * Where `output` came from. `tool` is a real execution (or its error);
+       * `hook` is a `preToolUse.result` short-circuit; `cache` is a hit on the
+       * tool's own result cache — that value already passed this hook once,
+       * when it was stored, so a redactor sees it twice.
+       */
+      source?: "tool" | "hook" | "cache";
     };
     output: {
       /** Rewritten output — redaction, normalization, schema coercion. */

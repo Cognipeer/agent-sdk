@@ -557,6 +557,67 @@ describe("R3 — decisions: deny > ask > allow", () => {
     expect(result.deniedBy).toBe("policy");
     expect(result.reason).toBe("policy: blocked by policy");
   });
+
+  it("a reason-less deny does NOT inherit an earlier plugin's non-blocking reason", async () => {
+    const { run } = harness([
+      { name: "scanner", priority: 10, hooks: { preToolUse: () => ({ decision: "allow", reason: "looks fine" }) } },
+      { name: "policy", priority: 20, hooks: { preToolUse: () => ({ decision: "deny" }) } },
+    ]);
+    const result = await run.runGate("preToolUse", toolInput());
+    expect(result.decision).toBe("deny");
+    expect(result.deniedBy).toBe("policy");
+    // Surfacing "scanner: looks fine" as the block message would name the
+    // wrong plugin and say the opposite of what happened. The caller falls
+    // back to its own hook-specific default instead.
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("a non-escalating handler's reason is kept only while there is none yet", async () => {
+    const { run } = harness([
+      { name: "first", priority: 10, hooks: { preToolUse: () => ({ decision: "ask", reason: "first asks" }) } },
+      { name: "second", priority: 20, hooks: { preToolUse: () => ({ decision: "ask", reason: "second asks" }) } },
+    ]);
+    const result = await run.runGate("preToolUse", toolInput());
+    expect(result.decision).toBe("ask");
+    expect(result.reason).toBe("first: first asks");
+  });
+
+  it('"ask" from a hook without approval semantics is read as deny; on preToolUse it stays "ask"', async () => {
+    const reviewer: AgentPlugin = {
+      name: "reviewer",
+      hooks: {
+        postModelCall: () => ({ decision: "ask", reason: "needs review" }) as any,
+        userPromptSubmit: () => ({ decision: "ask" }) as any,
+        preToolUse: () => ({ decision: "ask" }),
+      },
+    };
+    const { run, logger } = harness([reviewer]);
+
+    const post = await run.runGate("postModelCall", {
+      message: { role: "assistant", content: "x" } as any,
+      durationMs: 1,
+      iteration: 1,
+      shortCircuited: false,
+    });
+    expect(post.decision).toBe("deny");
+    expect(post.deniedBy).toBe("reviewer");
+    expect(post.reason).toBe("reviewer: needs review");
+
+    // Reason-less: the caller's default applies, but the run still stops.
+    const prompt = await run.runGate("userPromptSubmit", promptInput());
+    expect(prompt.decision).toBe("deny");
+    expect(prompt.deniedBy).toBe("reviewer");
+    expect(prompt.reason).toBeUndefined();
+
+    const warned = logger.warn.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(warned).toContain('returned "ask" from "postModelCall"');
+    expect(warned).toContain('returned "ask" from "userPromptSubmit"');
+
+    // The one hook with a ledger to park the call in keeps the real semantics.
+    const pre = await run.runGate("preToolUse", toolInput());
+    expect(pre.decision).toBe("ask");
+    expect(pre.deniedBy).toBeUndefined();
+  });
 });
 
 // ─── R4 ─────────────────────────────────────────────────────────────────────
@@ -756,6 +817,91 @@ describe("R5 — errors: failureMode decides", () => {
     const result = await run.runGate("preToolUse", toolInput());
     expect(result.decision).toBe("allow");
     expect(result.deniedBy).toBeUndefined();
+  });
+
+  // `DECISION_RANK["block"]` is undefined, so the escalation compare used to be
+  // false and the chain proceeded as allow while the `plugin` event echoed the
+  // string as if a verdict had been taken. A policy service's own vocabulary
+  // (block / redact / warn) is exactly how such a value arrives.
+  it("an unknown decision string is a handler error, not an allow: fail-open skips it and logs at error level", async () => {
+    const order: string[] = [];
+    const { run, logger, events } = harness([
+      {
+        name: "console-vocab",
+        priority: 10,
+        hooks: {
+          userPromptSubmit: () => {
+            order.push("console-vocab");
+            return { decision: "block", reason: "policy hit" } as any;
+          },
+        },
+      },
+      {
+        name: "after",
+        priority: 20,
+        hooks: {
+          userPromptSubmit: (input) => {
+            order.push("after");
+            return { text: `${input.text}!` };
+          },
+        },
+      },
+    ]);
+
+    const result = await run.runGate("userPromptSubmit", promptInput("x"));
+    expect(order).toEqual(["console-vocab", "after"]);
+    expect(result.decision).toBe("allow");
+    expect(result.input.text).toBe("x!");
+    // The bogus verdict must not leak out as though it had been taken.
+    expect(result.reason).toBeUndefined();
+    expect(result.deniedBy).toBeUndefined();
+
+    const errored = logger.error.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(errored).toContain('plugin "console-vocab"');
+    expect(errored).toContain('hook "userPromptSubmit"');
+    expect(errored).toContain('"block"');
+    expect(events.some((e) => e.type === "plugin" && e.plugin === "console-vocab" && e.phase === "error")).toBe(true);
+    expect(events.some((e) => e.type === "plugin" && e.decision === "block")).toBe(false);
+  });
+
+  it("an unknown decision string on a fail-closed plugin denies, naming the plugin and the value", async () => {
+    const order: string[] = [];
+    const { run } = harness([
+      {
+        name: "strict-vocab",
+        priority: 10,
+        failureMode: "closed",
+        hooks: { userPromptSubmit: () => ({ decision: "DENY" }) as any },
+      },
+      {
+        name: "never-runs",
+        priority: 20,
+        hooks: {
+          userPromptSubmit: (input) => {
+            order.push("never-runs");
+            return { text: `${input.text}!` };
+          },
+        },
+      },
+    ]);
+
+    const result = await run.runGate("userPromptSubmit", promptInput("x"));
+    expect(order).toEqual([]);
+    expect(result.decision).toBe("deny");
+    expect(result.deniedBy).toBe("strict-vocab");
+    expect(result.reason).toContain("fail-closed");
+    expect(result.reason).toContain("invalid decision");
+    expect(result.reason).toContain('"DENY"');
+    expect(result.input.text).toBe("x");
+  });
+
+  it("a non-string decision (true) is rejected the same way", async () => {
+    const { run, logger } = harness([
+      { name: "boolean-vocab", hooks: { preToolUse: () => ({ decision: true }) as any } },
+    ]);
+    const result = await run.runGate("preToolUse", toolInput());
+    expect(result.decision).toBe("allow");
+    expect(logger.error.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("true");
   });
 });
 

@@ -23,6 +23,13 @@ const DISALLOWED_CTX_KEYS = new Set([
   // must not travel in a snapshot.
   "__pluginRunStarted",
   "__pluginRunEnded",
+  // Set by restoreSnapshot on the way OUT, consumed by the next invoke. Never
+  // persisted: a snapshot of a restored run would otherwise mark every later
+  // restore as "resumed" forever.
+  "__restoredFromSnapshot",
+  // A per-turn verdict. It describes the run that produced the snapshot, not
+  // the run that will resume from it.
+  "__guardrailBlocked",
 ]);
 
 const clone = <T>(value: T): T => {

@@ -723,3 +723,360 @@ describe("regression guard: an agent with no plugins", () => {
     expect((withoutOption.state?.ctx as any)?.__plugins).toBeUndefined();
   });
 });
+
+// ─── Decision semantics at the call sites ────────────────────────────────────
+
+describe('"ask" from a hook without approval semantics', () => {
+  it("halts the run as a deny from postModelCall and sets __guardrailBlocked", async () => {
+    // Only preToolUse has a ledger to park a call in; every other caller used
+    // to test for deny alone, so an `ask` here fell through as allow.
+    const { model, seen } = scriptedModel([{ text: "needs a second look" }]);
+    const reviewer: AgentPlugin = {
+      name: "reviewer",
+      hooks: { postModelCall: () => ({ decision: "ask", reason: "needs human review" }) as any },
+    };
+    const agent = createAgent({ name: "asking", model, tools: [], plugins: [reviewer] });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as any);
+
+    expect(seen).toHaveLength(1);
+    expect(result.messages).toHaveLength(2);
+    expect(JSON.stringify(result.messages)).not.toContain("needs a second look");
+    expect(result.content).toContain("needs human review");
+    const blocked = (result.state?.ctx as any)?.__guardrailBlocked;
+    expect(blocked?.phase).toBe("response");
+    expect(blocked?.incident?.hook).toBe("postModelCall");
+    expect(blocked?.incident?.deniedBy).toBe("reviewer");
+  });
+});
+
+// ─── Plugin deny × structured output ─────────────────────────────────────────
+
+describe("plugin deny with outputSchema (tool-based strategy)", () => {
+  it("ends the run after ONE provider call, with no output and __guardrailBlocked set", async () => {
+    // Plain text instead of a `response` tool call: exactly the shape the
+    // tool-based finalizer used to answer with a nudge and a second model call,
+    // ending with `output` populated next to `__guardrailBlocked`.
+    const { model, seen } = scriptedModel([{ text: "UNSAFE_PLAIN_TEXT" }]);
+    const blocker: AgentPlugin = {
+      name: "response-blocker",
+      hooks: { postModelCall: () => ({ decision: "deny", reason: "unsafe response" }) },
+    };
+    const agent = createAgent({
+      name: "structured-blocking",
+      model,
+      tools: [],
+      outputSchema: z.object({ answer: z.string() }),
+      plugins: [blocker],
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as any);
+
+    expect(seen).toHaveLength(1);
+    expect(result.output).toBeUndefined();
+    expect(result.content).toContain("unsafe response");
+    expect((result.state?.ctx as any)?.__guardrailBlocked?.incident?.hook).toBe("postModelCall");
+    // No nudge (a `user` turn) was appended after the refusal.
+    expect(result.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
+    expect(result.messages).toHaveLength(2);
+  });
+
+  it("a preModelCall deny under outputSchema appends exactly one refusal and calls nothing", async () => {
+    const { model, seen } = scriptedModel([{ text: "never" }]);
+    const blocker: AgentPlugin = {
+      name: "request-blocker",
+      hooks: { preModelCall: () => ({ decision: "deny", reason: "request refused" }) },
+    };
+    const agent = createAgent({
+      name: "structured-pre-blocking",
+      model,
+      tools: [],
+      outputSchema: z.object({ answer: z.string() }),
+      plugins: [blocker],
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as any);
+
+    expect(seen).toHaveLength(0);
+    expect(result.output).toBeUndefined();
+    expect(assistantMessages(result.messages)).toHaveLength(1);
+    expect(result.messages).toHaveLength(2);
+    expect((result.state?.ctx as any)?.__guardrailBlocked?.incident?.hook).toBe("preModelCall");
+  });
+});
+
+// ─── __guardrailBlocked is per turn ──────────────────────────────────────────
+
+describe("__guardrailBlocked is a per-turn marker", () => {
+  it("does not leak from a denied turn into the next turn on the same state, nor into a snapshot", async () => {
+    const { model } = scriptedModel([{ text: "UNSAFE" }, { text: "all good" }]);
+    const blocker: AgentPlugin = {
+      name: "unsafe-blocker",
+      hooks: {
+        postModelCall: ({ message }) =>
+          String((message as any).content).includes("UNSAFE") ? { decision: "deny", reason: "unsafe" } : undefined,
+      },
+    };
+    const agent = createAgent({ name: "turns", model, tools: [], plugins: [blocker] });
+
+    const turn1 = await agent.invoke({ messages: [{ role: "user", content: "first" }] } as any);
+    expect((turn1.state?.ctx as any)?.__guardrailBlocked?.incident?.hook).toBe("postModelCall");
+    // A snapshot describes the conversation, not the verdict on its last turn.
+    expect(agent.snapshot(turn1.state!).state.ctx ?? {}).not.toHaveProperty("__guardrailBlocked");
+
+    // The ordinary continuation pattern: last result's state plus a new turn.
+    const turn2 = await agent.invoke({
+      ...turn1.state,
+      messages: [...turn1.messages, { role: "user", content: "second" }],
+    } as any);
+
+    expect(turn2.content).toBe("all good");
+    expect((turn2.state?.ctx as any)?.__guardrailBlocked).toBeFalsy();
+  });
+
+  it("is cleared on createSmartAgent too, including after the driver's own userPromptSubmit denial", async () => {
+    const { model } = scriptedModel([{ text: "all good" }]);
+    const guard: AgentPlugin = {
+      name: "word-guard",
+      hooks: {
+        userPromptSubmit: ({ text }) =>
+          text.includes("forbidden") ? { decision: "deny", reason: "not allowed" } : undefined,
+      },
+    };
+    const agent = createSmartAgent({ name: "smart-turns", model, tools: [], plugins: [guard], summarization: false });
+
+    const turn1 = await agent.invoke({ messages: [{ role: "user", content: "forbidden" }] } as any);
+    expect((turn1.state?.ctx as any)?.__guardrailBlocked?.incident?.hook).toBe("userPromptSubmit");
+    expect(agent.snapshot(turn1.state!).state.ctx ?? {}).not.toHaveProperty("__guardrailBlocked");
+
+    const turn2 = await agent.invoke({
+      ...turn1.state,
+      messages: [...turn1.messages, { role: "user", content: "fine" }],
+    } as any);
+
+    expect(turn2.content).toBe("all good");
+    expect((turn2.state?.ctx as any)?.__guardrailBlocked).toBeFalsy();
+  });
+});
+
+// ─── Reviewer-edited approvedArgs ────────────────────────────────────────────
+
+/**
+ * The gate runs on the MODEL's arguments; a reviewer may then approve with an
+ * edit. The edit used to replace `args` past both the schema and the policy —
+ * "approve with changes" was a way to execute what preToolUse had denied.
+ */
+describe("reviewer-edited approvedArgs", () => {
+  function approvalAgent() {
+    const func = vi.fn(async (args: any) => `read ${args.message}`);
+    const tool = createTool({
+      name: "read_file",
+      description: "reads a file",
+      schema: z.object({ message: z.string() }),
+      needsApproval: true,
+      func,
+    });
+    const { model } = scriptedModel([
+      { tool: "read_file", args: { message: "/tmp/safe.txt" }, id: "tc_1" },
+      { text: "done" },
+    ]);
+    const gated: string[] = [];
+    const policy: AgentPlugin = {
+      name: "path-policy",
+      hooks: {
+        preToolUse: ({ args }) => {
+          gated.push(String((args as any)?.message));
+          return (args as any)?.message === "/etc/passwd"
+            ? { decision: "deny", reason: "outside the sandbox" }
+            : undefined;
+        },
+      },
+    };
+    const agent = createAgent({ name: "approvals", model, tools: [tool], plugins: [policy] });
+    return { agent, func, gated };
+  }
+
+  const pauseForApproval = async (agent: ReturnType<typeof approvalAgent>["agent"]) => {
+    const paused = await agent.invoke({ messages: [{ role: "user", content: "read it" }] } as any);
+    const pending = paused.state!.pendingApprovals![0];
+    expect(pending.status).toBe("pending");
+    return { paused, pending };
+  };
+
+  it("re-gates an edit through preToolUse: a deny there stops the call the human approved with changes", async () => {
+    const { agent, func, gated } = approvalAgent();
+    const { paused, pending } = await pauseForApproval(agent);
+    expect(gated).toEqual(["/tmp/safe.txt"]);
+
+    const approved = agent.resolveToolApproval(paused.state!, {
+      id: pending.id,
+      approved: true,
+      approvedArgs: { message: "/etc/passwd" },
+    });
+    const resumed = await agent.invoke(approved as any);
+
+    expect(func).not.toHaveBeenCalled();
+    // On resume the gate saw the model's args again, then the reviewer's edit.
+    expect(gated).toEqual(["/tmp/safe.txt", "/tmp/safe.txt", "/etc/passwd"]);
+
+    // Same shape as any preToolUse deny: one tool message, one rejected row.
+    const tools = toolMessages(resumed.messages);
+    expect(tools).toHaveLength(1);
+    expect(String(tools[0].content)).toContain("outside the sandbox");
+    const history = resumed.state?.toolHistory ?? [];
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("rejected");
+    expect((history[0].args as any).message).toBe("/etc/passwd");
+
+    const ledger = resumed.state?.pendingApprovals?.[0];
+    expect(ledger?.status).toBe("executed");
+    expect(ledger?.metadata?.resolution).toBe("policy_denied");
+    expect(resumed.content).toBe("done");
+  });
+
+  it("re-validates an edit against the schema and refuses one that does not fit", async () => {
+    const { agent, func } = approvalAgent();
+    const { paused, pending } = await pauseForApproval(agent);
+
+    const approved = agent.resolveToolApproval(paused.state!, {
+      id: pending.id,
+      approved: true,
+      approvedArgs: { notMessage: 42 },
+    });
+    const resumed = await agent.invoke(approved as any);
+
+    expect(func).not.toHaveBeenCalled();
+    const tools = toolMessages(resumed.messages);
+    expect(tools).toHaveLength(1);
+    expect(String(tools[0].content)).toContain("reviewer-edited arguments");
+    expect(resumed.state?.pendingApprovals?.[0]?.metadata?.resolution).toBe("invalid_args");
+    expect(resumed.content).toBe("done");
+  });
+
+  it("runs an allowed edit with the EDITED arguments, recorded as such", async () => {
+    const { agent, func, gated } = approvalAgent();
+    const { paused, pending } = await pauseForApproval(agent);
+
+    const approved = agent.resolveToolApproval(paused.state!, {
+      id: pending.id,
+      approved: true,
+      approvedArgs: { message: "/tmp/other.txt" },
+    });
+    const resumed = await agent.invoke(approved as any);
+
+    expect(func).toHaveBeenCalledTimes(1);
+    expect(func.mock.calls[0][0]).toEqual({ message: "/tmp/other.txt" });
+    expect(gated).toEqual(["/tmp/safe.txt", "/tmp/safe.txt", "/tmp/other.txt"]);
+    const history = resumed.state?.toolHistory ?? [];
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("success");
+    expect((history[0].args as any).message).toBe("/tmp/other.txt");
+    expect(resumed.content).toBe("done");
+  });
+
+  it("does not re-gate an unedited approval (approvedArgs defaults to the original args)", async () => {
+    const { agent, func, gated } = approvalAgent();
+    const { paused, pending } = await pauseForApproval(agent);
+
+    const approved = agent.resolveToolApproval(paused.state!, { id: pending.id, approved: true });
+    await agent.invoke(approved as any);
+
+    expect(func).toHaveBeenCalledTimes(1);
+    // Pause turn + resume turn: the original args are gated exactly once each.
+    expect(gated).toEqual(["/tmp/safe.txt", "/tmp/safe.txt"]);
+  });
+});
+
+// ─── postToolUse on short-circuits ───────────────────────────────────────────
+
+describe("postToolUse on short-circuits", () => {
+  it("runs on a preToolUse `result` short-circuit (source: 'hook'), and its rewrite is what the model sees", async () => {
+    const { tool, func } = spyTool("lookup");
+    const { model, seen } = scriptedModel([
+      { tool: "lookup", args: { message: "who?" }, id: "tc_1" },
+      { text: "answered" },
+    ]);
+
+    const sources: Array<string | undefined> = [];
+    const stub: AgentPlugin = {
+      name: "stub-lookup",
+      priority: 10,
+      hooks: { preToolUse: () => ({ result: "RAW_SECRET_FROM_STUB" }) },
+    };
+    const redactor: AgentPlugin = {
+      name: "redactor",
+      priority: 20,
+      hooks: {
+        postToolUse: ({ source }) => {
+          sources.push(source);
+          return { output: "REDACTED" };
+        },
+      },
+    };
+    const agent = createAgent({
+      name: "stubbed-redacted",
+      model,
+      tools: [tool],
+      limits: { maxToolCalls: 3 },
+      plugins: [stub, redactor],
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
+
+    expect(func).not.toHaveBeenCalled();
+    expect(sources).toEqual(["hook"]);
+    expect(String(toolMessages(result.messages)[0].content)).toBe("REDACTED");
+    expect(result.state?.toolHistory?.[0].output).toBe("REDACTED");
+    expect(result.state?.toolHistory?.[0].fromCache).not.toBe(true);
+    expect(JSON.stringify(seen[1].messages)).not.toContain("RAW_SECRET_FROM_STUB");
+  });
+
+  it("runs on a tool-cache hit (source: 'cache'), and a deny there withholds the cached value", async () => {
+    let calls = 0;
+    const cached = createTool({
+      name: "cached_lookup",
+      description: "cached lookup",
+      schema: z.object({ message: z.string() }),
+      cache: true,
+      func: async () => {
+        calls += 1;
+        return "CACHED_PAYLOAD";
+      },
+    });
+    const { model } = scriptedModel([
+      { tool: "cached_lookup", args: { message: "same" }, id: "tc_1" },
+      { tool: "cached_lookup", args: { message: "same" }, id: "tc_2" },
+      { text: "done" },
+    ]);
+
+    const sources: Array<string | undefined> = [];
+    const gate: AgentPlugin = {
+      name: "cache-aware",
+      hooks: {
+        postToolUse: ({ source }) => {
+          sources.push(source);
+          return source === "cache" ? { decision: "deny", reason: "cached value withheld" } : undefined;
+        },
+      },
+    };
+    const agent = createAgent({
+      name: "cached",
+      model,
+      tools: [cached],
+      limits: { maxToolCalls: 4 },
+      plugins: [gate],
+    });
+
+    const result = await agent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
+
+    expect(calls).toBe(1);
+    expect(sources).toEqual(["tool", "cache"]);
+    const tools = toolMessages(result.messages);
+    expect(tools).toHaveLength(2);
+    expect(String(tools[0].content)).toBe("CACHED_PAYLOAD");
+    expect(String(tools[1].content)).toContain("cached value withheld");
+    const history = result.state?.toolHistory ?? [];
+    expect(history[1].fromCache).toBe(true);
+    expect(history[1].output).toContain("cached value withheld");
+  });
+});
