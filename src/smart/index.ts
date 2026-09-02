@@ -16,6 +16,7 @@ import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "
 import { StructuredOutputManager } from "../structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resolver.js";
 import { extractMessageText } from "../utils/content.js";
+import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
 import { createSkillRegistryRef, DEFAULT_SKILL_POLICY, type Skill, type SkillPolicy } from "./skills/types.js";
 import { createSkillTools } from "./skills/skillTools.js";
 import { preopenSkills } from "./skills/preopen.js";
@@ -676,7 +677,20 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
             onEvent: config?.onEvent ?? (opts as any).onEvent,
           });
           if (preopened.messages.length > 0) {
-            seedMessages.push(...preopened.messages);
+            // The bindings always stand — that is what pre-opening is for. The
+            // synthetic TRANSCRIPT exchange is another matter: appending an
+            // assistant turn to a conversation whose last assistant turn still
+            // has an unanswered tool_call buries that call. `selectPendingToolCalls`
+            // walks back only to the most recent assistant turn, finds the
+            // preopen turn fully resolved, and reports nothing pending — so an
+            // approval resume breaks out of the loop having made zero model
+            // calls, the approved tool never runs, and the dangling-tool-response
+            // guard reports it as a provider error or an exhausted budget.
+            // The host meanwhile sees `open_skill` tool_call events it cannot
+            // account for, because the model never asked for them.
+            if (selectPendingToolCalls(seedMessages).length === 0) {
+              seedMessages.push(...preopened.messages);
+            }
             seedToolHistory = [...(seedToolHistory ?? []), ...preopened.toolHistory];
             stateRef.toolHistory = seedToolHistory;
           }
