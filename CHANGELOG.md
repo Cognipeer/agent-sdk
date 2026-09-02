@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1]
+
+### Fixed
+- **A `userPromptSubmit` deny on `createSmartAgent` didn't set `ctx.__guardrailBlocked`.** `createAgent`'s own prompt-denial path sets this flag — the SDK's documented signal that a turn was blocked rather than answered — but `createSmartAgent` runs through a separate copy of the same session-open/denial branch that never set it. A caller checking the flag on a smart agent saw nothing and could not tell a blocked turn from an ordinary completed one.
+
 ## [0.10.0]
 
 ### Added

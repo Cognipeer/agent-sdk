@@ -573,9 +573,21 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
 
         if (opened.denied) {
           const reason = opened.denied.reason;
+          // `createAgent`'s own session-denial path (src/agent.ts) sets this;
+          // this one didn't, so a caller checking `state.ctx.__guardrailBlocked`
+          // — the SDK's own documented signal for "this turn was blocked, not
+          // answered" — saw nothing on a smart agent and treated a blocked turn
+          // as an ordinary completed answer.
           const blocked = {
             ...input,
             messages: [...(opened.messages as any[]), { role: "assistant", name: "guardrail", content: reason }],
+            ctx: {
+              ...((input as any).ctx || {}),
+              __guardrailBlocked: {
+                phase: "request",
+                incident: { reason, deniedBy: opened.denied.deniedBy, hook: "userPromptSubmit" },
+              },
+            },
           } as SmartState;
           sessionHolder.value = blocked;
           const deniedResult = {
