@@ -167,20 +167,25 @@ function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseM
 }
 
 /**
- * The `summary_only` view: the summary stands in for the past, and only what
- * the summary does not cover is sent verbatim.
+ * The `summary_only` view: the summary stands in for PAST turns; the current
+ * turn is sent as it is.
  *
  *  - The FIRST user message (the run's instruction anchor) is always kept —
  *    the old `.slice(-2)` dropped it, so a standing instruction given there
  *    ("answer in Turkish", "never touch prod") vanished on the third turn.
- *  - The CURRENT user request is always kept.
- *  - Everything after the latest summarization point is kept verbatim, tool
- *    calls and tool results included. The old view filtered tool messages out
- *    entirely, so inside a run the model never saw the output of the tool it
- *    had just called (and asked for it again), and a kept assistant turn with
- *    `tool_calls` but no results was an invalid request for most providers.
- *  - Messages before the summarization point are represented by the summary.
- *    The synthetic summarize_context exchange itself is dropped: its text is
+ *  - The CURRENT turn — the last user message and everything after it — is
+ *    kept whole, tool calls and results included. The old view filtered tool
+ *    messages out entirely, so inside a run the model never saw the output of
+ *    the tool it had just called (and asked for it again), and a kept
+ *    assistant turn with `tool_calls` but no results was an invalid request
+ *    for most providers. Results the summarizer compacted stay as their small
+ *    placeholders: they are the trail of what the run already did (which
+ *    pages it read, which queries it ran), and without that trail a model
+ *    re-does work it cannot see it did. The summarizer's latest, protected
+ *    tool turn stays in full even though its marker is appended after it.
+ *  - Earlier turns are represented by the summary, EXCEPT those after the
+ *    latest summarization point: nobody has summarized them yet.
+ *  - The synthetic summarize_context exchange itself is dropped: its text is
  *    already in the `context_summary` block.
  *  - Until a first summary exists there is nothing to stand in for the past,
  *    so the view is the hybrid turn window — dropping turns nobody has
@@ -198,17 +203,19 @@ function collectSummaryOnlyBody(body: BaseMessage[], hasSummary: boolean, lastTu
       break;
     }
   }
+  let lastUserIndex = -1;
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    if (body[index].role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
 
   const keep = new Set<number>();
   const firstUserIndex = body.findIndex((message) => message.role === "user");
   if (firstUserIndex >= 0) keep.add(firstUserIndex);
-  for (let index = body.length - 1; index >= 0; index -= 1) {
-    if (body[index].role === "user") {
-      keep.add(index);
-      break;
-    }
-  }
-  for (let index = boundary + 1; index < body.length; index += 1) {
+  const verbatimFrom = Math.min(lastUserIndex >= 0 ? lastUserIndex : body.length, boundary + 1);
+  for (let index = Math.max(0, verbatimFrom); index < body.length; index += 1) {
     if (!isSyntheticSummaryMessage(body[index])) keep.add(index);
   }
 

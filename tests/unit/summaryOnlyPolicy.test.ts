@@ -133,8 +133,43 @@ describe('summary_only context view', () => {
     expect(flat).toContain('ANCHOR task');
     expect(flat).toContain('CURRENT request');
     expect(flat).toContain('PAGE_2');
-    // Pre-summary tool exchange is represented by the summary; dropped as a pair.
-    expect(flat).not.toContain('ARCHIVED_TOOL_RESPONSE');
+    // The compacted result stays as its placeholder: the trail of what this
+    // run already did, still a valid call/result pair.
+    expect(flat).toContain('ARCHIVED_TOOL_RESPONSE');
+    assertValidToolAdjacency(view);
+  });
+
+  it('keeps the latest tool turn the summarizer protected, though it sits before the summary marker', () => {
+    // The summarizer never compacts the newest tool turn (the model has not
+    // read it yet) and appends its marker AFTER it. Treating "after the
+    // marker" as the only live part hid exactly that result: the model never
+    // saw the page it had just fetched and started paging from the top again.
+    const messages: Message[] = [
+      { role: 'system', content: 'system prompt' },
+      { role: 'user', content: 'ANCHOR task' },
+      { role: 'user', content: 'Read the archive page by page' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'page_1', type: 'function', function: { name: 'read', arguments: '{"cursor":"start"}' } }],
+      } as Message,
+      { role: 'tool', name: 'read', tool_call_id: 'page_1', content: 'ARCHIVED_TOOL_RESPONSE page 1' } as Message,
+      {
+        role: 'assistant',
+        content: 'Page 1 read; moving on.',
+        tool_calls: [{ id: 'page_2', type: 'function', function: { name: 'read', arguments: '{"cursor":"p2"}' } }],
+      } as Message,
+      { role: 'tool', name: 'read', tool_call_id: 'page_2', content: 'PAGE_2_LINES next_cursor=p3' } as Message,
+      ...summaryPair('call_summary_1'),
+    ];
+    const view = buildModelMessages({ messages, summaryRecords: [SUMMARY] } as unknown as SmartState, resolvedSummaryOnly());
+    const flat = view.map(textOf).join('\n');
+
+    expect(flat).toContain('PAGE_2_LINES next_cursor=p3');
+    expect(flat).toContain('Page 1 read; moving on.');
+    // Page 1 is visible as what it now is — a compacted placeholder — so the
+    // model knows it was read and does not start over.
+    expect(flat).toContain('ARCHIVED_TOOL_RESPONSE page 1');
     assertValidToolAdjacency(view);
   });
 

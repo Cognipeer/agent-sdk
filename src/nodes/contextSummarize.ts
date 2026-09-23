@@ -9,7 +9,7 @@ import type {
     SummaryIntegrityCheck,
 } from "../types.js";
 import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
-import { isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
+import { isCompactedToolContent, isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 import { getModelName, recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -176,14 +176,7 @@ function extractCanonicalFacts(messages: BaseMessage[]): StructuredSummary["stab
 }
 
 function isSummarizedToolPlaceholder(content: BaseMessage["content"]): boolean {
-    return typeof content === "string"
-        && (
-            content === "SUMMARIZED"
-            || content.startsWith("SUMMARIZED_TOOL_RESPONSE")
-            || content.startsWith("ARCHIVED_TOOL_RESPONSE")
-            || content.startsWith("STRUCTURED_TOOL_RESPONSE")
-            || content.startsWith("DROPPED_TOOL_RESPONSE")
-        );
+    return isCompactedToolContent(content);
 }
 
 /** tool_call ids issued by the most recent assistant turn — the model's live working set. */
@@ -456,7 +449,7 @@ Return exactly one JSON object with this schema:
 }
 
 Rules:
-- user_directives: every standing instruction the user gave about HOW to work or answer (language, format, tone, scope, things to always or never do) that still applies. Copy each one close to verbatim; never merge, soften or drop one. Carry forward every directive from the previous structured summary unless the user explicitly revoked it — then put its exact text in discarded_obsolete.
+- user_directives: standing instructions the user gave about HOW to work or answer for the rest of the conversation (language, format, tone, scope, things to always or never do) that still apply. NOT the tasks or questions themselves — "read the logs" is a task (an active goal), "always answer in Turkish" is a directive. Copy each directive close to verbatim; never merge, soften or drop one. Carry forward every directive from the previous structured summary unless the user explicitly revoked it — then put its exact text in discarded_obsolete.
 - Keep stable_facts only for facts that future turns must remember.
 - Put invalidated or superseded fact keys in discarded_obsolete.
 - Preserve active_goals still relevant to the user.
