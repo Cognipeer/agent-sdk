@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3]
+
+### Fixed
+- **`context.policy: "summary_only"` dropped the instruction anchor.** The view was the last two user/assistant messages, so from the third turn on the first user message — where standing instructions usually live — was gone. The first user message and the current request are now always kept, as the hybrid window and the clamp already do.
+- **`summary_only` hid tool results from the model inside a run.** Tool messages were filtered out entirely, so the model never saw the output of the tool it had just called (and tended to call it again), and a kept assistant turn with `tool_calls` but no results was an invalid request for most providers. Everything after the latest summarization point — tool calls and results included — is now sent verbatim; only what the summary covers is left out.
+- **`summary_only` dropped turns nobody had summarized.** Before the first summary, and for the turns after the latest one, messages were lost outright. Before a summary exists the view is now the hybrid turn window; after one, the turns past the summarization point are kept.
+
+### Added
+- **`StructuredSummary.user_directives`.** The summarizer now records the user's standing instructions (language, format, scope, always/never rules) verbatim and renders them first in the context summary. A directive a later summary drops is treated as critical loss and merged forward by the integrity repair, unless the user revoked it (its text is listed in `discarded_obsolete`). The local fallback summary carries the previous directives forward. Custom `summarization.promptTemplate`s are unaffected; add `user_directives` to their schema to opt in.
+
 ## [0.10.2]
 
 ### Fixed

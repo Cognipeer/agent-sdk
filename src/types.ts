@@ -505,6 +505,13 @@ export type SummaryFactItem = {
 };
 
 export type StructuredSummary = {
+  /**
+   * Standing instructions the user gave that still apply ("answer in Turkish",
+   * "never restart prod"). Kept verbatim across summaries: a directive dropped
+   * by a later summary counts as critical loss and is merged forward, unless
+   * the user explicitly revoked it (listed in `discarded_obsolete`).
+   */
+  user_directives?: string[];
   stable_facts: SummaryFactItem[];
   active_goals: string[];
   open_questions: string[];
