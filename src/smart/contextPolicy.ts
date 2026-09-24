@@ -1,6 +1,7 @@
 import type { BaseMessage, MemoryFact, ResolvedSmartAgentConfig, SmartState, StructuredSummary } from "../types.js";
 import { countApproxTokens } from "../utils/utilTokens.js";
 import { extractMessageText } from "../utils/content.js";
+import { isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 
 function collectRecentTurns(messages: BaseMessage[], lastTurnsToKeep: number): BaseMessage[] {
   if (lastTurnsToKeep <= 0) return [];
@@ -52,6 +53,12 @@ function collectRecentTurns(messages: BaseMessage[], lastTurnsToKeep: number): B
 export function renderStructuredSummary(summary: StructuredSummary | undefined): string {
   if (!summary) return "";
   const lines = ["Context summary:"];
+  // Standing instructions first: they constrain every later turn, and they are
+  // the part of the conversation a summary must never paraphrase away.
+  if (summary.user_directives && summary.user_directives.length > 0) {
+    lines.push("User directives (still in force — follow them):");
+    lines.push(...summary.user_directives.map((directive) => `- ${directive}`));
+  }
   if (summary.stable_facts.length > 0) {
     lines.push("Stable facts:");
     lines.push(...summary.stable_facts.map((fact) => `- ${fact.key}: ${fact.value}`));
@@ -159,18 +166,78 @@ function clampToBudget(messages: BaseMessage[], maxContextTokens: number): BaseM
   return working;
 }
 
+/**
+ * The `summary_only` view: the summary stands in for PAST turns; the current
+ * turn is sent as it is.
+ *
+ *  - The FIRST user message (the run's instruction anchor) is always kept —
+ *    the old `.slice(-2)` dropped it, so a standing instruction given there
+ *    ("answer in Turkish", "never touch prod") vanished on the third turn.
+ *  - The CURRENT turn — the last user message and everything after it — is
+ *    kept whole, tool calls and results included. The old view filtered tool
+ *    messages out entirely, so inside a run the model never saw the output of
+ *    the tool it had just called (and asked for it again), and a kept
+ *    assistant turn with `tool_calls` but no results was an invalid request
+ *    for most providers. Results the summarizer compacted stay as their small
+ *    placeholders: they are the trail of what the run already did (which
+ *    pages it read, which queries it ran), and without that trail a model
+ *    re-does work it cannot see it did. The summarizer's latest, protected
+ *    tool turn stays in full even though its marker is appended after it.
+ *  - Earlier turns are represented by the summary, EXCEPT those after the
+ *    latest summarization point: nobody has summarized them yet.
+ *  - The synthetic summarize_context exchange itself is dropped: its text is
+ *    already in the `context_summary` block.
+ *  - Until a first summary exists there is nothing to stand in for the past,
+ *    so the view is the hybrid turn window — dropping turns nobody has
+ *    summarized would lose them outright.
+ */
+function collectSummaryOnlyBody(body: BaseMessage[], hasSummary: boolean, lastTurnsToKeep: number): BaseMessage[] {
+  if (!hasSummary) {
+    return collectRecentTurns(body, Math.max(1, lastTurnsToKeep));
+  }
+
+  let boundary = -1;
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    if (isSyntheticSummaryMessage(body[index])) {
+      boundary = index;
+      break;
+    }
+  }
+  let lastUserIndex = -1;
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    if (body[index].role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  const keep = new Set<number>();
+  const firstUserIndex = body.findIndex((message) => message.role === "user");
+  if (firstUserIndex >= 0) keep.add(firstUserIndex);
+  const verbatimFrom = Math.min(lastUserIndex >= 0 ? lastUserIndex : body.length, boundary + 1);
+  for (let index = Math.max(0, verbatimFrom); index < body.length; index += 1) {
+    if (!isSyntheticSummaryMessage(body[index])) keep.add(index);
+  }
+
+  return body.filter((_, index) => keep.has(index));
+}
+
 export function buildModelMessages(state: SmartState, config: ResolvedSmartAgentConfig): BaseMessage[] {
   const rawMessages = (state.messages || []) as BaseMessage[];
   if (config.context.policy === "raw") {
     return clampToBudget(rawMessages, config.limits.maxContextTokens);
   }
 
-  const recentMessages = collectRecentTurns(rawMessages, config.context.lastTurnsToKeep);
   const latestSummary = state.summaryRecords?.[state.summaryRecords.length - 1];
   const summaryText = renderStructuredSummary(latestSummary);
   const memoryText = renderMemoryBlock(state.memoryFacts);
-  const systemMessage = recentMessages[0]?.role === "system" ? recentMessages[0] : undefined;
-  const body = systemMessage ? recentMessages.slice(1) : recentMessages;
+  const systemMessage = rawMessages[0]?.role === "system" ? rawMessages[0] : undefined;
+  const body = config.context.policy === "summary_only"
+    ? collectSummaryOnlyBody(systemMessage ? rawMessages.slice(1) : rawMessages, Boolean(summaryText), config.context.lastTurnsToKeep)
+    : (() => {
+      const recentMessages = collectRecentTurns(rawMessages, config.context.lastTurnsToKeep);
+      return recentMessages[0]?.role === "system" ? recentMessages.slice(1) : recentMessages;
+    })();
   const syntheticContextMessages: BaseMessage[] = [];
 
   if (summaryText) {
@@ -183,7 +250,7 @@ export function buildModelMessages(state: SmartState, config: ResolvedSmartAgent
   const assembled = [
     ...(systemMessage ? [systemMessage] : []),
     ...syntheticContextMessages,
-    ...(config.context.policy === "summary_only" ? body.filter((message) => message.role === "user" || message.role === "assistant").slice(-2) : body),
+    ...body,
   ];
 
   return clampToBudget(assembled, config.limits.maxContextTokens);

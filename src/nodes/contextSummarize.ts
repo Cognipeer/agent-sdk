@@ -9,7 +9,7 @@ import type {
     SummaryIntegrityCheck,
 } from "../types.js";
 import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
-import { isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
+import { isCompactedToolContent, isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 import { getModelName, recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -79,6 +79,9 @@ function extractJsonObject(text: string): string | null {
 
 function normalizeStructuredSummary(input: any, fallbackText: string): StructuredSummary {
     const summary: StructuredSummary = {
+        user_directives: Array.isArray(input?.user_directives)
+            ? input.user_directives.map((directive: any) => String(directive ?? "").trim()).filter(Boolean)
+            : [],
         stable_facts: Array.isArray(input?.stable_facts)
             ? input.stable_facts
                     .filter((fact: any) => fact && typeof fact === "object")
@@ -173,14 +176,7 @@ function extractCanonicalFacts(messages: BaseMessage[]): StructuredSummary["stab
 }
 
 function isSummarizedToolPlaceholder(content: BaseMessage["content"]): boolean {
-    return typeof content === "string"
-        && (
-            content === "SUMMARIZED"
-            || content.startsWith("SUMMARIZED_TOOL_RESPONSE")
-            || content.startsWith("ARCHIVED_TOOL_RESPONSE")
-            || content.startsWith("STRUCTURED_TOOL_RESPONSE")
-            || content.startsWith("DROPPED_TOOL_RESPONSE")
-        );
+    return isCompactedToolContent(content);
 }
 
 /** tool_call ids issued by the most recent assistant turn — the model's live working set. */
@@ -256,11 +252,17 @@ function runIntegrityCheck(previous: StructuredSummary | undefined, current: Str
     const previousKeys = new Set((previous?.stable_facts || []).map((fact) => fact.key));
     const currentKeys = new Set(current.stable_facts.map((fact) => fact.key));
     const obsoleteKeys = new Set(current.discarded_obsolete);
-    const criticalFactLoss = [...previousKeys].some((key) => !obsoleteKeys.has(key) && !currentKeys.has(key));
+    const currentDirectives = new Set(current.user_directives || []);
+    const lostDirectives = (previous?.user_directives || []).filter((directive) => !currentDirectives.has(directive) && !obsoleteKeys.has(directive));
+    const criticalFactLoss = [...previousKeys].some((key) => !obsoleteKeys.has(key) && !currentKeys.has(key))
+        || lostDirectives.length > 0;
     const obsoleteFactRevived = current.stable_facts.some((fact) => obsoleteKeys.has(fact.key));
 
     if (criticalFactLoss) {
         notes.push("Missing previously retained facts; merged forward during integrity repair.");
+    }
+    if (lostDirectives.length > 0) {
+        notes.push(`Dropped ${lostDirectives.length} user directive(s); merged forward during integrity repair.`);
     }
     if (obsoleteFactRevived) {
         notes.push("Obsolete facts reappeared; removed during integrity repair.");
@@ -288,7 +290,13 @@ function repairStructuredSummary(previous: StructuredSummary | undefined, curren
     const filteredFacts = integrity.obsoleteFactRevived
         ? nextFacts.filter((fact) => !current.discarded_obsolete.includes(fact.key))
         : nextFacts;
-    return { ...current, stable_facts: filteredFacts };
+    const directives = [...(current.user_directives || [])];
+    for (const directive of previous.user_directives || []) {
+        if (!directives.includes(directive) && !current.discarded_obsolete.includes(directive)) {
+            directives.push(directive);
+        }
+    }
+    return { ...current, user_directives: directives, stable_facts: filteredFacts };
 }
 
 /**
@@ -432,6 +440,7 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
 
 Return exactly one JSON object with this schema:
 {
+  "user_directives": [string],
   "stable_facts": [{ "key": string, "value": string, "confidence": number }],
   "active_goals": [string],
   "open_questions": [string],
@@ -440,6 +449,7 @@ Return exactly one JSON object with this schema:
 }
 
 Rules:
+- user_directives: standing instructions the user gave about HOW to work or answer for the rest of the conversation (language, format, tone, scope, things to always or never do) that still apply. NOT the tasks or questions themselves — "read the logs" is a task (an active goal), "always answer in Turkish" is a directive. Copy each directive close to verbatim; never merge, soften or drop one. Carry forward every directive from the previous structured summary unless the user explicitly revoked it — then put its exact text in discarded_obsolete.
 - Keep stable_facts only for facts that future turns must remember.
 - Put invalidated or superseded fact keys in discarded_obsolete.
 - Preserve active_goals still relevant to the user.
@@ -532,6 +542,9 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         durationMs = Date.now() - startTime;
                 structuredSummary = normalizeStructuredSummary(undefined, previousSummary || conversationText.slice(0, 800));
                 structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
+                // The local fallback has no model to re-derive directives with;
+                // the previous summary's are still in force.
+                structuredSummary.user_directives = [...(previousStructuredSummary?.user_directives || [])];
                 integrity = { passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: ["Fallback summary generated locally."] };
                 summaryText = renderStructuredSummary(structuredSummary);
         
