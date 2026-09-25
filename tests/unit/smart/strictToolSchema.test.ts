@@ -200,6 +200,44 @@ describe('strict by default — every tool the provider sees', () => {
     ]));
   });
 
+  it('the SDK\'s own tools are portable: no object unions (Gemini has none, strict needs every branch closed)', async () => {
+    const { model, bound } = fakeStrictModel([{ role: 'assistant', content: 'done' }]);
+    model.capabilities.strictToolCalling = false;
+    await createSmartAgent({
+      name: 'portable', model, tools: [],
+      planning: { mode: 'todo' },
+      skills: [{ key: 'triage', title: 'Triage', header: 'h', prompt: 'p' }] as any,
+      subagents: [{ name: 'reader', description: 'reads', systemPrompt: 'read' }] as any,
+      humanInTheLoop: { askUser: { enabled: true } } as any,
+    } as any).invoke({ messages: [{ role: 'user', content: 'go' }] } as any);
+    const unions: string[] = [];
+    const walk = (node: any, path: string) => {
+      if (!node || typeof node !== 'object') return;
+      const branches = node.anyOf ?? node.oneOf;
+      if (Array.isArray(branches) && branches.filter((b: any) => b?.type !== 'null').length > 1) unions.push(path);
+      for (const [key, value] of Object.entries(node)) walk(value, `${path}.${key}`);
+    };
+    const names = new Set<string>();
+    for (const call of bound) for (const tool of call.tools) {
+      names.add(tool.name);
+      walk(toToolDefinition(tool).parameters, tool.name);
+    }
+    expect(names).toContain('manage_plan');
+    expect(unions).toEqual([]);
+  });
+
+  it('manage_plan still requires a status on write, with an error the model can act on', async () => {
+    const results: unknown[] = [];
+    const { model } = fakeStrictModel([
+      { role: 'assistant', content: '', tool_calls: [{ id: 'p1', name: 'manage_plan', args: { operation: 'write', expectedVersion: null, todoList: [{ id: 1, step: 'look', title: null, description: null, owner: null, exitCriteria: null, status: null, evidence: null }] } }] },
+      { role: 'assistant', content: 'done' },
+    ]);
+    const agent = createSmartAgent({ name: 'p', model, tools: [], planning: { mode: 'todo' } } as any);
+    const res: any = await agent.invoke({ messages: [{ role: 'user', content: 'go' }] } as any);
+    for (const m of res.messages ?? res.state?.messages ?? []) if (m.role === 'tool' && m.name === 'manage_plan') results.push(m.content);
+    expect(String(results[0])).toContain('todoList[0].status');
+  });
+
   it('runs a tool with its original arguments after a strict-shaped call', async () => {
     const seen: unknown[] = [];
     const tool = createTool({

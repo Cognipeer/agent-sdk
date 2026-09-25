@@ -47,6 +47,31 @@ const todoUpdateItemSchema = z.object({
   evidence: z.string().max(300).optional(),
 });
 
+/**
+ * The one item shape the MODEL sees. Write and update items differ only in
+ * whether `status` is required, and the tool validates each operation against
+ * its own schema below — so the wire schema needs no union. A union of two
+ * objects is what broke the tool on strict endpoints (every branch must be
+ * closed) and on Gemini, whose function-declaration schema has no object
+ * unions (LangChain throws "Gemini cannot handle union types").
+ */
+const todoItemWireSchema = z.object({
+  id: z.number().int().min(1).describe("Sequential id starting from 1 (write) or an existing id (update)"),
+  step: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+  owner: z.string().min(1).optional(),
+  exitCriteria: z.string().min(1).optional(),
+  status: todoStatusSchema.optional().describe("Required for every item on write"),
+  evidence: z.string().max(300).optional(),
+});
+
+function describeTodoIssue(issue: z.ZodIssue | undefined): string | undefined {
+  if (!issue) return undefined;
+  const path = issue.path.length > 0 ? `todoList[${issue.path[0]}]${issue.path.slice(1).map((p) => `.${String(p)}`).join("")}` : "todoList";
+  return `${path}: ${issue.message}`;
+}
+
 function normalizeTodoItem(item: any, existing?: any) {
   const id = item.id ?? existing?.id;
   const step = item.step || item.title || item.description || existing?.step || existing?.title || existing?.description || `Step ${id}`;
@@ -212,7 +237,7 @@ function createPlanTool(
     schema: z.object({
       operation: z.enum(["write", "read", "update"]),
       expectedVersion: z.number().int().min(0).optional(),
-      todoList: z.array(z.union([todoWriteItemSchema, todoUpdateItemSchema])).optional()
+      todoList: z.array(todoItemWireSchema).optional()
     }),
     func: async ({ operation, expectedVersion, todoList }) => {
       const toolStateRef = (manageTodo as any)._stateRef as undefined | { __onEvent?: (e: any) => void; ctx?: { __traceSession?: any } };
@@ -283,7 +308,10 @@ function createPlanTool(
           return {
             status: "error",
             operation,
-            error: parsed.error.issues[0]?.message || "Invalid todoList for write.",
+            // The wire schema has `status` optional (one shape for write and
+            // update), so a missing one is caught here — named, so the model
+            // can fix the call.
+            error: describeTodoIssue(parsed.error.issues[0]) || "Invalid todoList for write.",
             version: currentVersion,
             adherenceScore: stateRef.adherenceScore || 0,
           } as const;
@@ -306,7 +334,7 @@ function createPlanTool(
           return {
             status: "error",
             operation,
-            error: parsed.error.issues[0]?.message || "Invalid todoList for update.",
+            error: describeTodoIssue(parsed.error.issues[0]) || "Invalid todoList for update.",
             version: currentVersion,
             adherenceScore: stateRef.adherenceScore || 0,
           } as const;
