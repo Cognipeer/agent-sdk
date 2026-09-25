@@ -50,6 +50,8 @@ export {
   validateToolArgs,
 } from "./smart/toolResponses.js";
 export { coerceToolArgs } from "./smart/toolArgCoercion.js";
+export { toStrictCompatible, toStrictToolSchema, restoreToolCalls, prepareStrictToolMenu } from "./smart/strictToolSchema.js";
+export type { StrictTransform, StrictRestorers } from "./smart/strictToolSchema.js";
 export type {
   ToolInputDigestOptions,
   ToolInputDigestResult,

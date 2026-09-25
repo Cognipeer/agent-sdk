@@ -6,6 +6,7 @@ import { buildSystemPrompt } from "../prompts.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { detectVolatileContent } from "../smart/contextPilot/index.js";
 import type { PluginRunHost } from "../plugins/host.js";
+import { prepareStrictToolMenu, restoreToolCalls, type StrictRestorers } from "../smart/strictToolSchema.js";
 
 // Minimal agent node: no system prompt injection. Invokes model with messages as-is.
 export function createAgentCoreNode(opts: SmartAgentOptions) {
@@ -32,13 +33,23 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // actually sent rather than the one we intended to send.
     let tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
     const shouldUseStrictToolCalling = Boolean(
-      runtime.responseFormat
+      (runtime.responseFormat || opts.strictTools)
       && (runtime.model as any)?.capabilities?.strictToolCalling
     );
+    // Strict mode binds a strict-valid VIEW of each tool; the model's calls
+    // are mapped back to the original shape (restoreToolCalls) before the
+    // tool node validates and runs them.
+    let strictRestorers: StrictRestorers = new Map();
+    const wireMenu = (menu: Array<ToolInterface<any, any, any>>) => {
+      if (!shouldUseStrictToolCalling) return menu;
+      const prepared = prepareStrictToolMenu(menu);
+      strictRestorers = prepared.restorers;
+      return prepared.menu;
+    };
     const bindToolMenu = (menu: Array<ToolInterface<any, any, any>>) =>
       (runtime.model)?.bindTools
         ? (runtime.model).bindTools(
-            menu,
+            wireMenu(menu),
             shouldUseStrictToolCalling ? { strict: true } : undefined,
           )
         : runtime.model;
@@ -57,7 +68,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const computeTraceToolDefinitions = (menu: Array<ToolInterface<any, any, any>>) => {
       if (!traceSession || !traceSession.resolvedConfig.logData || menu.length === 0) return undefined;
       try {
-        return menu.map((tool) => {
+        const wire = shouldUseStrictToolCalling ? prepareStrictToolMenu(menu).menu : menu;
+        return wire.map((tool) => {
           const def = toToolDefinition(tool, shouldUseStrictToolCalling ? true : undefined);
           return { name: def.name, description: def.description || undefined, parameters: def.parameters };
         });
@@ -485,6 +497,13 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           });
           throw err;
         }
+      }
+
+      // Strict-shaped arguments ("not given" nulls, JSON-encoded free-form
+      // values) back to the tools' own shape — before any plugin, the
+      // transcript or the tool node sees them.
+      if (shortCircuited === undefined && strictRestorers.size > 0) {
+        response = restoreToolCalls(response, strictRestorers);
       }
 
       // ── Plugin gate: postModelCall ─────────────────────────────────────────

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4]
+
+### Added
+- **`strictTools: true`** (on `createSmartAgent` / `createAgent`): bind tools in the provider's strict tool mode on every call, not only with native structured output. Applies only when `model.capabilities.strictToolCalling` is true; sub-agents inherit it. Default unchanged.
+- **Strict tool schemas are made strict-valid in the SDK.** In strict mode each Zod-schema tool — the caller's and the SDK's own (`manage_plan`, `open_skill`, `spawn_subagent`, …) — is bound through a view whose schema follows OpenAI's rules: optionals become required-nullable, objects and **union branches** are closed, free-form objects/records/`any` travel as JSON strings. The model's calls are restored to the tool's original shape (nulls for "not given" dropped, JSON decoded) before plugins, the transcript and the tool node see them. Exported: `toStrictCompatible`, `toStrictToolSchema`, `restoreToolCalls`, `prepareStrictToolMenu`.
+
+### Fixed
+- **Planning broke every strict run.** `manage_plan`'s `todoList: array(union(write, update))` left the branches' optional fields out of `required`, so OpenAI rejected the request (`Invalid schema for function 'manage_plan' … anyOf … Missing 'step'`).
+- **Strict mode with optional arguments.** The adapter marked every property required without making it nullable, so the model could not leave one out, and a null it sent failed the tool's own validation.
+
 ## [0.10.3]
 
 ### Fixed

@@ -103,6 +103,9 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     reasoning: (opts as any).reasoning,
     tokenCounter: (opts as any).tokenCounter,
     costEstimator: (opts as any).costEstimator,
+    // A child's model gets the same wire contract: a child of a strict agent
+    // hitting the provider with non-strict tools fails the same way.
+    strictTools: opts.strictTools,
     promptHooks,
     // A policy a delegation can shed is not a policy: children inherit every
     // plugin that has not explicitly opted out with inheritToSubagents: false.

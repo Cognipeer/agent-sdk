@@ -268,6 +268,17 @@ export type AgentOptions = {
   todoListPrompt?: string;
   // Optional: normalize provider-specific usage into a common shape
   usageConverter?: (finalMessage: AIMessage, fullState: SmartState, model: any) => any;
+  /**
+   * Bind tools in the provider's STRICT tool mode on every call, not only when
+   * native structured output is on. Applies only to models whose
+   * `capabilities.strictToolCalling` is true (OpenAI-family); others are left
+   * untouched. Every tool — yours and the SDK's own — is made strict-valid
+   * (optionals → required-nullable, objects and union branches closed,
+   * free-form values → JSON strings) and the model's calls are restored to
+   * the original shape before they are validated and run.
+   * Default: strict only with native structured output.
+   */
+  strictTools?: boolean;
   // Optional Zod schema for structured output; when provided, invoke() will attempt to parse
   // the final assistant content as JSON and validate it. Parsed value is returned as result.output
   // with full TypeScript inference.
@@ -711,6 +722,17 @@ export type SmartAgentOptions = {
   useTodoList?: boolean;
   // Optional: normalize provider-specific usage into a common shape
   usageConverter?: (finalMessage: AIMessage, fullState: SmartState, model: any) => any;
+  /**
+   * Bind tools in the provider's STRICT tool mode on every call, not only when
+   * native structured output is on. Applies only to models whose
+   * `capabilities.strictToolCalling` is true (OpenAI-family); others are left
+   * untouched. Every tool — yours and the SDK's own — is made strict-valid
+   * (optionals → required-nullable, objects and union branches closed,
+   * free-form values → JSON strings) and the model's calls are restored to
+   * the original shape before they are validated and run.
+   * Default: strict only with native structured output.
+   */
+  strictTools?: boolean;
   // Optional Zod schema for structured output; when provided, invoke() will attempt to parse
   // the final assistant content as JSON and validate it. Parsed value is returned as result.output
   // with full TypeScript inference.
