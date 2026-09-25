@@ -32,9 +32,13 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // computed AFTER the hook, so the trace describes the request that was
     // actually sent rather than the one we intended to send.
     let tools: Array<ToolInterface<any, any, any>> = (runtime.tools as any) ?? [];
+    // Strict on EVERY call for a model that supports it, not only under
+    // native structured output: arguments are then schema-valid by
+    // construction. `strictToolCalling` is reported only for endpoints that
+    // enforce it (OpenAI, Azure OpenAI — see getModelCapabilities); an
+    // OpenAI-compatible self-hosted server keeps the plain schemas.
     const shouldUseStrictToolCalling = Boolean(
-      (runtime.responseFormat || opts.strictTools)
-      && (runtime.model as any)?.capabilities?.strictToolCalling
+      (runtime.model as any)?.capabilities?.strictToolCalling
     );
     // Strict mode binds a strict-valid VIEW of each tool; the model's calls
     // are mapped back to the original shape (restoreToolCalls) before the

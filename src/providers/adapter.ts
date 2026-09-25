@@ -701,10 +701,19 @@ function resolveCapabilities(provider: ProviderType): ModelCapabilities {
   switch (provider) {
     case "openai":
     case "azure":
-    case "openai-compatible":
       return {
         structuredOutput: "native",
         strictToolCalling: true,
+        streaming: true,
+        provider: provider,
+      };
+    case "openai-compatible":
+      // Same wire format, but strict tool mode is an OpenAI feature: vLLM,
+      // Ollama & co. ignore it or enforce it through a grammar that small
+      // models follow poorly, so the plain (simplified) schemas are sent.
+      return {
+        structuredOutput: "native",
+        strictToolCalling: false,
         streaming: true,
         provider: provider,
       };

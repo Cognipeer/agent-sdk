@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.4]
 
+### Changed
+- **Strict tool calling is on by default for every model that supports it**, not only under native structured output. Tool-call arguments are then schema-valid by construction. No option: the switch is the model's `capabilities.strictToolCalling`.
+- **`strictToolCalling` is reported only for endpoints that enforce it**: OpenAI and Azure OpenAI. A LangChain `ChatOpenAI` pointed at another host (`baseURL` — vLLM, Ollama, LM Studio, gateways) and the native `openai-compatible` provider now report `false` and keep the plain, simplified schemas; native structured output is unchanged for them. An explicit `model.capabilities` still takes precedence.
+
 ### Added
-- **`strictTools: true`** (on `createSmartAgent` / `createAgent`): bind tools in the provider's strict tool mode on every call, not only with native structured output. Applies only when `model.capabilities.strictToolCalling` is true; sub-agents inherit it. Default unchanged.
-- **Strict tool schemas are made strict-valid in the SDK.** In strict mode each Zod-schema tool — the caller's and the SDK's own (`manage_plan`, `open_skill`, `spawn_subagent`, …) — is bound through a view whose schema follows OpenAI's rules: optionals become required-nullable, objects and **union branches** are closed, free-form objects/records/`any` travel as JSON strings. The model's calls are restored to the tool's original shape (nulls for "not given" dropped, JSON decoded) before plugins, the transcript and the tool node see them. Exported: `toStrictCompatible`, `toStrictToolSchema`, `restoreToolCalls`, `prepareStrictToolMenu`.
+- **Strict tool schemas are made strict-valid in the SDK.** In strict mode each Zod-schema tool — the caller's and the SDK's own (`manage_plan`, `open_skill`, `spawn_subagent`, …) — is bound through a view whose schema follows OpenAI's rules: optionals become required-nullable, objects and **union branches** are closed, free-form objects/records/`any` travel as JSON strings. The model's calls are restored to the tool's original shape (nulls for "not given" dropped, JSON decoded) before plugins, the transcript and the tool node see them. Exported: `toStrictCompatible`, `toStrictToolSchema`, `restoreToolCalls`, `prepareStrictToolMenu`, `isOpenAIHostedEndpoint`.
 
 ### Fixed
 - **Planning broke every strict run.** `manage_plan`'s `todoList: array(union(write, update))` left the branches' optional fields out of `required`, so OpenAI rejected the request (`Invalid schema for function 'manage_plan' … anyOf … Missing 'step'`).

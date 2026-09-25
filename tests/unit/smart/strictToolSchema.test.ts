@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createSmartAgent, createTool } from '../../../src/index.js';
 import { toToolDefinition } from '../../../src/providers/adapter.js';
+import { getModelCapabilities, isOpenAIHostedEndpoint } from '../../../src/structuredOutput/resolver.js';
 import {
   prepareStrictToolMenu,
   restoreToolCalls,
@@ -138,7 +139,7 @@ describe('prepareStrictToolMenu', () => {
  * strict-valid on the wire, and a strict-shaped call still runs the tool with
  * its original arguments.
  */
-describe('strictTools — every tool the provider sees', () => {
+describe('strict by default — every tool the provider sees', () => {
   function fakeStrictModel(script: Array<Record<string, unknown>>) {
     const bound: Array<{ tools: any[]; options?: Record<string, unknown> }> = [];
     let turn = 0;
@@ -174,7 +175,6 @@ describe('strictTools — every tool the provider sees', () => {
     const agent = createSmartAgent({
       name: 'strict-probe',
       model,
-      strictTools: true,
       tools: [readLines, post],
       planning: { mode: 'todo' },
       skills: [{ key: 'triage', title: 'Triage', header: 'How to triage', prompt: 'Look at logs.' }] as any,
@@ -213,22 +213,41 @@ describe('strictTools — every tool the provider sees', () => {
       { role: 'assistant', content: '', tool_calls: [{ id: 'c1', name: 'knowledge_read_document_lines', args: { documentId: 'd1', offset: null, body: '{"k":1}' } }] },
       { role: 'assistant', content: 'done' },
     ]);
-    const agent = createSmartAgent({ name: 'p', model, strictTools: true, tools: [tool] } as any);
+    const agent = createSmartAgent({ name: 'p', model, tools: [tool] } as any);
     await agent.invoke({ messages: [{ role: 'user', content: 'go' }] } as any);
     expect(seen).toEqual([{ documentId: 'd1', body: { k: 1 } }]);
   });
 
-  it('leaves the menu alone without strictTools or strict support', async () => {
+  it('leaves the menu alone for a model without strict support', async () => {
     const schema = z.object({ q: z.string().optional() });
     const tool = createTool({ name: 's', description: 'd', schema, func: async () => 'ok' });
-    for (const [strictTools, strictToolCalling] of [[false, true], [true, false]] as const) {
-      const { model, bound } = fakeStrictModel([{ role: 'assistant', content: 'done' }]);
-      model.capabilities.strictToolCalling = strictToolCalling;
-      await createSmartAgent({ name: 'p', model, strictTools, tools: [tool] } as any)
-        .invoke({ messages: [{ role: 'user', content: 'go' }] } as any);
-      const bs = bound[0].tools.find((t: any) => t.name === 's');
-      expect(bs.schema).toBe(schema);
-      expect(bound[0].options?.strict).toBeUndefined();
-    }
+    const { model, bound } = fakeStrictModel([{ role: 'assistant', content: 'done' }]);
+    model.capabilities.strictToolCalling = false;
+    await createSmartAgent({ name: 'p', model, tools: [tool] } as any)
+      .invoke({ messages: [{ role: 'user', content: 'go' }] } as any);
+    const bs = bound[0].tools.find((t: any) => t.name === 's');
+    expect(bs.schema).toBe(schema);
+    expect(bound[0].options?.strict).toBeUndefined();
   });
+});
+
+describe('which endpoints count as strict', () => {
+  class ChatOpenAI {
+    constructor(public clientConfig: Record<string, unknown> = {}) {}
+  }
+  const caps = (lc: unknown) => getModelCapabilities({ invoke: async () => ({}), _lc: lc });
+
+  it('OpenAI and Azure OpenAI hosts are strict', () => {
+    expect(caps(new ChatOpenAI()).strictToolCalling).toBe(true);
+    expect(caps(new ChatOpenAI({ baseURL: 'https://api.openai.com/v1' })).strictToolCalling).toBe(true);
+    expect(isOpenAIHostedEndpoint({ clientConfig: { baseURL: 'https://acme.openai.azure.com/openai' } })).toBe(true);
+  });
+
+  it('an OpenAI-compatible server behind ChatOpenAI is not', () => {
+    expect(caps(new ChatOpenAI({ baseURL: 'http://vllm:8000/v1' })).strictToolCalling).toBe(false);
+    expect(caps(new ChatOpenAI({ baseURL: 'http://localhost:11434/v1' })).strictToolCalling).toBe(false);
+    // Still OpenAI wire format, so native structured output stays on.
+    expect(caps(new ChatOpenAI({ baseURL: 'http://vllm:8000/v1' })).structuredOutput).toBe('native');
+  });
+
 });
