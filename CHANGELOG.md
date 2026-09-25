@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4]
+
+### Changed
+- **Strict tool calling is on by default for every model that supports it**, not only under native structured output. Tool-call arguments are then schema-valid by construction. No option: the switch is the model's `capabilities.strictToolCalling`.
+- **`strictToolCalling` is reported only for endpoints that enforce it**: OpenAI and Azure OpenAI. A LangChain `ChatOpenAI` pointed at another host (`baseURL` — vLLM, Ollama, LM Studio, gateways) and the native `openai-compatible` provider now report `false` and keep the plain, simplified schemas; native structured output is unchanged for them. An explicit `model.capabilities` still takes precedence.
+
+### Added
+- **Strict tool schemas are made strict-valid in the SDK.** In strict mode each Zod-schema tool — the caller's and the SDK's own (`manage_plan`, `open_skill`, `spawn_subagent`, …) — is bound through a view whose schema follows OpenAI's rules: optionals become required-nullable, objects and **union branches** are closed, free-form objects/records/`any` travel as JSON strings. The model's calls are restored to the tool's original shape (nulls for "not given" dropped, JSON decoded) before plugins, the transcript and the tool node see them. Exported: `toStrictCompatible`, `toStrictToolSchema`, `restoreToolCalls`, `prepareStrictToolMenu`, `isOpenAIHostedEndpoint`.
+
+### Fixed
+- **`manage_plan` / `manage_todo_list` failed on Gemini and broke strict runs.** Its `todoList` was a union of a write item and an update item, and Gemini's function schema has no object unions: LangChain throws "Gemini cannot handle union types" when binding it. The model now sees a single flat item schema (`status` optional, required on write); each operation is still validated against its own schema, and a write without a status returns `todoList[i].status: Required`. The schema is also ~30% smaller.
+- **Planning broke every strict run.** `manage_plan`'s `todoList: array(union(write, update))` left the branches' optional fields out of `required`, so OpenAI rejected the request (`Invalid schema for function 'manage_plan' … anyOf … Missing 'step'`).
+- **Strict mode with optional arguments.** The adapter marked every property required without making it nullable, so the model could not leave one out, and a null it sent failed the tool's own validation.
+
 ## [0.10.3]
 
 ### Fixed

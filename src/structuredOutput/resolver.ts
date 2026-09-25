@@ -41,7 +41,7 @@ export function getModelCapabilities(model: any): ModelCapabilities {
     return {
       provider,
       structuredOutput: supportsNativeStructuredOutput(provider) ? "native" : "tool_based",
-      strictToolCalling: requiresStrictToolCalling(provider),
+      strictToolCalling: requiresStrictToolCalling(provider) && isOpenAIHostedEndpoint(model._lc),
       streaming: true,
     };
   }
@@ -108,4 +108,24 @@ function supportsNativeStructuredOutput(provider: string): boolean {
 
 function requiresStrictToolCalling(provider: string): boolean {
   return ["openai"].includes(provider);
+}
+
+/**
+ * `ChatOpenAI` is also how OpenAI-COMPATIBLE servers (vLLM, Ollama, LM Studio,
+ * gateways) are reached — with a custom `baseURL`. Strict tool mode is an
+ * OpenAI/Azure feature, so only those hosts count; everything else gets the
+ * plain schemas. No base URL means the SDK default, api.openai.com.
+ */
+export function isOpenAIHostedEndpoint(lcModel: any): boolean {
+  if (!lcModel) return true;
+  const baseURL = lcModel.clientConfig?.baseURL ?? lcModel.configuration?.baseURL ?? lcModel.baseURL;
+  if (typeof baseURL !== "string" || baseURL.trim() === "") return true;
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase();
+    return host === "api.openai.com"
+      || host.endsWith(".openai.azure.com")
+      || host.endsWith(".cognitiveservices.azure.com");
+  } catch {
+    return false;
+  }
 }
