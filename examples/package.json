@@ -12,6 +12,7 @@
     "example:context-pilot-branch-comparison": "tsx context-pilot-comparison/branch-real-comparison.ts",
     "example:context-pilot-heavy-comparison": "tsx context-pilot-comparison/heavy-scenarios-comparison.ts",
     "example:guardrails": "tsx guardrails/guardrails.ts",
+    "example:jev-guardrail": "tsx jev-guardrail/jev-guardrail.ts",
     "example:handoff": "tsx handoff/handoff.ts",
     "example:mcp-tavily": "tsx mcp-tavily/mcp_tavily.ts",
     "example:multi-agent": "tsx multi-agent/multi-agent.ts",
