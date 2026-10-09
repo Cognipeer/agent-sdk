@@ -5,6 +5,7 @@ import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyOpenAIReasoning } from "./utils/reasoning.js";
 import { audioMimeToOpenAIFormat } from "./utils/media.js";
+import { inlineJsonSchemaRefs } from "./utils/jsonSchemaRefs.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -389,7 +390,7 @@ export class OpenAIProvider extends BaseProvider {
           format: {
             type: "json_schema",
             name: request.responseFormat.name ?? "response",
-            schema: request.responseFormat.schema,
+            schema: inlineJsonSchemaRefs(request.responseFormat.schema),
             strict: true,
           },
         };
@@ -745,7 +746,7 @@ function toResponsesTextFormat(rf: any): Record<string, any> | undefined {
     return {
       type: "json_schema",
       name: js.name ?? "response",
-      schema: js.schema,
+      schema: inlineJsonSchemaRefs(js.schema),
       ...(js.description != null ? { description: js.description } : {}),
       ...(js.strict != null ? { strict: js.strict } : {}),
     };
