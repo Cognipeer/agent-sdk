@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`responsesApiModels` and `responsesStreaming` on the `openai` provider (opt-in).** Some models reason by default and reject function tools on Chat Completions whether or not a reasoning field is sent; the GPT-6 family on an Azure `/openai/v1` endpoint returns *"Function tools with reasoning_effort are not supported … use /v1/responses"*, and `gpt-6.1-sol` cannot turn reasoning off. `responsesApiModels` (exact strings or RegExps) routes the listed models to the Responses API with or without a `reasoning` config. For those models only, Chat Completions spellings in `extra` that `/responses` rejects with a 400 are re-spelled, values unchanged: `reasoning_effort` → `reasoning.effort` (a request-level `reasoning` still wins), `max_tokens` / `max_completion_tokens` → `max_output_tokens`, `response_format` → `text.format`, and `stream_options.include_usage` is dropped. With `responsesStreaming: true`, they also get real Responses SSE streaming: text and tool-call argument deltas, then a final chunk with usage and the reasoning summary. Both options are unset by default. Nothing is inferred from model names, `responsesApi: "never"` still wins, and `AzureProvider` / `OpenAICompatibleProvider` ignore both. Request bodies, routing and streaming for every configuration that does not list a model are unchanged, and a new byte-for-byte snapshot test pins them.
+
 ## [0.10.4]
 
 ### Changed

@@ -247,6 +247,37 @@ export type OpenAIProviderConfig = {
    * where it matters most: a self-hosted model is named by whoever served it.
    */
   responsesApi?: "auto" | "never" | "always";
+  /**
+   * Models that go to the Responses API, named explicitly. Opt-in; unset by
+   * default, and nothing here is inferred from a model name.
+   *
+   * A string matches the request's model (or `defaultModel`) exactly; a RegExp
+   * is tested against it. A match routes the request to Responses whether or
+   * not it carries `reasoning` — the case this exists for is a model that
+   * reasons by default and rejects function tools on Chat Completions, where
+   * sending no reasoning field does not help. `responsesApi: "never"` still
+   * wins; under `"always"` the routing is unchanged.
+   *
+   * Requests for a matched model also get, on the Responses body only:
+   *  - Chat Completions spellings arriving through `extra`, which /responses
+   *    rejects with a 400, re-spelled with their values unchanged:
+   *    `reasoning_effort` → `reasoning.effort` (a request `reasoning` effort
+   *    still wins), `max_tokens` / `max_completion_tokens` →
+   *    `max_output_tokens`, `response_format` → `text.format`, and
+   *    `stream_options.include_usage` dropped.
+   *  - real SSE streaming, when `responsesStreaming` is also true.
+   *
+   * Honoured by `OpenAIProvider` itself only; `AzureProvider` and
+   * `OpenAICompatibleProvider` ignore it.
+   */
+  responsesApiModels?: Array<string | RegExp>;
+  /**
+   * Stream Responses API output as it arrives (text and tool-call argument
+   * deltas) for models in `responsesApiModels`. Default false, which keeps the
+   * existing behaviour: one non-streaming Responses call, emitted as a single
+   * chunk. Has no effect on any other request.
+   */
+  responsesStreaming?: boolean;
 };
 
 export type AnthropicProviderConfig = {

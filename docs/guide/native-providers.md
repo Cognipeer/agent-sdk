@@ -53,6 +53,49 @@ createProvider({
 })
 ```
 
+#### Routing specific models to the Responses API (opt-in)
+
+Some models reason by default and reject function tools on Chat Completions, with or without a reasoning field (for example the GPT-6 family on an Azure `/openai/v1` endpoint: *"Function tools with reasoning_effort are not supported … use /v1/responses"*). List those models explicitly:
+
+```ts
+createProvider({
+  provider: "openai",
+  apiKey: process.env.AZURE_OPENAI_KEY!,
+  baseURL: "https://my-resource.openai.azure.com/openai/v1",
+  responsesApiModels: ["gpt-6.1-sol", /^gpt-6-/], // exact strings or RegExps
+  responsesStreaming: true,                      // optional, default false
+})
+```
+
+For a listed model only:
+
+- Requests go to `/responses`, whether or not they carry `reasoning`.
+- Chat Completions fields in `extra` that `/responses` rejects are re-spelled, with their values unchanged:
+  - `reasoning_effort` becomes `reasoning.effort`, so `"xhigh"` works. A `reasoning` config on the request still wins.
+  - `max_tokens` and `max_completion_tokens` become `max_output_tokens`.
+  - `response_format` becomes `text.format`.
+  - `stream_options.include_usage` is dropped.
+
+  Other keys pass through as they are. Note that these models also reject `temperature`, `top_p` and `stop` on `/responses`.
+- With `responsesStreaming: true`, `completeStream()` streams text and tool-call argument deltas as they arrive. Without it, the Responses call stays non-streaming and is emitted as one chunk, as before.
+
+**Model families instead of names.** A RegExp covers families that don't exist yet. For example, `/^gpt-(?:[6-9]|[1-9]\d+)(?!\d)/i` matches gpt-6, gpt-7.2-mini and gpt-10, but not gpt-5.x, gpt-4o or o3. For exceptions inside a family, either use a lookahead (`/^(?!gpt-6-luna$)gpt-…/`) or resolve the transport per model and state it outright:
+
+```ts
+const responses = overrides[model] ? overrides[model] === "responses" : patterns.some((p) => p.test(model));
+createProvider({
+  provider: "openai",
+  apiKey, baseURL,
+  responsesApi: responses ? "always" : "never", // "never" pins a model to Chat Completions
+  responsesApiModels: responses ? [model] : [],
+  responsesStreaming: true,
+});
+```
+
+Reasoning effort values in `extra` are passed through without validation, so which values a model accepts is the caller's configuration, not the SDK's.
+
+Nothing else changes. Unlisted models route exactly as before, and nothing is inferred from a model name. `responsesApi: "never"` overrides the list. Only `OpenAIProvider` reads these options; `AzureProvider` and `OpenAICompatibleProvider` ignore them.
+
 ### Anthropic
 
 ```ts

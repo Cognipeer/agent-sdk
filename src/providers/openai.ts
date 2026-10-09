@@ -28,6 +28,9 @@ export class OpenAIProvider extends BaseProvider {
   protected readonly defaultModel: string;
   protected readonly defaultHeaders: Record<string, string>;
   protected readonly responsesApi: "auto" | "never" | "always";
+  // Private, and read only by OpenAIProvider itself: see the constructor.
+  private readonly responsesApiModels: Array<string | RegExp>;
+  private readonly responsesStreaming: boolean;
 
   constructor(config: OpenAIProviderConfig) {
     super();
@@ -39,7 +42,24 @@ export class OpenAIProvider extends BaseProvider {
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
     this.responsesApi = config.responsesApi ?? "auto";
+    // The per-model opt-ins belong to an OpenAIProvider configured directly.
+    // Subclasses (Azure, openai-compatible) build the config they pass up here
+    // themselves and route Responses differently, so they never take part.
+    const ownInstance = new.target === OpenAIProvider;
+    this.responsesApiModels = ownInstance ? [...(config.responsesApiModels ?? [])] : [];
+    this.responsesStreaming = ownInstance && config.responsesStreaming === true;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
+  }
+
+  /** True when the caller listed this request's model in `responsesApiModels`. */
+  private isResponsesApiModel(request: ChatCompletionRequest): boolean {
+    if (this.responsesApiModels.length === 0) return false;
+    const model = request.model || this.defaultModel;
+    return this.responsesApiModels.some((entry) => {
+      if (typeof entry === "string") return entry === model;
+      entry.lastIndex = 0; // a /g or /y pattern would otherwise carry state between calls
+      return entry.test(model);
+    });
   }
 
   /** True when this request should go to the Responses API rather than Chat
@@ -50,10 +70,14 @@ export class OpenAIProvider extends BaseProvider {
    * carries a reasoning config AND the model name looks like an o-series/gpt-5
    * model. `never`/`always` let a caller state the answer instead, because the
    * name check is a guess and the two APIs differ in far more than reasoning —
-   * see `responsesApi` in OpenAIProviderConfig. */
+   * see `responsesApi` in OpenAIProviderConfig.
+   *
+   * A model listed in `responsesApiModels` is the caller stating the answer
+   * for that model alone; `never` still overrides it. */
   protected useResponsesApi(request: ChatCompletionRequest): boolean {
     if (this.responsesApi === "never") return false;
     if (this.responsesApi === "always") return true;
+    if (this.isResponsesApiModel(request)) return true;
     if (!request.reasoning) return false;
     return isReasoningModel(request.model || this.defaultModel);
   }
@@ -70,6 +94,10 @@ export class OpenAIProvider extends BaseProvider {
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     if (this.useResponsesApi(request)) {
+      if (this.responsesStreaming && this.isResponsesApiModel(request)) {
+        yield* this.streamResponses(request);
+        return;
+      }
       // Responses streaming uses a distinct SSE event protocol; for reasoning
       // models we issue a single non-streaming call and emit one final chunk
       // so reasoning summary + usage are preserved.
@@ -214,9 +242,116 @@ export class OpenAIProvider extends BaseProvider {
 
   protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const body = this.buildResponsesBody(request);
+    if (this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
     const res = await this.responsesFetch(body);
     const json = await res.json();
     return this.parseResponsesResponse(json, request.model || this.defaultModel);
+  }
+
+  /** Real Responses SSE streaming, for models opted in through
+   * `responsesApiModels` with `responsesStreaming` on. Emits the same chunk
+   * shapes as the Chat Completions stream: text deltas as they arrive, a tool
+   * call's id + name when it opens and its argument fragments under that id,
+   * then one final chunk with usage, finish reason and any reasoning summary
+   * (taken from the completed response, exactly as the non-streaming parse
+   * reads it). */
+  private async *streamResponses(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    const modelId = request.model || this.defaultModel;
+    const body = this.buildResponsesBody(request);
+    adaptChatExtrasForResponses(body, request.extra);
+    body.stream = true;
+    const res = await this.responsesFetch(body);
+
+    if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
+
+    let id = "";
+    let model = modelId;
+    // Keyed by output item id: argument deltas name the item, not the call.
+    const calls = new Map<string, { callId: string; name: string; arguments: string }>();
+    let final: ChatCompletionResponse | undefined;
+
+    for await (const event of parseSSEStream(res.body)) {
+      if (event.data === "[DONE]") break;
+
+      let data: any;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        continue;
+      }
+
+      switch (data.type ?? event.event) {
+        case "response.created":
+        case "response.in_progress":
+          id = data.response?.id ?? id;
+          model = data.response?.model ?? model;
+          break;
+
+        case "response.output_text.delta":
+          if (data.delta) yield { id, model, delta: { content: data.delta } };
+          break;
+
+        case "response.output_item.added": {
+          const item = data.item;
+          if (item?.type !== "function_call") break;
+          const call = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? "" };
+          calls.set(item.id ?? call.callId, call);
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, name: call.name, arguments: call.arguments }] } };
+          break;
+        }
+
+        case "response.function_call_arguments.delta": {
+          const call = calls.get(data.item_id);
+          if (!call || !data.delta) break;
+          call.arguments += data.delta;
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: data.delta }] } };
+          break;
+        }
+
+        case "response.output_item.done": {
+          // A server that sends a call's arguments only once it is complete
+          // (or never announced it): emit whatever the deltas did not carry.
+          const item = data.item;
+          if (item?.type !== "function_call") break;
+          const full = typeof item.arguments === "string" ? item.arguments : "";
+          const call = calls.get(item.id ?? item.call_id);
+          if (!call) {
+            const added = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: full };
+            calls.set(item.id ?? added.callId, added);
+            yield { id, model, delta: { toolCalls: [{ id: added.callId, name: added.name, arguments: full }] } };
+          } else if (full.length > call.arguments.length && full.startsWith(call.arguments)) {
+            const rest = full.slice(call.arguments.length);
+            call.arguments = full;
+            yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: rest }] } };
+          }
+          break;
+        }
+
+        case "response.completed":
+        case "response.incomplete":
+          final = this.parseResponsesResponse(data.response ?? {}, modelId);
+          break;
+
+        case "response.failed":
+        case "error": {
+          const err = data.response?.error ?? data.error ?? data;
+          throw new ProviderError(
+            `OpenAI Responses API stream error: ${err?.message ?? "unknown error"}`,
+            this.providerName,
+            undefined,
+            data,
+          );
+        }
+      }
+    }
+
+    yield {
+      id: final?.id || id,
+      model: final?.model || model,
+      delta: final?.reasoning ? { reasoning: final.reasoning } : {},
+      usage: final?.usage,
+      finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
+    };
   }
 
   protected buildResponsesBody(request: ChatCompletionRequest): Record<string, any> {
@@ -554,6 +689,69 @@ export function isReasoningModel(model: string | undefined): boolean {
   const m = model.toLowerCase();
   return /(^|[/_-])o[0-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
     || m.includes("gpt-5") || m.includes("gpt5");
+}
+
+/** Re-spells Chat Completions fields that arrived through `extra` into their
+ * Responses equivalents. Each one below is rejected by /responses with a 400
+ * that names the new spelling (measured on Azure /openai/v1), so passing it
+ * through can only fail. Values are carried unchanged.
+ *
+ *  reasoning_effort            → reasoning.effort (a request `reasoning` effort wins)
+ *  max_tokens, max_completion_tokens → max_output_tokens
+ *  response_format             → text.format
+ *  stream_options.include_usage → dropped (usage always arrives on response.completed)
+ *
+ * As on the chat path, `extra` wins over what the SDK built from the request,
+ * unless `extra` also names the Responses field itself. Keys /responses does
+ * not know at all (vLLM's `guided_json`, …) are left alone. Used only for
+ * `responsesApiModels`. */
+function adaptChatExtrasForResponses(body: Record<string, any>, extra: Record<string, any> | undefined): void {
+  const native = extra ?? {};
+
+  if ("reasoning_effort" in body) {
+    const effort = body.reasoning_effort;
+    delete body.reasoning_effort;
+    if (effort != null) {
+      const reasoning = body.reasoning && typeof body.reasoning === "object" ? body.reasoning : {};
+      if (reasoning.effort == null) body.reasoning = { ...reasoning, effort };
+    }
+  }
+
+  for (const key of ["max_tokens", "max_completion_tokens"]) {
+    if (!(key in body)) continue;
+    const value = body[key];
+    delete body[key];
+    if (value != null && !("max_output_tokens" in native)) body.max_output_tokens = value;
+  }
+
+  if ("response_format" in body) {
+    const format = toResponsesTextFormat(body.response_format);
+    delete body.response_format;
+    if (format && !("text" in native)) body.text = { ...body.text, format };
+  }
+
+  if (body.stream_options && typeof body.stream_options === "object" && "include_usage" in body.stream_options) {
+    const { include_usage: _dropped, ...rest } = body.stream_options;
+    if (Object.keys(rest).length > 0) body.stream_options = rest;
+    else delete body.stream_options;
+  }
+}
+
+/** Chat Completions `response_format` → Responses `text.format`. */
+function toResponsesTextFormat(rf: any): Record<string, any> | undefined {
+  if (!rf || typeof rf !== "object") return undefined;
+  if (rf.type === "json_schema") {
+    const js = rf.json_schema ?? {};
+    return {
+      type: "json_schema",
+      name: js.name ?? "response",
+      schema: js.schema,
+      ...(js.description != null ? { description: js.description } : {}),
+      ...(js.strict != null ? { strict: js.strict } : {}),
+    };
+  }
+  if (rf.type === "json_object" || rf.type === "text") return { type: rf.type };
+  return undefined;
 }
 
 /** Expands assistant-with-tool-call markers produced by toResponsesInput into
