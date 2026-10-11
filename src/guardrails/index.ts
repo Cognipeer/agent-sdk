@@ -16,8 +16,6 @@ import type {
   JevEngineOptions,
   JevClientLike,
   JevNoulAnswer,
-  JevSystemOneResult,
-  JevUsage,
   CustomRuleOptions,
   CustomRuleCallback,
 } from "./checks.js";
@@ -41,8 +39,6 @@ export type {
   JevEngineOptions,
   JevClientLike,
   JevNoulAnswer,
-  JevSystemOneResult,
-  JevUsage,
   CustomRuleOptions,
   CustomRuleCallback,
 };

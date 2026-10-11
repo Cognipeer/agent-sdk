@@ -8,7 +8,6 @@
  * By default this runs OFFLINE with a stub client so you can see the decision
  * flow without an API key. To call the real API:
  *
- *   npm install @typesafe-ai/sdk
  *   TYPESAFE_API_KEY=... npm run example:jev-guardrail
  */
 import { createAgent, createGuardrail, agentVerdictRule, GuardrailPhase } from "@cognipeer/agent-sdk";
@@ -48,7 +47,7 @@ function buildAgent(stubProbability: number) {
         jev: {
           threshold: 0.5,
           // Omit `client` when TYPESAFE_API_KEY is set: the rule then
-          // dynamically imports @typesafe-ai/sdk and builds a real client.
+          // builds a JevProvider.
           ...(useRealApi ? {} : { client: stubClient(stubProbability) }),
         },
       }),

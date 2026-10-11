@@ -1,6 +1,7 @@
 import AjvModule, { type ValidateFunction, type ErrorObject, type Options } from "ajv";
 import { z } from "zod";
 import type { JSONSchema7 } from "json-schema";
+import { JevProvider } from "../providers/jev.js";
 import type {
   GuardrailRule,
   GuardrailContext,
@@ -199,45 +200,26 @@ const guardianSchema = z.object({
 /** Which judge backend `agentVerdictRule` uses to produce its verdict. */
 export type GuardrailJudgeEngine = "llm" | "jev";
 
-/** Token usage reported by a Jev `systemOne` call. */
-export type JevUsage = {
-  readonly input_tokens: number;
-  readonly output_tokens: number;
-};
-
-/** Answer shape returned for a Jev `noul` (yes/no probability) question. */
+/** Jev answer for a `noul` (yes/no probability) question. */
 export type JevNoulAnswer = {
   readonly type: "noul";
-  /** Probability of a "yes" answer, from zero to one. */
+  /** Probability of a "yes", from zero to one. */
   readonly noul: number;
 };
 
-export type JevSystemOneResult = {
-  readonly model?: string;
-  readonly answers?: Record<string, JevNoulAnswer | { readonly type: string } | undefined>;
-  readonly usage?: JevUsage;
-};
-
 /**
- * Structural subset of `@typesafe-ai/sdk`'s `TypeSafeClient`.
- * Declared locally so the optional peer dependency is never referenced by the
- * published type declarations.
+ * Anything with the provider's `systemOne` method: a `JevProvider`, or a stub in tests.
  */
-export type JevClientLike = {
-  systemOne(
-    request: { state: any; questions: Record<string, any>; model?: string },
-    options?: any
-  ): PromiseLike<JevSystemOneResult>;
-};
+export type JevClientLike = Pick<JevProvider, "systemOne">;
 
 export type JevEngineOptions = {
-  /** Pre-built `TypeSafeClient` (or compatible stub). Skips the dynamic import entirely. */
+  /** Pre-built `JevProvider` (or compatible stub). When set, `apiKey`/`baseURL`/`model` are ignored. */
   client?: JevClientLike;
-  /** API key; falls back to the SDK's own `TYPESAFE_API_KEY` convention. */
+  /** API key for the `JevProvider` built on first use; falls back to `TYPESAFE_API_KEY`. */
   apiKey?: string;
-  /** API root; falls back to the SDK's own `TYPESAFE_BASE_URL` convention. */
+  /** API root; falls back to `TYPESAFE_BASE_URL`, then the provider default. */
   baseURL?: string;
-  /** Model override; falls back to the SDK's own `TYPESAFE_DEFAULT_MODEL` convention. */
+  /** Model override, per call. */
   model?: string;
   /** Risk probability at or above which the message fails the rule. Defaults to 0.5. */
   threshold?: number;
@@ -291,49 +273,33 @@ const DEFAULT_JEV_CRITERIA = {
   false: "The payload is benign and the agent should be allowed to continue.",
 };
 
-async function resolveJevClient(config: JevEngineOptions): Promise<JevClientLike> {
+function resolveJevClient(config: JevEngineOptions): JevClientLike {
   if (config.client) return config.client;
-
-  let mod: any;
-  try {
-    // @ts-ignore - optional peer dependency; it may not be installed, and the
-    // build must not depend on its type declarations being resolvable.
-    mod = await import("@typesafe-ai/sdk");
-  } catch {
+  const apiKey = config.apiKey ?? process.env.TYPESAFE_API_KEY;
+  if (!apiKey) {
     throw new Error(
-      "Jev engine requires @typesafe-ai/sdk to be installed. Run `npm install @typesafe-ai/sdk`, or pass a pre-built client via `jev.client`."
+      "Jev engine requires an API key: pass `jev.apiKey`, set TYPESAFE_API_KEY, or pass a `jev.client`."
     );
   }
-
-  const ClientCtor = mod?.TypeSafeClient ?? mod?.default?.TypeSafeClient;
-  if (typeof ClientCtor !== "function") {
-    throw new Error("@typesafe-ai/sdk did not export a TypeSafeClient constructor.");
-  }
-
-  const clientConfig: Record<string, string> = {};
-  if (config.apiKey) clientConfig.apiKey = config.apiKey;
-  if (config.baseURL) clientConfig.baseURL = config.baseURL;
-  if (config.model) clientConfig.defaultModel = config.model;
-  return new ClientCtor(clientConfig) as JevClientLike;
+  return new JevProvider({
+    provider: "jev",
+    apiKey,
+    baseURL: config.baseURL ?? process.env.TYPESAFE_BASE_URL,
+  });
 }
 
 export function agentVerdictRule(options: AgentRuleOptions): GuardrailRule {
   const payloadBuilder = options.payloadBuilder || defaultPayload;
   const fallbackDisposition = options.dispositionFallback || "block";
+
   const engine = options.engine || "llm";
   const jevOptions = options.jev || {};
   const jevThreshold =
     typeof jevOptions.threshold === "number" ? jevOptions.threshold : DEFAULT_JEV_THRESHOLD;
-  let jevClientPromise: Promise<JevClientLike> | undefined;
+  let jevClient: JevClientLike | undefined;
 
   async function evaluateWithJev(context: GuardrailContext) {
-    if (!jevClientPromise) {
-      jevClientPromise = resolveJevClient(jevOptions).catch((err) => {
-        jevClientPromise = undefined;
-        throw err;
-      });
-    }
-    const client = await jevClientPromise;
+    const client = (jevClient ??= resolveJevClient(jevOptions));
 
     const instructions = jevOptions.question
       ? jevOptions.question(context)

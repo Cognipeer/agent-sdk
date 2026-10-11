@@ -1,6 +1,6 @@
 # Jev guardrail engine example
 
-Demonstrates using [Jev](https://www.npmjs.com/package/@typesafe-ai/sdk) (TypeSafe AI's decision model) as the judge behind `agentVerdictRule`, instead of a guardian LLM.
+Demonstrates using Jev (TypeSafe AI's decision model, served through the SDK's `JevProvider`) as the judge behind `agentVerdictRule`, instead of a guardian LLM.
 
 The guardrail is attached the normal way, through `createAgent({ guardrails: [...] })`:
 
@@ -23,14 +23,15 @@ By default it runs **offline** with a stub client, so no API key is needed — y
 
 ## Against the real Jev API
 
-`@typesafe-ai/sdk` is an optional peer dependency, imported dynamically only when `engine: "jev"` is used:
+`JevProvider` calls `POST https://api.typesafe.ai/v1/systemone` over `fetch`; there is nothing extra to install:
 
 ```bash
-npm install @typesafe-ai/sdk
 TYPESAFE_API_KEY=your-key npm run example:jev-guardrail
 ```
 
-With the key set, the example drops the stub and lets the rule build a real `TypeSafeClient`.
+With the key set, the example drops the stub and the rule builds a `JevProvider` itself. Note that the conversation payload is sent to TypeSafe AI's API.
+
+You can also use the provider directly: `createProvider({ provider: "jev", apiKey })` then `provider.systemOne({ state, questions })`.
 
 ## What to look at
 
