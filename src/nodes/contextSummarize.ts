@@ -9,6 +9,7 @@ import type {
     SummaryIntegrityCheck,
 } from "../types.js";
 import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
+import { contentPartToText } from "../utils/content.js";
 import { isCompactedToolContent, isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 import { getModelName, recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
@@ -382,7 +383,11 @@ export function createContextSummarizeNode(opts: SmartAgentOptions) {
         let content = "";
         if (typeof m.content === "string") content = m.content;
         else if (Array.isArray(m.content)) {
-            content = m.content.map((c: any) => c.text || JSON.stringify(c)).join(" ");
+            // Attachments reach the summarizer as a short placeholder naming
+            // them, not as their JSON: the base64 would fill (and then be cut
+            // from) the 2000-character budget, leaving a summary that cannot
+            // say a picture was ever there.
+            content = m.content.map((c: any) => contentPartToText(c, (part) => JSON.stringify(part))).join(" ");
         }
 
         // If this is a tool message that was already summarized in a previous pass,

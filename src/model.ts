@@ -6,6 +6,7 @@
 import { toLangchainTools } from "./adapters/langchain.js";
 import type { ModelCapabilities } from "./structuredOutput/types.js";
 import { getModelCapabilities } from "./structuredOutput/resolver.js";
+import { linkAbortSignal } from "./utils/abort.js";
 
 export interface BaseChatMessagePart {
   type?: string; // e.g. 'text'
@@ -53,6 +54,16 @@ export function withTools(model: SmartModel, tools: any[], options?: { strict?: 
 
 // --- Adapters ----------------------------------------------------------------
 
+/**
+ * The call options with the linked signal in place of whatever `signal` the
+ * caller supplied. Untouched when it is already that signal (the usual case: a
+ * host that passed a real `AbortSignal`).
+ */
+function withLinkedSignal<T extends { signal?: unknown } | undefined>(options: T, signal: AbortSignal | undefined): T {
+  if (!signal || options?.signal === signal) return options;
+  return { ...(options || {}), signal } as T;
+}
+
 // Duck-type adapter for LangChain ChatModel / Runnable style objects.
 // We DO NOT import LangChain here; instead we just check for common methods.
 // Usage: fromLangchainModel(new ChatOpenAI(...)) returns a BaseChatModel.
@@ -96,7 +107,15 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
   const adapted: BaseChatModel = {
     invoke: async (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }): Promise<BaseChatMessage> => {
       const lcMessages = messages.map(toLC);
-      const response = await lcModel.invoke(lcMessages, options);
+      // LangChain cancels a request through `signal` and knows nothing of a
+      // cancellation token, so a token has to become a signal before the call.
+      const link = linkAbortSignal(options);
+      let response: any;
+      try {
+        response = await lcModel.invoke(lcMessages, withLinkedSignal(options, link.signal));
+      } finally {
+        link.dispose();
+      }
       if (response && typeof response === 'object') {
         const content = (response as any).content ?? (response as any).text ?? '';
         return {
@@ -117,10 +136,15 @@ export function fromLangchainModel(lcModel: any): BaseChatModel {
     stream: async function* (messages: BaseChatMessage[], options?: { signal?: AbortSignal; cancellationToken?: { isCancellationRequested: boolean } }) {
       if (typeof lcModel.stream !== 'function') return;
       const lcMessages = messages.map(toLC);
-      const streamResult = lcModel.stream(lcMessages, options);
-      const stream = typeof (streamResult as Promise<unknown>)?.then === "function" ? await streamResult : streamResult;
-      for await (const chunk of stream) {
-        yield chunk as any;
+      const link = linkAbortSignal(options);
+      try {
+        const streamResult = lcModel.stream(lcMessages, withLinkedSignal(options, link.signal));
+        const stream = typeof (streamResult as Promise<unknown>)?.then === "function" ? await streamResult : streamResult;
+        for await (const chunk of stream) {
+          yield chunk as any;
+        }
+      } finally {
+        link.dispose();
       }
     },
     bindTools: (tools: any[], options?: { strict?: boolean; [key: string]: any }) => {

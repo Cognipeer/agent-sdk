@@ -1,3 +1,5 @@
+import { describeContentPart } from "./content.js";
+
 /**
  * Token counter contract used across the SDK. The default is a
  * character-based heuristic; users can swap in a real tokenizer (tiktoken,
@@ -67,6 +69,11 @@ function extractMessageText(m: any): string {
   } else if (Array.isArray(m.content)) {
     for (const c of m.content) {
       if (typeof c === "string") parts.push(c);
+      // An attachment counts as its short placeholder, never as its JSON: the
+      // base64 payload is not text the model reads, and stringifying it
+      // inflated a ~400-token image to ~18,000 and tripped needless compaction.
+      // Hosts that want a real per-image cost install a `tokenCounter`.
+      else if (describeContentPart(c)) parts.push(describeContentPart(c)!);
       else if (c?.text) parts.push(c.text);
       else if (c?.content) parts.push(c.content);
       else if (c?.type === "tool_use" && c?.input) {
@@ -78,7 +85,7 @@ function extractMessageText(m: any): string {
       }
     }
   } else if (m.content != null && typeof m.content === "object") {
-    parts.push(JSON.stringify(m.content));
+    parts.push(describeContentPart(m.content) ?? JSON.stringify(m.content));
   }
 
   // 3. Tool calls (assistant messages) — these are counted by the API but often missed

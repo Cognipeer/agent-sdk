@@ -29,7 +29,7 @@ export class AzureProvider extends OpenAIProvider {
     this.azureApiKey = config.apiKey;
   }
 
-  protected override async doFetch(body: Record<string, any>): Promise<Response> {
+  protected override async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     // Azure uses the deployment name from the URL path, or from the model field
     const deployment = this.deploymentName ?? body.model;
     if (!deployment) {
@@ -49,6 +49,7 @@ export class AzureProvider extends OpenAIProvider {
         ...this.defaultHeaders,
       },
       body: JSON.stringify(bodyWithoutModel),
+      signal,
     });
 
     if (!res.ok) {
@@ -67,7 +68,7 @@ export class AzureProvider extends OpenAIProvider {
   /** Azure exposes the Responses API at /openai/responses with api-key auth.
    * Reasoning summaries require a preview api-version; callers can override via
    * the `apiVersion` config. */
-  protected override async responsesFetch(body: Record<string, any>): Promise<Response> {
+  protected override async responsesFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     body.input = expandAzureResponsesInput(body.input);
     const deployment = this.deploymentName ?? body.model;
     if (!deployment) {
@@ -85,6 +86,7 @@ export class AzureProvider extends OpenAIProvider {
         ...this.defaultHeaders,
       },
       body: payload,
+      signal,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");

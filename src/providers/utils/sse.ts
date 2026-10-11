@@ -1,6 +1,8 @@
 // SSE (Server-Sent Events) stream parser for fetch Response bodies.
 // Works with OpenAI, Anthropic, Azure, Vertex and any text/event-stream endpoint.
 
+import { abortReason } from "../../utils/abort.js";
+
 export type SSEEvent = {
   event?: string;
   data: string;
@@ -22,7 +24,10 @@ export async function* parseSSEStream(
 
   try {
     while (true) {
-      if (signal?.aborted) break;
+      // An aborted read is an error, not an end of stream: ending quietly would
+      // hand the caller a truncated body that looks like a complete one (a tool
+      // call whose arguments stop halfway).
+      if (signal?.aborted) throw abortReason(signal);
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -45,6 +50,11 @@ export async function* parseSSEStream(
       if (event) yield event;
     }
   } finally {
+    // Hang up. A consumer that stops reading early (a cancelled run, a `break`)
+    // would otherwise just release the lock and leave the response open until the
+    // provider finished generating. After a normal end this is a no-op, and after
+    // an abort the stream is already errored, so the rejection is expected.
+    reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

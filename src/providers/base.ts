@@ -7,6 +7,7 @@ import type {
   ChatCompletionChunk,
   ProviderType,
 } from "./types.js";
+import { abortableSleep, abortReason } from "../utils/abort.js";
 
 export type ProviderRetryPolicy = {
   /** Maximum number of retries on 429/5xx responses. Default: 3. */
@@ -44,8 +45,11 @@ export abstract class BaseProvider {
    * Helper concrete providers can wrap their fetch with. Retries 429/5xx
    * with exponential backoff and respects Retry-After if the response
    * carries one.
+   *
+   * `signal` is the call's cancellation: a run that is cancelled while the
+   * provider is backing off must not sit out the delay, nor start another attempt.
    */
-  protected async doFetchWithRetry(execute: () => Promise<Response>): Promise<Response> {
+  protected async doFetchWithRetry(execute: () => Promise<Response>, signal?: AbortSignal): Promise<Response> {
     const policy = this.retryPolicy;
     const maxRetries = Math.max(0, policy.maxRetries ?? DEFAULT_RETRY.maxRetries);
     const baseDelay = Math.max(0, policy.baseDelayMs ?? DEFAULT_RETRY.baseDelayMs);
@@ -53,6 +57,7 @@ export abstract class BaseProvider {
 
     let lastResp: Response | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (signal?.aborted) throw abortReason(signal);
       const res = await execute();
       const isRetryable = res.status === 429 || (res.status >= 500 && res.status < 600);
       if (!isRetryable) return res;
@@ -74,7 +79,7 @@ export abstract class BaseProvider {
       }
       // Drain the body so the connection can be reused.
       try { await res.text(); } catch { /* ignore */ }
-      await new Promise((r) => setTimeout(r, delay));
+      await abortableSleep(delay, signal);
     }
     return lastResp!;
   }

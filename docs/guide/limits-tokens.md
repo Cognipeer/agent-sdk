@@ -68,6 +68,10 @@ const agent = createSmartAgent({
 
 The counter is installed at the start of each `invoke(...)` and restored at the end.
 
+### Images, audio and files
+
+The counter sees TEXT. An attachment (an `image_url`, `image`, `audio`, `file` part) is counted as a short placeholder such as `[image: photo.png]` — never as its encoded payload, so a ~400-token photo no longer reads as ~18,000 tokens and trips compaction. The placeholder uses the part's `name`, else its `fileId`, else its media type (`describeContentPart(part)` exports the same text). If you want a per-image cost in the estimate, add it in your own `tokenCounter` or reserve headroom in `maxContextTokens`.
+
 ## Rule of thumb
 
 1. Set `maxContextTokens` for live conversation pressure.

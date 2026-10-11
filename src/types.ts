@@ -810,12 +810,29 @@ export type AgentRuntimeConfig = {
   humanInTheLoop?: HumanInTheLoopRuntimeConfig;
 };
 
+/** One part of a message as it was sent: text, or an attachment (image, audio, file …). */
+export type TraceMessagePart = {
+  type?: string;
+  text?: string;
+  [key: string]: any;
+};
+
 export type TraceMessageSection = {
   id?: string;
   kind: "message";
   label: string;
   role: string;
+  /**
+   * The message as text. An attachment appears in it as a short placeholder
+   * (`[image: photo.png]`), never as its encoded payload.
+   */
   content: string;
+  /**
+   * The message's structured parts, present only when it carries a non-text part
+   * (an image, audio, a file). Lets a host render the attachment — a thumbnail —
+   * where `content` can only name it. Text parts are included, in order.
+   */
+  parts?: TraceMessagePart[];
   metadata?: Record<string, any>;
 };
 

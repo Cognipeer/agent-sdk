@@ -53,7 +53,7 @@ export class VertexProvider extends BaseProvider {
     const modelId = request.model || this.defaultModel;
     const body = this.buildGeminiBody(request);
     const url = this.buildUrl(modelId, false);
-    const res = await this.doFetch(url, body);
+    const res = await this.doFetch(url, body, request.signal);
     const json = await res.json();
     return this.parseResponse(json, modelId);
   }
@@ -62,7 +62,7 @@ export class VertexProvider extends BaseProvider {
     const modelId = request.model || this.defaultModel;
     const body = this.buildGeminiBody(request);
     const url = this.buildUrl(modelId, true);
-    const res = await this.doFetch(url, body);
+    const res = await this.doFetch(url, body, request.signal);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -71,7 +71,7 @@ export class VertexProvider extends BaseProvider {
 
     if (contentType.includes("text/event-stream")) {
       // SSE format
-      for await (const event of parseSSEStream(res.body)) {
+      for await (const event of parseSSEStream(res.body, request.signal)) {
         if (event.data === "[DONE]") break;
         let chunk: any;
         try {
@@ -122,6 +122,8 @@ export class VertexProvider extends BaseProvider {
           }
         }
       } finally {
+        // Hang up on an early exit; a no-op once the body has been read to the end.
+        reader.cancel().catch(() => undefined);
         reader.releaseLock();
       }
     }
@@ -388,7 +390,7 @@ export class VertexProvider extends BaseProvider {
     return tokenJson.access_token;
   }
 
-  private async doFetch(url: string, body: Record<string, any>): Promise<Response> {
+  private async doFetch(url: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const token = await this.getAccessToken();
 
     const res = await fetch(url, {
@@ -399,6 +401,7 @@ export class VertexProvider extends BaseProvider {
         ...this.defaultHeaders,
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!res.ok) {

@@ -1,5 +1,5 @@
-import { sanitizeTracePayload } from "./tracing.js";
-import { safeStringify } from "./content.js";
+import { sanitizeTracePayload, structuredMessageParts } from "./tracing.js";
+import { describeContentPart, safeStringify } from "./content.js";
 import type {
   TraceDataSection,
   TraceMessageSection,
@@ -92,6 +92,10 @@ export function formatMessageContent(content: any): string {
       .map((item) => {
         if (typeof item === "string") return item;
         if (item && typeof item === "object") {
+          // An attachment is shown as its placeholder; its JSON would be the
+          // whole base64 payload.
+          const media = describeContentPart(item);
+          if (media) return media;
           if (typeof (item as any).text === "string") return (item as any).text;
           if (typeof (item as any).content === "string") return (item as any).content;
           try {
@@ -110,6 +114,8 @@ export function formatMessageContent(content: any): string {
       .join("\n");
   }
   if (typeof content === "object") {
+    const media = describeContentPart(content);
+    if (media) return media;
     if (typeof (content as any).text === "string") return (content as any).text;
     if (typeof (content as any).content === "string") return (content as any).content;
     try {
@@ -138,12 +144,14 @@ export function buildPromptSections(messages: any[]): TraceDataSection[] {
     roleCounts.set(role, nextCount);
     const label = buildMessageLabel(role, nextCount);
     const content = formatMessageContent(msg?.content);
+    const parts = structuredMessageParts(msg?.content);
 
     sections.push({
       kind: "message",
       label,
       role,
       content,
+      ...(parts ? { parts } : {}),
       metadata: msg?.name ? { name: msg.name } : undefined,
     } as TraceMessageSection);
   }
@@ -202,11 +210,13 @@ export function buildAssistantMessageSection(
 ): TraceMessageSection | null {
   const content = formatMessageContent(response?.content ?? response);
   if (!content) return null;
+  const parts = structuredMessageParts(response?.content);
   return {
     kind: "message",
     label: options?.label ?? "Assistant Message",
     role: "assistant",
     content,
+    ...(parts ? { parts } : {}),
     metadata: response?.name ? { name: response.name } : undefined,
   } as TraceMessageSection;
 }

@@ -23,7 +23,8 @@ export * from "./guardrails/index.js";
 export * from "./plugins/index.js";
 // Content helpers for multimodal-aware plugins: rewrite text without
 // flattening a message's attachments away.
-export { collectAttachments, contentToString, extractMessageText, mapTextParts, replaceTextContent, textFromContent } from "./utils/content.js";
+export { collectAttachments, contentPartToText, contentToString, describeContentPart, extractMessageText, hasMediaPart, mapTextParts, mediaKindOf, replaceTextContent, textFromContent } from "./utils/content.js";
+export type { MediaKind } from "./utils/content.js";
 export type { MediaAttachment } from "./utils/content.js";
 export * from "./structuredOutput/index.js";
 export { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
@@ -146,6 +147,7 @@ export type {
 	ToolInterface,
 	TraceEventRecord,
 	TraceDataSection,
+	TraceMessagePart,
 	TraceMessageSection,
 	TraceToolDetails,
 	TraceToolCallSection,
