@@ -59,8 +59,14 @@
     "url": "https://github.com/Cognipeer/agent-sdk/issues"
   },
   "homepage": "https://github.com/Cognipeer/agent-sdk#readme",
+  "peerDependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
   "peerDependenciesMeta": {
     "openai": {
+      "optional": true
+    },
+    "@typesafe-ai/sdk": {
       "optional": true
     }
   },
