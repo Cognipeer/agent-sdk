@@ -216,6 +216,7 @@ type ChatCompletionRequest = {
   };
   stream?: boolean;
   extra?: Record<string, any>;   // provider-specific extras
+  signal?: AbortSignal;          // hangs up the HTTP request / stream when it aborts
 };
 ```
 
@@ -261,6 +262,8 @@ createProvider({
 ```
 
 The retry helper drains the response body between attempts so connections are reused. 4xx responses other than 429 surface immediately. Once `maxRetries` is exhausted, the final response is converted to a `ProviderError` like any other failure.
+
+A cancelled call does not sit out a backoff delay or start another attempt: when the request's `signal` aborts, the wait ends and the call rejects with the abort error.
 
 This is separate from per-tool `retry` policies on `createTool(...)` — provider retries cover the model call, tool retries cover external API calls inside your `func`.
 
@@ -366,6 +369,21 @@ for await (const chunk of provider.completeStream({
 ```
 
 Streaming is supported for OpenAI, Anthropic, Azure, OpenAI-compatible, and Vertex. Bedrock currently falls back to a single non-streaming response (Bedrock's binary event-stream protocol support is planned).
+
+### Cancellation
+
+Pass `signal` and the provider hangs up when it aborts: the HTTP request is cancelled, an open stream is closed, and the call rejects with an `AbortError`. A stream whose consumer simply stops reading (a `break`, a `return`) is closed the same way, instead of staying open until the model finishes.
+
+```ts
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5_000);
+
+for await (const chunk of provider.completeStream({ model, messages, signal: controller.signal })) {
+  // ...
+}
+```
+
+Inside an agent you do not set this yourself. A run's `cancellationToken` (an `AbortSignal`, or any `{ isCancellationRequested }` token) reaches the model call: `fromNativeProvider` and `fromLangchainModel` turn it into a real `AbortSignal` for the request, so cancelling a turn stops the model rather than just ignoring what it still says. The run then ends with `state.ctx.__cancelled` set (`stage: "agent"`, reason `"aborted"` or `"cancelled"`) and a `cancelled` event — it is not thrown as a model error. Whatever text had already streamed is kept as the assistant turn; a tool call that had not finished streaming is dropped, so the transcript never holds an unanswered `tool_call`.
 
 ## Using with agent-sdk
 

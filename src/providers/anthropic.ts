@@ -42,14 +42,14 @@ export class AnthropicProvider extends BaseProvider {
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const body = this.buildRequestBody(request, false);
-    const res = await this.doFetch(body);
+    const res = await this.doFetch(body, request.signal);
     const json = await res.json();
     return this.parseResponse(json);
   }
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const body = this.buildRequestBody(request, true);
-    const res = await this.doFetch(body);
+    const res = await this.doFetch(body, request.signal);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -63,7 +63,7 @@ export class AnthropicProvider extends BaseProvider {
     // Accumulate thinking blocks by content-block index so we can replay them.
     const reasoningBlocks = new Map<number, ReasoningBlock>();
 
-    for await (const event of parseSSEStream(res.body)) {
+    for await (const event of parseSSEStream(res.body, request.signal)) {
       let data: any;
       try {
         data = JSON.parse(event.data);
@@ -393,7 +393,7 @@ export class AnthropicProvider extends BaseProvider {
     };
   }
 
-  private async doFetch(body: Record<string, any>): Promise<Response> {
+  private async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const url = `${this.baseURL}/v1/messages`;
     const headers = {
       "Content-Type": "application/json",
@@ -402,7 +402,7 @@ export class AnthropicProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

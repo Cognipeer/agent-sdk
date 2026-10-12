@@ -2,6 +2,7 @@ import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../t
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
 import { toToolDefinition } from "../providers/adapter.js";
+import { isCancellationRequested } from "../utils/abort.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { detectVolatileContent } from "../smart/contextPilot/index.js";
@@ -189,6 +190,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const streamingEnabled = Boolean((state.ctx as any)?.__streaming);
     const cancellationToken = (state.ctx as any)?.__cancellationToken as any;
     const abortSignal = (state.ctx as any)?.__abortSignal as AbortSignal | undefined;
+    const onProgress = (state.ctx as any)?.__onProgress as ((progress: { stage?: string; message?: string; detail?: any }) => void) | undefined;
+    const cancelRequested = () => isCancellationRequested({ signal: abortSignal, cancellationToken });
 
     // ContextPilot cache alignment: one-time-per-run warning when the system
     // prompt contains volatile substrings (UUIDs, timestamps, JWTs, hashes,
@@ -420,6 +423,40 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     let modelAttempt = 0;
     const maxModelRetries = host?.maxModelRetries ?? 0;
 
+    /**
+     * The run was cancelled while the model call was in flight. The call has
+     * been (or is being) hung up on, so there is no response to account for:
+     * what the model had said so far is kept as the assistant turn, anything
+     * unfinished — above all a half-streamed tool call — is not.
+     *
+     * Flags the run as cancelled exactly as the loop's own checks do, which is
+     * what lets the caller report `cancelled` rather than a model error or a
+     * normally completed turn.
+     */
+    const finishCancelledTurn = (partialText: string) => {
+      const reason = abortSignal?.aborted ? "aborted" : "cancelled";
+      const ctx = (state.ctx = state.ctx || {});
+      (ctx as any).__cancelled = { stage: "agent", reason, timestamp: new Date().toISOString() };
+      recordTraceEvent(traceSession, {
+        type: "ai_call",
+        label: "Assistant Cancelled",
+        actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
+        // "skipped", not "error": the call did not fail, the caller ended it —
+        // and an "error" would flip the whole session to error.
+        status: "skipped",
+        durationMs: Date.now() - start,
+        requestBytes: promptBytes,
+        model: getModelName((runtime as any).model || (opts as any).model),
+        provider: getProviderName((runtime as any).model || (opts as any).model),
+        messageList: state.messages,
+        toolDefinitions: traceToolDefinitions,
+      });
+      onEvent?.({ type: "cancelled", stage: "agent", reason });
+      onProgress?.({ stage: "agent", message: "Cancelled", detail: { reason } });
+      const partial = partialText.trim().length > 0 ? [{ role: "assistant", content: partialText } as any] : [];
+      return { messages: [...state.messages, ...partial] as Message[], usage: (state as any).usage };
+    };
+
     while (true) {
       start = Date.now();
 
@@ -436,15 +473,19 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           toolDefinitions: traceToolDefinitions,
         });
       } else {
+        // Declared outside the try: a cancelled call is reported with whatever
+        // text had streamed by then.
+        let streamedText = "";
         try {
           // Adjacency normalization stays the LAST transform before the wire.
           const normalizedMessages = normalizeBedrockToolPairing([...wireMessages]);
           debugToolPairing(normalizedMessages);
           if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
-            let streamedText = "";
             let streamedMessage: any | undefined;
+            let cutByCancel = false;
             for await (const chunk of (modelWithTools as any).stream(normalizedMessages, invokeParams)) {
-              if ((cancellationToken && cancellationToken.isCancellationRequested) || abortSignal?.aborted) {
+              if (cancelRequested()) {
+                cutByCancel = true;
                 break;
               }
               if (chunk && typeof chunk === "object" && (chunk as any).role) {
@@ -471,6 +512,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
                 onEvent?.({ type: "stream", text });
               }
             }
+            // Leaving the loop closed the model's stream; the turn is over.
+            if (cutByCancel) return finishCancelledTurn(streamedText);
             if (streamedMessage) {
               response = { ...streamedMessage };
               if (response.content == null || response.content === "") {
@@ -483,6 +526,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
             response = await modelWithTools.invoke(normalizedMessages, invokeParams);
           }
         } catch (err: any) {
+          // A call that was hung up on rejects (fetch: AbortError). That is the
+          // cancellation arriving, not a model failure: no error trace, no throw.
+          if (cancelRequested()) return finishCancelledTurn(streamedText);
           const durationMs = Date.now() - start;
           recordTraceEvent(traceSession, {
             type: "ai_call",

@@ -88,7 +88,7 @@ export class OpenAIProvider extends BaseProvider {
       return this.completeResponses(request);
     }
     const body = this.buildRequestBody(request, false);
-    const res = await this.doFetch(body);
+    const res = await this.doFetch(body, request.signal);
     const json = await res.json();
     return this.parseResponse(json);
   }
@@ -117,7 +117,7 @@ export class OpenAIProvider extends BaseProvider {
       return;
     }
     const body = this.buildRequestBody(request, true);
-    const res = await this.doFetch(body);
+    const res = await this.doFetch(body, request.signal);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -126,7 +126,7 @@ export class OpenAIProvider extends BaseProvider {
     const toolCallBuffers = new Map<number, { id: string; name: string; arguments: string }>();
     let usage: TokenUsage | undefined;
 
-    for await (const event of parseSSEStream(res.body)) {
+    for await (const event of parseSSEStream(res.body, request.signal)) {
       if (event.data === "[DONE]") break;
 
       let chunk: any;
@@ -244,7 +244,7 @@ export class OpenAIProvider extends BaseProvider {
   protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const body = this.buildResponsesBody(request);
     if (this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
-    const res = await this.responsesFetch(body);
+    const res = await this.responsesFetch(body, request.signal);
     const json = await res.json();
     return this.parseResponsesResponse(json, request.model || this.defaultModel);
   }
@@ -261,7 +261,7 @@ export class OpenAIProvider extends BaseProvider {
     const body = this.buildResponsesBody(request);
     adaptChatExtrasForResponses(body, request.extra);
     body.stream = true;
-    const res = await this.responsesFetch(body);
+    const res = await this.responsesFetch(body, request.signal);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -271,7 +271,7 @@ export class OpenAIProvider extends BaseProvider {
     const calls = new Map<string, { callId: string; name: string; arguments: string }>();
     let final: ChatCompletionResponse | undefined;
 
-    for await (const event of parseSSEStream(res.body)) {
+    for await (const event of parseSSEStream(res.body, request.signal)) {
       if (event.data === "[DONE]") break;
 
       let data: any;
@@ -473,7 +473,7 @@ export class OpenAIProvider extends BaseProvider {
     return { role, content };
   }
 
-  protected async responsesFetch(body: Record<string, any>): Promise<Response> {
+  protected async responsesFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     // Expand assistant-with-calls markers into discrete input items.
     body.input = expandResponsesInput(body.input);
     const url = `${this.baseURL}/responses`;
@@ -483,7 +483,7 @@ export class OpenAIProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new ProviderError(
@@ -622,7 +622,7 @@ export class OpenAIProvider extends BaseProvider {
     return { type: "function", function: fn };
   }
 
-  protected async doFetch(body: Record<string, any>): Promise<Response> {
+  protected async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const url = `${this.baseURL}/chat/completions`;
     const headers = {
       "Content-Type": "application/json",
@@ -630,7 +630,7 @@ export class OpenAIProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload }));
+    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

@@ -552,6 +552,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           onProgress?.({ stage: "agent", message: "Invoking model" });
           if (cancelIfRequested("before_agent")) break;
           state = publish({ ...state, ...(await agentCore(state)) } as AgentState);
+          // The model call was cut short by a cancellation: nothing to guard,
+          // check or run, and the run reports `cancelled`.
+          if (state.ctx?.__cancelled) break;
           onProgress?.({ stage: "agent", message: "Model response received" });
 
       if (checkpointIfRequested("after_agent")) break;

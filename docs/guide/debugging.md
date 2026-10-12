@@ -57,6 +57,22 @@ const agent = createSmartAgent({
 
 When `logData` is `true`, payload sections expose sanitized snapshots under a `data.sections` array. Each section is one of a handful of kinds (`message`, `tool_call`, `tool_result`, `summary`, `metadata`) with concise, user-facing labels. Circular references, functions, and bigints are handled automatically. Prefer `customSink({ onEvent })` if you want a realtime feed of recorded events.
 
+A message that carries an attachment (an image, audio, a file) keeps `content` as readable text, with the attachment shown as a short placeholder such as `[image: photo.png]` (its `name`, else `fileId`, else media type) — the encoded payload is never written into the string. Such a section additionally has a `parts` array with the message's structured parts in order (text parts included), so a host UI can render the image itself:
+
+```json
+{
+  "kind": "message",
+  "role": "user",
+  "content": "what is this?\n[image: photo.png]",
+  "parts": [
+    { "type": "text", "text": "what is this?" },
+    { "type": "image_url", "name": "photo.png", "image_url": { "url": "data:image/png;base64,…" } }
+  ]
+}
+```
+
+A text-only message has no `parts` field. Summarization sees attachments the same way, as their placeholder.
+
 ### Example structure
 
 ```json

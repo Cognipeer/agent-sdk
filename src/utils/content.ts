@@ -19,6 +19,179 @@ export type MediaAttachment = {
   fileName?: string;
 };
 
+export type MediaKind = "image" | "audio" | "video" | "file";
+
+const MEDIA_PART_KINDS: Record<string, MediaKind> = {
+  image: "image",
+  image_url: "image",
+  input_image: "image",
+  image_file: "image",
+  audio: "audio",
+  input_audio: "audio",
+  video: "video",
+  video_url: "video",
+  file: "file",
+  input_file: "file",
+  document: "file",
+};
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function kindFromMediaType(mediaType: string | undefined): MediaKind {
+  const top = mediaType?.split("/")[0];
+  return top === "image" || top === "audio" || top === "video" ? top : "file";
+}
+
+function inlineDataOf(part: Record<string, any>): Record<string, any> | undefined {
+  const inline = part.inlineData ?? part.inline_data ?? part.fileData ?? part.file_data;
+  return isRecord(inline) ? inline : undefined;
+}
+
+/**
+ * What kind of attachment a content part is, or undefined for text and for
+ * anything that is not a media part.
+ *
+ * Covers the unified shape (`image`/`audio`/`file` with a `source`), the
+ * OpenAI shapes (`image_url`, `input_audio`, `file`, `input_image`, `input_file`)
+ * and Gemini's untyped `inlineData` / `fileData`.
+ */
+export function mediaKindOf(part: unknown): MediaKind | undefined {
+  if (!isRecord(part)) return undefined;
+  const type = nonEmpty(part.type);
+  if (type) return MEDIA_PART_KINDS[type];
+  const inline = inlineDataOf(part);
+  if (inline) return kindFromMediaType(nonEmpty(inline.mimeType) ?? nonEmpty(inline.mime_type));
+  return undefined;
+}
+
+/** True when the content is an array holding at least one media part. */
+export function hasMediaPart(content: unknown): boolean {
+  return Array.isArray(content) && content.some((part) => mediaKindOf(part) !== undefined);
+}
+
+function urlOfPart(part: Record<string, any>): string | undefined {
+  const image = part.image_url;
+  const video = part.video_url;
+  return (
+    nonEmpty(typeof image === "string" ? image : image?.url)
+    ?? nonEmpty(typeof video === "string" ? video : video?.url)
+    ?? nonEmpty(part.url)
+    ?? nonEmpty(part.source?.url)
+    ?? nonEmpty(inlineDataOf(part)?.fileUri)
+    ?? nonEmpty(inlineDataOf(part)?.file_uri)
+  );
+}
+
+function mediaTypeOfPart(part: Record<string, any>): string | undefined {
+  const image = isRecord(part.image_url) ? part.image_url : undefined;
+  const source = isRecord(part.source) ? part.source : undefined;
+  const inline = inlineDataOf(part);
+  const audioFormat = nonEmpty(part.input_audio?.format);
+  const fromDataUrl = /^data:([^;,]+)/i.exec(urlOfPart(part) ?? "")?.[1];
+  return (
+    nonEmpty(part.mediaType)
+    ?? nonEmpty(part.media_type)
+    ?? nonEmpty(part.mimeType)
+    ?? nonEmpty(part.mime_type)
+    ?? nonEmpty(source?.mediaType)
+    ?? nonEmpty(source?.media_type)
+    ?? nonEmpty(image?.mediaType)
+    ?? nonEmpty(image?.media_type)
+    ?? nonEmpty(inline?.mimeType)
+    ?? nonEmpty(inline?.mime_type)
+    ?? nonEmpty(fromDataUrl)
+    ?? (audioFormat ? `audio/${audioFormat}` : undefined)
+  );
+}
+
+function nameOfPart(part: Record<string, any>): string | undefined {
+  const file = isRecord(part.file) ? part.file : undefined;
+  const image = isRecord(part.image_url) ? part.image_url : undefined;
+  const source = isRecord(part.source) ? part.source : undefined;
+  return (
+    nonEmpty(part.name)
+    ?? nonEmpty(part.fileName)
+    ?? nonEmpty(part.filename)
+    ?? nonEmpty(part.file_name)
+    ?? nonEmpty(file?.filename)
+    ?? nonEmpty(file?.fileName)
+    ?? nonEmpty(image?.name)
+    ?? nonEmpty(source?.fileName)
+    ?? nonEmpty(source?.filename)
+    ?? nonEmpty(part.fileId)
+    ?? nonEmpty(part.file_id)
+    ?? nonEmpty(file?.file_id)
+    ?? nonEmpty(file?.fileId)
+    ?? nonEmpty(image?.fileId)
+    ?? nonEmpty(image?.file_id)
+    ?? nonEmpty(part.image_file?.file_id)
+  );
+}
+
+/** The last path segment of a plain URL, or the id of a `session-file://` reference. Never a query string. */
+function labelFromUrl(url: string | undefined): string | undefined {
+  if (!url || url.startsWith("data:")) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "session-file:") return nonEmpty(parsed.hostname) ?? nonEmpty(parsed.pathname.replace(/^\/+/, ""));
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return nonEmpty(decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() ?? ""));
+    }
+  } catch {
+    /* not a URL worth naming */
+  }
+  return undefined;
+}
+
+const PLACEHOLDER_LABEL_MAX = 80;
+
+/**
+ * A short, human-readable stand-in for a media part: `[image: photo.png]`,
+ * `[image: image/png]`, `[audio]`. Undefined for text and non-media parts.
+ *
+ * This is what anything that flattens content to TEXT must use for an
+ * attachment — token estimation, the summarizer's input, trace display. The
+ * alternative, `JSON.stringify(part)`, writes the whole base64 payload into the
+ * text: an image of ~400 tokens counts as 18,000 and a summarizer reads (and is
+ * truncated into) a wall of base64 instead of knowing a picture was there.
+ *
+ * The label is the part's own `name`, else its file id, else its media type.
+ */
+export function describeContentPart(part: unknown): string | undefined {
+  const kind = mediaKindOf(part);
+  if (!kind || !isRecord(part)) return undefined;
+  const label = nameOfPart(part) ?? mediaTypeOfPart(part) ?? labelFromUrl(urlOfPart(part));
+  if (!label) return `[${kind}]`;
+  const clean = label.replace(/[\r\n\]]+/g, " ").slice(0, PLACEHOLDER_LABEL_MAX);
+  return `[${kind}: ${clean}]`;
+}
+
+/**
+ * One content part as plain text: strings and text parts as they are, media as
+ * its placeholder, anything else through `fallback` (default: its own `text` /
+ * `content`, else its JSON).
+ */
+export function contentPartToText(part: unknown, fallback?: (part: unknown) => string): string {
+  if (typeof part === "string") return part;
+  if (!isRecord(part)) return part == null ? "" : String(part);
+  const media = describeContentPart(part);
+  if (media) return media;
+  if (typeof part.text === "string") return part.text;
+  if (typeof part.content === "string") return part.content;
+  if (fallback) return fallback(part);
+  try {
+    return JSON.stringify(part);
+  } catch {
+    return String(part);
+  }
+}
+
 // Convert content (string | parts[]) to a human-readable string for logging, token counting, or summarization.
 export function contentToString(content: string | ContentPart[] | any): string {
   try {
@@ -32,16 +205,24 @@ export function contentToString(content: string | ContentPart[] | any): string {
           if ((p as any).type === "image_url") {
             const img = (p as any).image_url;
             const url = typeof img === "string" ? img : img?.url;
-            const detail = typeof img === "string" ? undefined : img?.detail;
-            return `[image:${url || "unknown"}${detail ? ` detail=${detail}` : ""}]`;
+            // A remote URL is short and is what a log reader wants. Anything
+            // else — an inline data URL, a `{ base64 }` image, a reference to a
+            // stored file — is described by name / id / media type instead.
+            if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+              const detail = typeof img === "string" ? undefined : img?.detail;
+              return `[image:${url}${detail ? ` detail=${detail}` : ""}]`;
+            }
+            return describeContentPart(p) ?? "[image]";
           }
+          const media = describeContentPart(p);
+          if (media) return media;
           // generic fallback
           return JSON.stringify(p);
         })
         .join("\n");
     }
     // unknown object
-    return JSON.stringify(content);
+    return describeContentPart(content) ?? JSON.stringify(content);
   } catch {
     return String(content);
   }

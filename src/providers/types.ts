@@ -123,6 +123,12 @@ export type ChatCompletionRequest = {
    * Providers silently ignore unsupported fields.
    */
   reasoning?: ReasoningRequestConfig;
+  /**
+   * Cancels the HTTP request (and an in-flight stream) when it aborts. The agent
+   * loop sets it from the run's cancellation token / abort signal; a caller using
+   * a provider directly can pass its own. It is never serialised into the body.
+   */
+  signal?: AbortSignal;
 };
 
 /**

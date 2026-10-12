@@ -11,6 +11,7 @@ import type {
   SmartAgentTracingConfig,
   TraceDataSection,
   TraceEventRecord,
+  TraceMessagePart,
   TraceSessionConfigSnapshot,
   TraceSessionFile,
   TraceSessionRuntime,
@@ -24,6 +25,7 @@ import type {
   TraceToolDefinitionsSection,
   TracingMode,
 } from "../types.js";
+import { describeContentPart, hasMediaPart } from "./content.js";
 
 const DEFAULT_COGNIPEER_URL = "https://console.cognipeer.com/api/client/v1/tracing/sessions";
 
@@ -1023,6 +1025,20 @@ function buildMessageLabel(role: string, index: number): string {
   return index > 1 ? `${base} #${index}` : base;
 }
 
+/**
+ * The structured parts of a message, for a host that wants to RENDER them (a
+ * thumbnail for an image) rather than read the text. Only produced when the
+ * message carries a non-text part — a plain-text message has nothing to add to
+ * its `content` string. Text parts are kept, in place, so the order a person
+ * sees is the order the model saw.
+ */
+export function structuredMessageParts(content: any): TraceMessagePart[] | undefined {
+  if (!hasMediaPart(content)) return undefined;
+  const cloned = sanitizeTracePayload(content);
+  if (!Array.isArray(cloned)) return undefined;
+  return cloned.map((part) => (typeof part === "string" ? { type: "text", text: part } : part)) as TraceMessagePart[];
+}
+
 function toDisplayString(value: any): string {
   const sanitized = sanitizeTracePayload(value);
   if (sanitized == null) return "";
@@ -1034,7 +1050,15 @@ function toDisplayString(value: any): string {
       .join("\n");
   }
   if (typeof sanitized === "object") {
-    if (typeof (sanitized as any).text === "string" && Object.keys(sanitized).length === 1) {
+    // An attachment is displayed by name / media type. Its JSON is the whole
+    // encoded payload, which the structured `parts` of the section already carry
+    // for hosts that want to draw it.
+    const media = describeContentPart(sanitized);
+    if (media) return media;
+    // A text part is its text. Without the `type` case a multimodal message
+    // showed its prose as `{ "type": "text", "text": … }`.
+    if (typeof (sanitized as any).text === "string"
+      && (Object.keys(sanitized).length === 1 || (sanitized as any).type === "text")) {
       return (sanitized as any).text;
     }
     if (typeof (sanitized as any).content === "string") {
@@ -1117,11 +1141,13 @@ function convertMessageListToSections(messageList?: any[]): TraceDataSection[] |
       }
     }
 
+    const parts = structuredMessageParts(message?.content);
     sections.push({
       kind: "message",
       label: buildMessageLabel(role, next),
       role,
       content,
+      ...(parts ? { parts } : {}),
       metadata: typeof message?.name === "string" ? { name: message.name } : undefined,
     });
   }

@@ -16,6 +16,7 @@ import type {
   ReasoningRequestConfig,
 } from "./types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { linkAbortSignal } from "../utils/abort.js";
 
 export type NativeModelOptions = {
   /** Override the model ID per adapter instance */
@@ -57,64 +58,83 @@ export function fromNativeProvider(
       messages: BaseChatMessage[],
       _invokeOptions?: Record<string, any>,
     ): Promise<BaseChatMessage> => {
-      const request = buildRequest(messages, boundTools, options, _invokeOptions);
-      const response = await provider.complete(request);
-      return toBaseChatMessage(response);
+      // The call's cancellation, as a real AbortSignal: a run that is stopped
+      // hangs up on the provider instead of letting the model finish.
+      const link = linkAbortSignal(_invokeOptions);
+      try {
+        const request = buildRequest(messages, boundTools, options, _invokeOptions);
+        if (link.signal) request.signal = link.signal;
+        const response = await provider.complete(request);
+        return toBaseChatMessage(response);
+      } finally {
+        link.dispose();
+      }
     },
 
     stream: async function* (
       messages: BaseChatMessage[],
       _invokeOptions?: Record<string, any>,
     ): AsyncIterable<BaseChatMessage | BaseChatMessagePart | string> {
-      const request = buildRequest(messages, boundTools, options, _invokeOptions);
-      request.stream = true;
+      const link = linkAbortSignal(_invokeOptions);
+      try {
+        const request = buildRequest(messages, boundTools, options, _invokeOptions);
+        request.stream = true;
+        if (link.signal) request.signal = link.signal;
 
-      let fullContent = "";
-      let allToolCalls: ToolCall[] = [];
-      let lastUsage: TokenUsage | undefined;
-      let reasoningBlocks: import("./types.js").ReasoningBlock[] | undefined;
-      const toolCallBuffers = new Map<string, ToolCall>();
+        let fullContent = "";
+        let allToolCalls: ToolCall[] = [];
+        let lastUsage: TokenUsage | undefined;
+        let reasoningBlocks: import("./types.js").ReasoningBlock[] | undefined;
+        const toolCallBuffers = new Map<string, ToolCall>();
 
-      for await (const chunk of provider.completeStream(request)) {
-        // Yield text deltas as strings for streaming
-        if (chunk.delta.content) {
-          fullContent += chunk.delta.content;
-          yield chunk.delta.content;
-        }
+        for await (const chunk of provider.completeStream(request)) {
+          // Yield text deltas as strings for streaming
+          if (chunk.delta.content) {
+            fullContent += chunk.delta.content;
+            yield chunk.delta.content;
+          }
 
-        // Capture final reasoning blocks (emitted near end of stream).
-        if (chunk.delta.reasoning?.blocks?.length) {
-          reasoningBlocks = chunk.delta.reasoning.blocks;
-        }
+          // Capture final reasoning blocks (emitted near end of stream).
+          if (chunk.delta.reasoning?.blocks?.length) {
+            reasoningBlocks = chunk.delta.reasoning.blocks;
+          }
 
-        // Accumulate tool calls
-        if (chunk.delta.toolCalls) {
-          for (const tc of chunk.delta.toolCalls) {
-            if (tc.id) {
-              const existing = toolCallBuffers.get(tc.id);
-              if (existing) {
-                if (tc.arguments) existing.arguments += tc.arguments;
-              } else {
-                toolCallBuffers.set(tc.id, {
-                  id: tc.id,
-                  name: tc.name ?? "",
-                  arguments: tc.arguments ?? "",
-                });
+          // Accumulate tool calls
+          if (chunk.delta.toolCalls) {
+            for (const tc of chunk.delta.toolCalls) {
+              if (tc.id) {
+                const existing = toolCallBuffers.get(tc.id);
+                if (existing) {
+                  if (tc.arguments) existing.arguments += tc.arguments;
+                } else {
+                  toolCallBuffers.set(tc.id, {
+                    id: tc.id,
+                    name: tc.name ?? "",
+                    arguments: tc.arguments ?? "",
+                  });
+                }
               }
             }
           }
+
+          if (chunk.usage) lastUsage = chunk.usage;
         }
 
-        if (chunk.usage) lastUsage = chunk.usage;
-      }
+        // A stream that ended because the call was cancelled is a truncated one:
+        // its tool-call arguments stop halfway. It must not be passed off as the
+        // model's finished message.
+        if (link.signal?.aborted) return;
 
-      // Yield final assembled message
-      allToolCalls = [...toolCallBuffers.values()];
-      const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage);
-      if (reasoningBlocks?.length) {
-        (finalMessage as any).reasoning = { blocks: reasoningBlocks };
+        // Yield final assembled message
+        allToolCalls = [...toolCallBuffers.values()];
+        const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage);
+        if (reasoningBlocks?.length) {
+          (finalMessage as any).reasoning = { blocks: reasoningBlocks };
+        }
+        yield finalMessage;
+      } finally {
+        link.dispose();
       }
-      yield finalMessage;
     },
 
     bindTools: (tools: any[], _bindOptions?: { strict?: boolean; [key: string]: any }): BaseChatModel => {

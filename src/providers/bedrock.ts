@@ -54,7 +54,7 @@ export class BedrockProvider extends BaseProvider {
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const modelId = request.model || this.defaultModel;
     const body = this.buildConverseBody(request);
-    const json = await this.doFetch(modelId, body);
+    const json = await this.doFetch(modelId, body, request.signal);
     return this.parseResponse(json, modelId);
   }
 
@@ -269,7 +269,7 @@ export class BedrockProvider extends BaseProvider {
     };
   }
 
-  private async doFetch(modelId: string, body: Record<string, any>): Promise<any> {
+  private async doFetch(modelId: string, body: Record<string, any>, signal?: AbortSignal): Promise<any> {
     const host = `bedrock-runtime.${this.region}.amazonaws.com`;
     const url = `https://${host}/model/${encodeURIComponent(modelId)}/converse`;
     const bodyStr = JSON.stringify(body);
@@ -289,8 +289,8 @@ export class BedrockProvider extends BaseProvider {
         service: "bedrock",
         credentials: this.credentials,
       });
-      return fetch(url, { method: "POST", headers, body: bodyStr });
-    });
+      return fetch(url, { method: "POST", headers, body: bodyStr, signal });
+    }, signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
