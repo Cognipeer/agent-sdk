@@ -347,13 +347,24 @@ export type VertexProviderConfig = {
   defaultHeaders?: Record<string, string>;
 };
 
+export type JevProviderConfig = {
+  provider: "jev";
+  apiKey: string;
+  /** Defaults to https://api.typesafe.ai. */
+  baseURL?: string;
+  defaultModel?: string;
+  defaultHeaders?: Record<string, string>;
+  retry?: ProviderRetryConfig;
+};
+
 export type ProviderConfig =
   | OpenAIProviderConfig
   | AnthropicProviderConfig
   | AzureProviderConfig
   | OpenAICompatibleProviderConfig
   | BedrockProviderConfig
-  | VertexProviderConfig;
+  | VertexProviderConfig
+  | JevProviderConfig;
 
 export type ProviderType = ProviderConfig["provider"];
 

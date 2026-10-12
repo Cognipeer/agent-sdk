@@ -1,6 +1,7 @@
 import AjvModule, { type ValidateFunction, type ErrorObject, type Options } from "ajv";
 import { z } from "zod";
 import type { JSONSchema7 } from "json-schema";
+import { JevProvider } from "../providers/jev.js";
 import type {
   GuardrailRule,
   GuardrailContext,
@@ -196,14 +197,51 @@ const guardianSchema = z.object({
   details: z.record(z.any()).optional(),
 });
 
+/** Which judge backend `agentVerdictRule` uses to produce its verdict. */
+export type GuardrailJudgeEngine = "llm" | "jev";
+
+/** Jev answer for a `noul` (yes/no probability) question. */
+export type JevNoulAnswer = {
+  readonly type: "noul";
+  /** Probability of a "yes", from zero to one. */
+  readonly noul: number;
+};
+
+/**
+ * Anything with the provider's `systemOne` method: a `JevProvider`, or a stub in tests.
+ */
+export type JevClientLike = Pick<JevProvider, "systemOne">;
+
+export type JevEngineOptions = {
+  /** Pre-built `JevProvider` (or compatible stub). When set, `apiKey`/`baseURL`/`model` are ignored. */
+  client?: JevClientLike;
+  /** API key for the `JevProvider` built on first use; falls back to `TYPESAFE_API_KEY`. */
+  apiKey?: string;
+  /** API root; falls back to `TYPESAFE_BASE_URL`, then the provider default. */
+  baseURL?: string;
+  /** Model override, per call. */
+  model?: string;
+  /** Risk probability at or above which the message fails the rule. Defaults to 0.5. */
+  threshold?: number;
+  /** Customizes the `noul` question instructions, mirroring `payloadBuilder`. */
+  question?: (context: GuardrailContext) => string;
+  /** Optional descriptions of the yes/no outcomes passed to the `noul` question. */
+  criteria?: { true?: string; false?: string };
+};
+
 export type AgentRuleOptions = {
   id?: string;
   title?: string;
   description?: string;
-  agent: SmartAgentInstance<z.infer<typeof guardianSchema>>;
+  /** Guardian agent. Required for the default `"llm"` engine; unused by `"jev"`. */
+  agent?: SmartAgentInstance<z.infer<typeof guardianSchema>>;
   systemPrompt?: string;
   payloadBuilder?: (context: GuardrailContext) => string;
   dispositionFallback?: GuardrailDisposition;
+  /** Judge backend. Defaults to `"llm"` for full backward compatibility. */
+  engine?: GuardrailJudgeEngine;
+  /** Configuration for the `"jev"` engine. Ignored by the `"llm"` engine. */
+  jev?: JevEngineOptions;
 };
 
 function defaultPayload(context: GuardrailContext): string {
@@ -226,15 +264,99 @@ function defaultPayload(context: GuardrailContext): string {
   );
 }
 
+const DEFAULT_JEV_THRESHOLD = 0.5;
+const JEV_QUESTION_KEY = "shouldBlock";
+const DEFAULT_JEV_QUESTION =
+  "Does this conversation payload pose a safety, security, or policy risk that should stop the agent from continuing? Answer yes when the latest message or action should be blocked, and no when it is safe to allow.";
+const DEFAULT_JEV_CRITERIA = {
+  true: "The payload is unsafe, non-compliant, or otherwise warrants blocking.",
+  false: "The payload is benign and the agent should be allowed to continue.",
+};
+
+function resolveJevClient(config: JevEngineOptions): JevClientLike {
+  if (config.client) return config.client;
+  const apiKey = config.apiKey ?? process.env.TYPESAFE_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "Jev engine requires an API key: pass `jev.apiKey`, set TYPESAFE_API_KEY, or pass a `jev.client`."
+    );
+  }
+  return new JevProvider({
+    provider: "jev",
+    apiKey,
+    baseURL: config.baseURL ?? process.env.TYPESAFE_BASE_URL,
+  });
+}
+
 export function agentVerdictRule(options: AgentRuleOptions): GuardrailRule {
   const payloadBuilder = options.payloadBuilder || defaultPayload;
   const fallbackDisposition = options.dispositionFallback || "block";
+
+  const engine = options.engine || "llm";
+  const jevOptions = options.jev || {};
+  const jevThreshold =
+    typeof jevOptions.threshold === "number" ? jevOptions.threshold : DEFAULT_JEV_THRESHOLD;
+  let jevClient: JevClientLike | undefined;
+
+  async function evaluateWithJev(context: GuardrailContext) {
+    const client = (jevClient ??= resolveJevClient(jevOptions));
+
+    const instructions = jevOptions.question
+      ? jevOptions.question(context)
+      : DEFAULT_JEV_QUESTION;
+
+    const result = await client.systemOne({
+      state: payloadBuilder(context),
+      questions: {
+        [JEV_QUESTION_KEY]: {
+          type: "noul",
+          instructions,
+          criteria: jevOptions.criteria ?? DEFAULT_JEV_CRITERIA,
+        },
+      },
+      ...(jevOptions.model ? { model: jevOptions.model } : {}),
+    });
+
+    const answer = result?.answers?.[JEV_QUESTION_KEY] as JevNoulAnswer | undefined;
+    const probability = typeof answer?.noul === "number" ? answer.noul : undefined;
+    if (probability === undefined) {
+      return {
+        passed: false,
+        disposition: fallbackDisposition,
+        reason: "Jev engine did not return a noul probability.",
+        details: { jevModel: result?.model, jevUsage: result?.usage },
+      };
+    }
+
+    const passed = probability < jevThreshold;
+    return {
+      passed,
+      disposition: passed ? ("allow" as GuardrailDisposition) : fallbackDisposition,
+      reason: passed
+        ? undefined
+        : `Jev risk probability ${probability.toFixed(3)} met or exceeded threshold ${jevThreshold}.`,
+      details: {
+        jevProbability: probability,
+        jevThreshold,
+        jevModel: result?.model,
+        jevUsage: result?.usage,
+      },
+    };
+  }
 
   return {
     id: options.id,
     title: options.title || "Agent-based guardrail",
     description: options.description,
     async evaluate(context) {
+      if (engine === "jev") {
+        return evaluateWithJev(context);
+      }
+
+      if (!options.agent) {
+        throw new Error("agentVerdictRule requires an `agent` when using the default 'llm' engine.");
+      }
+
       const payload = payloadBuilder(context);
       const systemPrompt =
         options.systemPrompt ||

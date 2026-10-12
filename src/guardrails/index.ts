@@ -12,6 +12,10 @@ import type {
   JsonSchemaRuleOptions,
   CodeDetectionRuleOptions,
   AgentRuleOptions,
+  GuardrailJudgeEngine,
+  JevEngineOptions,
+  JevClientLike,
+  JevNoulAnswer,
   CustomRuleOptions,
   CustomRuleCallback,
 } from "./checks.js";
@@ -31,6 +35,10 @@ export type {
   JsonSchemaRuleOptions,
   CodeDetectionRuleOptions,
   AgentRuleOptions,
+  GuardrailJudgeEngine,
+  JevEngineOptions,
+  JevClientLike,
+  JevNoulAnswer,
   CustomRuleOptions,
   CustomRuleCallback,
 };

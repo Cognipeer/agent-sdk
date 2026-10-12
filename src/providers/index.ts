@@ -29,6 +29,7 @@ export type {
   OpenAICompatibleProviderConfig,
   BedrockProviderConfig,
   VertexProviderConfig,
+  JevProviderConfig,
 } from "./types.js";
 
 export { ProviderError, emptyUsage } from "./types.js";
@@ -43,6 +44,8 @@ export { AzureProvider } from "./azure.js";
 export { OpenAICompatibleProvider } from "./openaiCompatible.js";
 export { BedrockProvider } from "./bedrock.js";
 export { VertexProvider } from "./vertex.js";
+export { JevProvider, JEV_DEFAULT_BASE_URL } from "./jev.js";
+export type { JevQuestion, JevSystemOneRequest, JevSystemOneResult } from "./jev.js";
 
 // Adapter
 export { fromNativeProvider, type NativeModelOptions } from "./adapter.js";
@@ -56,6 +59,7 @@ import { AzureProvider } from "./azure.js";
 import { OpenAICompatibleProvider } from "./openaiCompatible.js";
 import { BedrockProvider } from "./bedrock.js";
 import { VertexProvider } from "./vertex.js";
+import { JevProvider } from "./jev.js";
 
 /**
  * Factory function to create a provider from a config object.
@@ -93,6 +97,8 @@ export function createProvider(config: ProviderConfig): BaseProvider {
       return new BedrockProvider(config);
     case "vertex":
       return new VertexProvider(config);
+    case "jev":
+      return new JevProvider(config);
     default:
       throw new Error(`Unknown provider: ${(config as any).provider}`);
   }

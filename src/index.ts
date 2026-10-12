@@ -71,6 +71,7 @@ export {
   OpenAICompatibleProvider,
   BedrockProvider,
   VertexProvider,
+  JevProvider,
   ProviderError,
   emptyUsage,
 } from "./providers/index.js";
@@ -95,6 +96,10 @@ export type {
   OpenAICompatibleProviderConfig,
   BedrockProviderConfig,
   VertexProviderConfig,
+  JevProviderConfig,
+  JevQuestion,
+  JevSystemOneRequest,
+  JevSystemOneResult,
   NativeModelOptions,
 } from "./providers/index.js";
 export { GuardrailPhase } from "./types.js";
