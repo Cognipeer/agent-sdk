@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0]
+
+### Added
+- **`fetch` and `timeoutMs` on every provider config**, used at all call sites (OpenAI chat/Responses, Azure, compatible, Anthropic, Bedrock, Vertex incl. the OAuth token exchange, Jev). `timeoutMs` covers the wait for response headers (an open stream is not cut) and surfaces as `ProviderError` with status 408. New type `ProviderTransportConfig`.
+- **OpenAI-family token parameter**: `maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens"` (OpenAI, Azure, compatible). `auto` sends `max_completion_tokens` for o-series / gpt-5. `temperature` / `top_p` are omitted for reasoning models (`gpt-5-chat` excepted).
+- **Reasoning text from OpenAI-compatible servers**: `message.reasoning_content` / `message.reasoning` (and `delta.*` while streaming) are parsed into `reasoning.summary`. The streaming adapter yields `{ type: "reasoning", reasoning_content }` parts (never answer text), the agent loop emits a `reasoning` event, and the final message keeps the full reasoning text.
+- **Compatible provider** forwards `organization`, `retry` and `responsesApi` (default `"never"`); **Azure** takes `retry`.
+- **Adapter**: `topP`, `stop`, `presencePenalty`, `frequencyPenalty` options; `transformRequest(req)` hook applied after tools/response format/reasoning are known (mutate or return a replacement, sync or async). Streamed final messages carry `response_metadata.finish_reason` and `model_name`.
+- **One documented usage shape** (`MessageUsage`, `toMessageUsage`): `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details { cached_tokens, cache_write_tokens }`, `completion_tokens_details { reasoning_tokens }` on `message.usage` and `response_metadata.token_usage` (which also keeps the flat legacy cache keys).
+- **Bedrock real streaming** over ConverseStream: AWS event-stream binary frames (prelude and message CRC32 verified, typed headers) are decoded incrementally, SigV4-signed like Converse. Text, tool-call argument and reasoning deltas stream as they arrive; a closing chunk carries the finish reason, usage and signed reasoning blocks. In-stream exceptions become `ProviderError` with a status (e.g. `throttlingException` -> 429). `capabilities.streaming` is now `true` for Bedrock.
+- **Anthropic**: an explicit `extra.thinking` wins over reasoning derived from `effort` / `budgetTokens` (it is still made API-legal: `max_tokens > budget_tokens`, sampling overrides dropped when enabled). `max_tokens` is guaranteed positive (default 4096) even if `extra` nulls it.
+- **Vertex**: `retry` config, 429/5xx retried with backoff and `Retry-After`; Gemini `thoughtSignature` on `functionCall` parts is captured (`ToolCall.thoughtSignature`, `tool_calls[].thoughtSignature`) and echoed on the next request; streamed tool calls get stream-unique ids (previously two calls in separate chunks both became `call_0` and were merged); `reasoning.thinkingLevel` sends `thinkingConfig.thinkingLevel` instead of a budget (`effort: "none"` still wins).
+
+### Changed
+- `OpenAICompatibleProvider` now defaults `responsesApi` to `"never"` (it used to inherit `"auto"`, which could route an o-series / gpt-5 named model on a compatible server to `/responses`). Pass `responsesApi: "auto"` to restore the old routing.
+
 ## [0.10.6]
 
 ### Fixed

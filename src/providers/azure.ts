@@ -22,6 +22,10 @@ export class AzureProvider extends OpenAIProvider {
       apiKey: config.apiKey,
       defaultModel: config.defaultModel ?? config.deploymentName ?? "gpt-4o",
       defaultHeaders: config.defaultHeaders,
+      retry: config.retry,
+      fetch: config.fetch,
+      timeoutMs: config.timeoutMs,
+      maxTokensParam: config.maxTokensParam,
     });
     this.endpoint = config.endpoint.replace(/\/$/, "");
     this.apiVersion = config.apiVersion ?? "2024-10-21";
@@ -41,16 +45,17 @@ export class AzureProvider extends OpenAIProvider {
     // Remove model from body since Azure uses deployment path
     const { model: _model, ...bodyWithoutModel } = body;
 
-    const res = await fetch(url, {
+    const payload = JSON.stringify(bodyWithoutModel);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "api-key": this.azureApiKey,
         ...this.defaultHeaders,
       },
-      body: JSON.stringify(bodyWithoutModel),
+      body: payload,
       signal,
-    });
+    }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -78,7 +83,7 @@ export class AzureProvider extends OpenAIProvider {
     // some api-versions expect it. Prefer the deployment-scoped responses route.
     const url = `${this.endpoint}/openai/responses?api-version=${this.apiVersion}`;
     const payload = JSON.stringify({ ...body, model: deployment });
-    const res = await fetch(url, {
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -87,7 +92,7 @@ export class AzureProvider extends OpenAIProvider {
       },
       body: payload,
       signal,
-    });
+    }), signal);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new ProviderError(

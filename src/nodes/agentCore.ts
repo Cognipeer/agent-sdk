@@ -491,6 +491,11 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
               if (chunk && typeof chunk === "object" && (chunk as any).role) {
                 streamedMessage = chunk;
               }
+              if (chunk && typeof chunk === "object" && (chunk as any).type === "reasoning"
+                && typeof (chunk as any).reasoning_content === "string") {
+                onEvent?.({ type: "reasoning", text: (chunk as any).reasoning_content } as any);
+                continue;
+              }
               const text = extractText(chunk);
               // The provider adapter yields text deltas as plain strings and
               // then closes the stream with the FULLY ASSEMBLED message. Its

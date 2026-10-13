@@ -29,7 +29,55 @@ export type NativeModelOptions = {
   extra?: Record<string, any>;
   /** Unified native reasoning config applied by default (per-call overrides supported). */
   reasoning?: ReasoningRequestConfig;
+  /** Default nucleus sampling. */
+  topP?: number;
+  /** Default stop sequences. */
+  stop?: string[];
+  /** Default presence penalty (OpenAI-family only). */
+  presencePenalty?: number;
+  /** Default frequency penalty (OpenAI-family only). */
+  frequencyPenalty?: number;
+  /**
+   * Last-mile hook: receives the fully built request (tools, response format,
+   * reasoning already applied) right before it goes to the provider. Mutate it
+   * in place or return a replacement. Use it for model-specific rules the
+   * unified request cannot express (e.g. force `reasoning` off when tools are bound).
+   */
+  transformRequest?: (request: ChatCompletionRequest) => ChatCompletionRequest | void | Promise<ChatCompletionRequest | void>;
 };
+
+/**
+ * The ONE usage shape carried on every assistant message produced by a native
+ * provider (`message.usage`, and mirrored on `response_metadata.token_usage`):
+ *
+ * ```
+ * {
+ *   prompt_tokens, completion_tokens, total_tokens,
+ *   prompt_tokens_details:     { cached_tokens, cache_write_tokens },
+ *   completion_tokens_details: { reasoning_tokens },
+ * }
+ * ```
+ * `completion_tokens` INCLUDES `reasoning_tokens`; `prompt_tokens` INCLUDES
+ * `cached_tokens`. `response_metadata.token_usage` additionally keeps the flat
+ * legacy `cached_tokens` / `cache_write_tokens` keys.
+ */
+export type MessageUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details: { cached_tokens: number; cache_write_tokens: number };
+  completion_tokens_details: { reasoning_tokens: number };
+};
+
+export function toMessageUsage(u: TokenUsage): MessageUsage {
+  return {
+    prompt_tokens: u.inputTokens,
+    completion_tokens: u.outputTokens,
+    total_tokens: u.totalTokens,
+    prompt_tokens_details: { cached_tokens: u.cachedInputTokens, cache_write_tokens: u.cachedWriteTokens },
+    completion_tokens_details: { reasoning_tokens: u.reasoningTokens },
+  };
+}
 
 /**
  * Creates a BaseChatModel from a native provider.
@@ -62,8 +110,9 @@ export function fromNativeProvider(
       // hangs up on the provider instead of letting the model finish.
       const link = linkAbortSignal(_invokeOptions);
       try {
-        const request = buildRequest(messages, boundTools, options, _invokeOptions);
+        let request = buildRequest(messages, boundTools, options, _invokeOptions);
         if (link.signal) request.signal = link.signal;
+        request = await applyTransform(request);
         const response = await provider.complete(request);
         return toBaseChatMessage(response);
       } finally {
@@ -77,14 +126,18 @@ export function fromNativeProvider(
     ): AsyncIterable<BaseChatMessage | BaseChatMessagePart | string> {
       const link = linkAbortSignal(_invokeOptions);
       try {
-        const request = buildRequest(messages, boundTools, options, _invokeOptions);
+        let request = buildRequest(messages, boundTools, options, _invokeOptions);
         request.stream = true;
         if (link.signal) request.signal = link.signal;
+        request = await applyTransform(request);
 
         let fullContent = "";
         let allToolCalls: ToolCall[] = [];
         let lastUsage: TokenUsage | undefined;
         let reasoningBlocks: import("./types.js").ReasoningBlock[] | undefined;
+        let reasoningText = "";
+        let finishReason: string | undefined;
+        let responseModel: string | undefined;
         const toolCallBuffers = new Map<string, ToolCall>();
 
         for await (const chunk of provider.completeStream(request)) {
@@ -94,9 +147,19 @@ export function fromNativeProvider(
             yield chunk.delta.content;
           }
 
+          if (chunk.model) responseModel = chunk.model;
+          if (chunk.finishReason) finishReason = chunk.finishReason;
+
           // Capture final reasoning blocks (emitted near end of stream).
           if (chunk.delta.reasoning?.blocks?.length) {
             reasoningBlocks = chunk.delta.reasoning.blocks;
+          }
+          // Incremental reasoning text: surfaced as a reasoning part (never as
+          // answer text) and kept for the final message.
+          const reasoningDelta = chunk.delta.reasoning?.summary;
+          if (reasoningDelta) {
+            reasoningText += reasoningDelta;
+            yield { type: "reasoning", reasoning_content: reasoningDelta };
           }
 
           // Accumulate tool calls
@@ -106,11 +169,13 @@ export function fromNativeProvider(
                 const existing = toolCallBuffers.get(tc.id);
                 if (existing) {
                   if (tc.arguments) existing.arguments += tc.arguments;
+                  if (tc.thoughtSignature) existing.thoughtSignature = tc.thoughtSignature;
                 } else {
                   toolCallBuffers.set(tc.id, {
                     id: tc.id,
                     name: tc.name ?? "",
                     arguments: tc.arguments ?? "",
+                    ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
                   });
                 }
               }
@@ -128,8 +193,18 @@ export function fromNativeProvider(
         // Yield final assembled message
         allToolCalls = [...toolCallBuffers.values()];
         const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage);
-        if (reasoningBlocks?.length) {
-          (finalMessage as any).reasoning = { blocks: reasoningBlocks };
+        if (reasoningBlocks?.length || reasoningText) {
+          (finalMessage as any).reasoning = {
+            ...(reasoningBlocks?.length ? { blocks: reasoningBlocks } : {}),
+            ...(reasoningText ? { summary: reasoningText } : {}),
+          };
+        }
+        if (finishReason || responseModel) {
+          finalMessage.response_metadata = {
+            ...(finalMessage.response_metadata ?? {}),
+            ...(finishReason ? { finish_reason: finishReason } : {}),
+            ...(responseModel ? { model_name: responseModel } : {}),
+          };
         }
         yield finalMessage;
       } finally {
@@ -149,6 +224,12 @@ export function fromNativeProvider(
 
   // ─── Internal helpers ──────────────────────────────────────────────────
 
+  async function applyTransform(req: ChatCompletionRequest): Promise<ChatCompletionRequest> {
+    if (!options?.transformRequest) return req;
+    const out = await options.transformRequest(req);
+    return out ?? req;
+  }
+
   function buildRequest(
     messages: BaseChatMessage[],
     tools?: ToolDefinition[],
@@ -162,6 +243,10 @@ export function fromNativeProvider(
 
     if (opts?.temperature != null) req.temperature = opts.temperature;
     if (opts?.maxTokens != null) req.maxTokens = opts.maxTokens;
+    if (opts?.topP != null) req.topP = opts.topP;
+    if (opts?.stop?.length) req.stop = opts.stop;
+    if (opts?.presencePenalty != null) req.presencePenalty = opts.presencePenalty;
+    if (opts?.frequencyPenalty != null) req.frequencyPenalty = opts.frequencyPenalty;
     if (tools?.length) req.tools = tools;
     if (opts?.extra) req.extra = opts.extra;
 
@@ -256,6 +341,7 @@ function toUnifiedMessage(msg: BaseChatMessage): UnifiedMessage {
       id: tc.id,
       name: tc.function?.name ?? tc.name ?? "",
       arguments: tc.function?.arguments ?? tc.arguments ?? "{}",
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -634,29 +720,18 @@ export function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
   return { name, description, parameters, ...(useStrict ? { strict: true } : {}) };
 }
 
+/** `token_usage` = the unified usage plus the flat legacy cache keys. */
+function legacyTokenUsage(u: TokenUsage) {
+  return { ...toMessageUsage(u), cached_tokens: u.cachedInputTokens, cache_write_tokens: u.cachedWriteTokens };
+}
+
 function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
   const msg: BaseChatMessage = {
     role: "assistant",
     content: response.content ?? "",
-    usage: {
-      prompt_tokens: response.usage.inputTokens,
-      completion_tokens: response.usage.outputTokens,
-      total_tokens: response.usage.totalTokens,
-      prompt_tokens_details: {
-        cached_tokens: response.usage.cachedInputTokens,
-      },
-      completion_tokens_details: {
-        reasoning_tokens: response.usage.reasoningTokens,
-      },
-    },
+    usage: toMessageUsage(response.usage),
     response_metadata: {
-      token_usage: {
-        prompt_tokens: response.usage.inputTokens,
-        completion_tokens: response.usage.outputTokens,
-        total_tokens: response.usage.totalTokens,
-        cached_tokens: response.usage.cachedInputTokens,
-        cache_write_tokens: response.usage.cachedWriteTokens,
-      },
+      token_usage: legacyTokenUsage(response.usage),
       finish_reason: response.finishReason,
       model_name: response.model,
     },
@@ -667,6 +742,7 @@ function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
       id: tc.id,
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -684,26 +760,8 @@ function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUs
   };
 
   if (usage) {
-    msg.usage = {
-      prompt_tokens: usage.inputTokens,
-      completion_tokens: usage.outputTokens,
-      total_tokens: usage.totalTokens,
-      prompt_tokens_details: {
-        cached_tokens: usage.cachedInputTokens,
-      },
-      completion_tokens_details: {
-        reasoning_tokens: usage.reasoningTokens,
-      },
-    };
-    msg.response_metadata = {
-      token_usage: {
-        prompt_tokens: usage.inputTokens,
-        completion_tokens: usage.outputTokens,
-        total_tokens: usage.totalTokens,
-        cached_tokens: usage.cachedInputTokens,
-        cache_write_tokens: usage.cachedWriteTokens,
-      },
-    };
+    msg.usage = toMessageUsage(usage);
+    msg.response_metadata = { token_usage: legacyTokenUsage(usage) };
   }
 
   if (toolCalls.length > 0) {
@@ -711,6 +769,7 @@ function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUs
       id: tc.id,
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -748,7 +807,7 @@ function resolveCapabilities(provider: ProviderType): ModelCapabilities {
       return {
         structuredOutput: "tool_based",
         strictToolCalling: false,
-        streaming: false, // streaming uses binary protocol
+        streaming: true, // ConverseStream (AWS event-stream frames)
         provider: "bedrock",
       };
     case "vertex":

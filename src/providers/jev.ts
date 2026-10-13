@@ -47,6 +47,7 @@ export class JevProvider extends BaseProvider {
 
   constructor(config: JevProviderConfig) {
     super();
+    this.configureTransport(config);
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? JEV_DEFAULT_BASE_URL).replace(/\/$/, "");
     this.defaultModel = config.defaultModel;
@@ -67,7 +68,7 @@ export class JevProvider extends BaseProvider {
     };
 
     const res = await this.doFetchWithRetry(() =>
-      fetch(`${this.baseURL}/v1/systemone`, {
+      this.httpFetch(`${this.baseURL}/v1/systemone`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

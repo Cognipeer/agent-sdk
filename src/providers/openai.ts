@@ -32,9 +32,12 @@ export class OpenAIProvider extends BaseProvider {
   // Private, and read only by OpenAIProvider itself: see the constructor.
   private readonly responsesApiModels: Array<string | RegExp>;
   private readonly responsesStreaming: boolean;
+  protected readonly maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens";
 
   constructor(config: OpenAIProviderConfig) {
     super();
+    this.configureTransport(config);
+    this.maxTokensParam = config.maxTokensParam ?? "auto";
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? "https://api.openai.com/v1").replace(/\/$/, "");
     this.defaultModel = config.defaultModel ?? "gpt-4o";
@@ -164,6 +167,9 @@ export class OpenAIProvider extends BaseProvider {
         out.delta.content = delta.content;
       }
 
+      const reasoningDelta = extractReasoningText(delta);
+      if (reasoningDelta) out.delta.reasoning = { summary: reasoningDelta };
+
       // Accumulate tool calls
       if (delta.tool_calls) {
         const partials: Partial<ToolCall>[] = [];
@@ -198,10 +204,20 @@ export class OpenAIProvider extends BaseProvider {
     if (stream) {
       body.stream_options = { include_usage: true };
     }
-    if (request.temperature != null) body.temperature = request.temperature;
-    if (request.maxTokens != null) body.max_tokens = request.maxTokens;
-    if (request.topP != null) body.top_p = request.topP;
+    const modelId = String(body.model);
+    // Reasoning models (o-series, gpt-5) reject sampling overrides.
+    const reasoningModel = isReasoningModel(modelId) && !/chat/i.test(modelId);
+    if (request.temperature != null && !reasoningModel) body.temperature = request.temperature;
+    if (request.maxTokens != null) {
+      const useCompletionTokens =
+        this.maxTokensParam === "max_completion_tokens" ||
+        (this.maxTokensParam === "auto" && isReasoningModel(modelId));
+      body[useCompletionTokens ? "max_completion_tokens" : "max_tokens"] = request.maxTokens;
+    }
+    if (request.topP != null && !reasoningModel) body.top_p = request.topP;
     if (request.stop) body.stop = request.stop;
+    if (request.presencePenalty != null) body.presence_penalty = request.presencePenalty;
+    if (request.frequencyPenalty != null) body.frequency_penalty = request.frequencyPenalty;
 
     if (request.tools?.length) {
       body.tools = request.tools.map((t) => this.toOpenAITool(t));
@@ -483,7 +499,7 @@ export class OpenAIProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new ProviderError(
@@ -630,7 +646,7 @@ export class OpenAIProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -655,6 +671,8 @@ export class OpenAIProvider extends BaseProvider {
       arguments: tc.function?.arguments ?? "{}",
     }));
 
+    const reasoningText = extractReasoningText(message);
+
     return {
       id: json.id ?? "",
       model: json.model ?? "",
@@ -662,6 +680,7 @@ export class OpenAIProvider extends BaseProvider {
       toolCalls,
       usage: this.extractUsage(json.usage),
       finishReason: mapFinishReason(choice?.finish_reason),
+      ...(reasoningText ? { reasoning: { summary: reasoningText } } : {}),
       raw: json,
     };
   }
@@ -683,6 +702,17 @@ export class OpenAIProvider extends BaseProvider {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Reasoning text as OpenAI-compatible servers spell it: `reasoning_content`
+ * (DeepSeek, vLLM, Together) or `reasoning` (OpenRouter, newer vLLM). */
+function extractReasoningText(src: any): string | undefined {
+  if (!src || typeof src !== "object") return undefined;
+  for (const key of ["reasoning_content", "reasoning"]) {
+    const v = src[key];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
 
 /** Detects OpenAI reasoning models (o-series and gpt-5 family). */
 export function isReasoningModel(model: string | undefined): boolean {

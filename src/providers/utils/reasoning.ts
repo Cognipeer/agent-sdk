@@ -34,6 +34,8 @@ export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
 
 /** Minimum gap between the thinking budget and `max_tokens` for Anthropic/Bedrock. */
 const THINKING_OUTPUT_RESERVE = 1024;
+/** Anthropic rejects `budget_tokens` below this (a 400 invalid_request_error). */
+const MIN_THINKING_BUDGET = 1024;
 /** Floor for `max_tokens` once thinking is enabled (budget + reserve at least this). */
 const THINKING_MIN_MAX_TOKENS = 4096;
 
@@ -84,8 +86,9 @@ export function applyAnthropicReasoning(
   if (currentMax < requiredMax) {
     body.max_tokens = requiredMax;
   }
-  // Clamp the budget strictly below max_tokens (Anthropic hard requirement).
-  budget = clampBudget(budget, body.max_tokens);
+  // Clamp the budget strictly below max_tokens (Anthropic hard requirement),
+  // and never under the API's minimum budget.
+  budget = Math.max(MIN_THINKING_BUDGET, clampBudget(budget, body.max_tokens));
 
   const thinking: Record<string, any> = { type: "enabled", budget_tokens: budget };
   if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
@@ -113,7 +116,7 @@ export function applyBedrockReasoning(
   if (currentMax < requiredMax) {
     inference.maxTokens = requiredMax;
   }
-  budget = clampBudget(budget, inference.maxTokens);
+  budget = Math.max(MIN_THINKING_BUDGET, clampBudget(budget, inference.maxTokens));
 
   const extra = (body.additionalModelRequestFields ??= {});
   const thinking: Record<string, any> = { type: "enabled", budget_tokens: budget };
@@ -131,8 +134,11 @@ export function applyGeminiReasoning(
 ): void {
   if (!reasoning) return;
   const budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
-  if (budget == null) return;
-  const thinkingConfig: Record<string, any> = { thinkingBudget: budget };
+  const level = typeof reasoning.thinkingLevel === "string" && reasoning.thinkingLevel ? reasoning.thinkingLevel : undefined;
+  // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
+  if (budget == null && !level) return;
+  const thinkingConfig: Record<string, any> =
+    level && budget !== 0 ? { thinkingLevel: level } : { thinkingBudget: budget ?? 0 };
   if (reasoning.includeThoughts) thinkingConfig.includeThoughts = true;
   if (reasoning.providerExtras) Object.assign(thinkingConfig, reasoning.providerExtras);
   generationConfig.thinkingConfig = thinkingConfig;

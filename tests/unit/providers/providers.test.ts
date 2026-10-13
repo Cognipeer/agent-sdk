@@ -1240,7 +1240,7 @@ describe("fromNativeProvider adapter", () => {
     const bedrock = fromNativeProvider(
       new BedrockProvider({ provider: "bedrock", region: "us-east-1", accessKeyId: "a", secretAccessKey: "s" }),
     );
-    expect(bedrock.capabilities?.streaming).toBe(false);
+    expect(bedrock.capabilities?.streaming).toBe(true);
   });
 });
 

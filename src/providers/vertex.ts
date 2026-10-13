@@ -31,10 +31,12 @@ export class VertexProvider extends BaseProvider {
 
   constructor(config: VertexProviderConfig) {
     super();
+    this.configureTransport(config);
     this.projectId = config.projectId;
     this.location = config.location ?? "us-central1";
     this.defaultModel = config.defaultModel ?? "gemini-2.0-flash";
     this.defaultHeaders = config.defaultHeaders ?? {};
+    if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
 
     if (config.accessToken) {
       this.accessToken = config.accessToken;
@@ -65,6 +67,7 @@ export class VertexProvider extends BaseProvider {
     const res = await this.doFetch(url, body, request.signal);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
+    const counter = { next: 0 };
 
     // Vertex streams JSON array items separated by newlines or SSE
     const contentType = res.headers.get("content-type") ?? "";
@@ -79,7 +82,7 @@ export class VertexProvider extends BaseProvider {
         } catch {
           continue;
         }
-        yield this.parseStreamChunk(chunk, modelId);
+        yield this.parseStreamChunk(chunk, modelId, counter);
       }
     } else {
       // NDJSON or JSON array format
@@ -102,7 +105,7 @@ export class VertexProvider extends BaseProvider {
             if (!trimmed || trimmed === "[" || trimmed === "]") continue;
             try {
               const chunk = JSON.parse(trimmed);
-              yield this.parseStreamChunk(chunk, modelId);
+              yield this.parseStreamChunk(chunk, modelId, counter);
             } catch {
               // Incomplete JSON, put back
               buffer = line + "\n" + buffer;
@@ -116,7 +119,7 @@ export class VertexProvider extends BaseProvider {
         if (remaining && remaining !== "[" && remaining !== "]") {
           try {
             const chunk = JSON.parse(remaining);
-            yield this.parseStreamChunk(chunk, modelId);
+            yield this.parseStreamChunk(chunk, modelId, counter);
           } catch {
             // ignore
           }
@@ -259,6 +262,8 @@ export class VertexProvider extends BaseProvider {
             name: tc.name,
             args: safeJsonParse(tc.arguments),
           },
+          // Gemini 3 requires the signature of each functionCall echoed back.
+          ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
         });
       }
       return { role: "model", parts };
@@ -375,7 +380,7 @@ export class VertexProvider extends BaseProvider {
     const signature = sign.sign(sa.private_key, "base64url");
     const jwt = `${signingInput}.${signature}`;
 
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenRes = await this.httpFetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
@@ -393,16 +398,23 @@ export class VertexProvider extends BaseProvider {
   private async doFetch(url: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const token = await this.getAccessToken();
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...this.defaultHeaders,
-      },
-      body: JSON.stringify(body),
+    const bodyStr = JSON.stringify(body);
+    // 429/5xx are retried with backoff (Retry-After honoured); the last
+    // response is returned and surfaced below as a ProviderError.
+    const res = await this.doFetchWithRetry(
+      () =>
+        this.httpFetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            ...this.defaultHeaders,
+          },
+          body: bodyStr,
+          signal,
+        }),
       signal,
-    });
+    );
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -439,6 +451,7 @@ export class VertexProvider extends BaseProvider {
           id: `call_${toolCallIdx++}`,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
+          ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
         });
       }
     }
@@ -466,7 +479,7 @@ export class VertexProvider extends BaseProvider {
     };
   }
 
-  private parseStreamChunk(chunk: any, modelId: string): ChatCompletionChunk {
+  private parseStreamChunk(chunk: any, modelId: string, counter: { next: number }): ChatCompletionChunk {
     const candidate = chunk.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
     const delta: ChatCompletionChunk["delta"] = {};
@@ -481,9 +494,11 @@ export class VertexProvider extends BaseProvider {
       } else if (part.functionCall) {
         if (!delta.toolCalls) delta.toolCalls = [];
         delta.toolCalls.push({
-          id: `call_${delta.toolCalls.length}`,
+          // Unique across the whole stream: the adapter merges chunks by id.
+          id: `call_${counter.next++}`,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
+          ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
         });
       }
     }

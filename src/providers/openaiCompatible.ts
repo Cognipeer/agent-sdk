@@ -15,6 +15,13 @@ export class OpenAICompatibleProvider extends OpenAIProvider {
       baseURL: config.baseURL,
       defaultModel: config.defaultModel,
       defaultHeaders: config.defaultHeaders,
+      organization: config.organization,
+      retry: config.retry,
+      fetch: config.fetch,
+      timeoutMs: config.timeoutMs,
+      maxTokensParam: config.maxTokensParam,
+      // Most compatible servers only speak Chat Completions.
+      responsesApi: config.responsesApi ?? "never",
     });
   }
 }
