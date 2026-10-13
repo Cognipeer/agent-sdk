@@ -36,6 +36,10 @@ export class OpenAIProvider extends BaseProvider {
   // Private, and read only by OpenAIProvider itself: see the constructor.
   private readonly responsesApiModels: Array<string | RegExp>;
   private readonly responsesStreaming: boolean;
+  private readonly apiExplicitChat: boolean;
+  private readonly apiExplicitResponses: boolean;
+  /** `api: "responses"` was passed (the legacy `responsesApi: "always"` keeps its old single-call behaviour). */
+  private readonly apiResponsesNative: boolean;
   protected readonly maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens";
 
   constructor(config: OpenAIProviderConfig) {
@@ -49,13 +53,19 @@ export class OpenAIProvider extends BaseProvider {
       ...config.defaultHeaders,
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
-    this.responsesApi = config.responsesApi ?? "auto";
-    // The per-model opt-ins belong to an OpenAIProvider configured directly.
-    // Subclasses (Azure, openai-compatible) build the config they pass up here
-    // themselves and route Responses differently, so they never take part.
-    const ownInstance = new.target === OpenAIProvider;
-    this.responsesApiModels = ownInstance ? [...(config.responsesApiModels ?? [])] : [];
-    this.responsesStreaming = ownInstance && config.responsesStreaming === true;
+    // Upstream API selection is explicit: `api` wins, then the deprecated
+    // `responsesApi` alias; with neither set every request is Chat Completions.
+    // Nothing is inferred from a model name unless `responsesApi: "auto"` is
+    // passed on purpose.
+    const legacy = config.responsesApi;
+    this.responsesApi = config.api === "responses" ? "always"
+      : config.api === "chat" ? "never"
+      : legacy ?? "never";
+    this.apiExplicitChat = config.api === "chat" || (config.api === undefined && legacy === "never");
+    this.apiExplicitResponses = this.responsesApi === "always";
+    this.apiResponsesNative = config.api === "responses";
+    this.responsesApiModels = [...(config.responsesApiModels ?? [])];
+    this.responsesStreaming = config.responsesStreaming ?? this.apiResponsesNative;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
@@ -83,9 +93,10 @@ export class OpenAIProvider extends BaseProvider {
    * A model listed in `responsesApiModels` is the caller stating the answer
    * for that model alone; `never` still overrides it. */
   protected useResponsesApi(request: ChatCompletionRequest): boolean {
-    if (this.responsesApi === "never") return false;
-    if (this.responsesApi === "always") return true;
+    if (this.apiExplicitChat) return false;
+    if (this.apiExplicitResponses) return true;
     if (this.isResponsesApiModel(request)) return true;
+    if (this.responsesApi !== "auto") return false;
     if (!request.reasoning) return false;
     return isReasoningModel(request.model || this.defaultModel);
   }
@@ -102,7 +113,7 @@ export class OpenAIProvider extends BaseProvider {
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     if (this.useResponsesApi(request)) {
-      if (this.responsesStreaming && this.isResponsesApiModel(request)) {
+      if (this.responsesStreaming && (this.apiResponsesNative || this.isResponsesApiModel(request))) {
         yield* this.streamResponses(request);
         return;
       }
@@ -322,7 +333,7 @@ export class OpenAIProvider extends BaseProvider {
 
   protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const body = this.buildResponsesBody(request);
-    if (this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
+    if (this.apiResponsesNative || this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
     const res = await this.responsesFetch(body, request.signal);
     const json = await res.json();
     return this.parseResponsesResponse(json, request.model || this.defaultModel);
@@ -349,6 +360,7 @@ export class OpenAIProvider extends BaseProvider {
     // Keyed by output item id: argument deltas name the item, not the call.
     const calls = new Map<string, { callId: string; name: string; arguments: string }>();
     let final: ChatCompletionResponse | undefined;
+    let streamedSummary = false;
 
     for await (const event of parseSSEStream(res.body, request.signal)) {
       if (event.data === "[DONE]") break;
@@ -369,6 +381,13 @@ export class OpenAIProvider extends BaseProvider {
 
         case "response.output_text.delta":
           if (data.delta) yield { id, model, delta: { content: data.delta } };
+          break;
+
+        case "response.reasoning_summary_text.delta":
+          if (typeof data.delta === "string" && data.delta) {
+            streamedSummary = true;
+            yield { id, model, delta: { reasoning: { summary: data.delta } } };
+          }
           break;
 
         case "response.output_item.added": {
@@ -428,7 +447,8 @@ export class OpenAIProvider extends BaseProvider {
     yield {
       id: final?.id || id,
       model: final?.model || model,
-      delta: final?.reasoning ? { reasoning: final.reasoning } : {},
+      // Summary text already went out as deltas; do not repeat it.
+      delta: final?.reasoning && !streamedSummary ? { reasoning: final.reasoning } : {},
       usage: final?.usage,
       finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
     };

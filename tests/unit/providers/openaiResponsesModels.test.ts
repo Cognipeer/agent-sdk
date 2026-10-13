@@ -52,7 +52,7 @@ describe("responsesApiModels routing", () => {
   });
 
   it("leaves unlisted models on today's rule, including the gpt-5 name check", () => {
-    const p = openai({ responsesApiModels: ["gpt-6.1-sol"] });
+    const p = openai({ responsesApiModels: ["gpt-6.1-sol"], responsesApi: "auto" });
     expect(routes(p, { model: "gpt-4o" })).toBe(false);
     expect(routes(p, { model: "gpt-5.6-terra" })).toBe(false);
     expect(routes(p, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(true);
@@ -87,23 +87,25 @@ describe("responsesApiModels routing", () => {
 });
 
 // ── subclasses ───────────────────────────────────────────────────────────────
-describe("responsesApiModels does not reach subclasses", () => {
+describe("responsesApiModels / api reach subclasses", () => {
   const optIn = { responsesApiModels: ["gpt-6.1-sol"], responsesStreaming: true } as any;
 
-  it("AzureProvider ignores it even when handed the fields", () => {
+  it("AzureProvider honours it", () => {
     const p = new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "https://r.openai.azure.com", ...optIn });
-    expect(routes(p, { model: "gpt-6.1-sol", tools })).toBe(false);
+    expect(routes(p, { model: "gpt-6.1-sol", tools })).toBe(true);
+    expect(routes(p, { model: "gpt-4o", tools })).toBe(false);
   });
 
-  it("OpenAICompatibleProvider ignores it even when handed the fields", () => {
+  it("OpenAICompatibleProvider honours it", () => {
     const p = new OpenAICompatibleProvider({ provider: "openai-compatible", apiKey: "k", baseURL: "http://x/v1", ...optIn });
-    expect(routes(p, { model: "gpt-6.1-sol", tools })).toBe(false);
+    expect(routes(p, { model: "gpt-6.1-sol", tools })).toBe(true);
   });
 
-  it("a user subclass of OpenAIProvider that forwards the config ignores it too", () => {
-    class Custom extends OpenAIProvider {}
-    const p = new Custom({ provider: "openai", apiKey: "k", ...optIn });
-    expect(routes(p, { model: "gpt-6.1-sol", tools })).toBe(false);
+  it("api:'responses' on a subclass routes everything; api:'chat' pins to chat", () => {
+    const r = new OpenAICompatibleProvider({ provider: "openai-compatible", apiKey: "k", baseURL: "http://x/v1", api: "responses" });
+    expect(routes(r, { model: "qwen3", tools })).toBe(true);
+    const c = new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "https://r.openai.azure.com", api: "chat", responsesApiModels: ["x"] });
+    expect(routes(c, { model: "x", tools })).toBe(false);
   });
 });
 
@@ -352,12 +354,13 @@ describe("responsesStreaming on a listed model", () => {
     expect(calls[0].body).not.toHaveProperty("stream_options");
 
     expect(chunks.map((c) => c.delta)).toEqual([
+      { reasoning: { summary: "Need a lookup." } },
       { content: "Looking " },
       { content: "it up." },
       { toolCalls: [{ id: "call_1", name: "lookup", arguments: "" }] },
       { toolCalls: [{ id: "call_1", arguments: "{\"q\":" }] },
       { toolCalls: [{ id: "call_1", arguments: "42}" }] },
-      { reasoning: { summary: "Need a lookup." } },
+      {},
     ]);
     const last = chunks[chunks.length - 1];
     expect(last).toMatchObject({ id: "resp_1", model: "gpt-6.1-sol", finishReason: "tool_calls" });

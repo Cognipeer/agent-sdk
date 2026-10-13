@@ -579,8 +579,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > azure / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://res.openai.azure.com/openai/responses?api-version=2024-10-21",
+    "payload": "{"messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://res.openai.azure.com/openai/deployments/gpt-5.6-terra/chat/completions?api-version=2024-10-21",
   },
 ]
 `;
@@ -588,27 +588,19 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > azure / reasoningOnGpt5 / complete > output 1`] = `
 {
   "content": "hi",
-  "finishReason": "tool_calls",
-  "id": "resp_1",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
   "model": "m",
-  "reasoning": {
-    "summary": "thought",
-  },
-  "toolCalls": [
-    {
-      "arguments": "{"q":1}",
-      "id": "call_1",
-      "name": "lookup",
-    },
-  ],
+  "rawFinishReason": "stop",
+  "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
     "cachedOutputTokens": 0,
     "cachedWriteTokens": 0,
     "inputTokens": 3,
-    "outputTokens": 2,
-    "reasoningTokens": 1,
-    "totalTokens": 5,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
   },
 }
 `;
@@ -616,8 +608,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > azure / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://res.openai.azure.com/openai/responses?api-version=2024-10-21",
+    "payload": "{"messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://res.openai.azure.com/openai/deployments/gpt-5.6-terra/chat/completions?api-version=2024-10-21",
   },
 ]
 `;
@@ -626,20 +618,46 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 [
   {
     "delta": {
-      "content": "hi",
-      "reasoning": {
-        "summary": "thought",
-      },
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
       "toolCalls": [
         {
-          "arguments": "{"q":1}",
+          "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
     },
     "finishReason": "tool_calls",
-    "id": "resp_1",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
     "model": "m",
     "usage": {
       "cachedInputTokens": 0,
@@ -647,7 +665,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
       "cachedWriteTokens": 0,
       "inputTokens": 3,
       "outputTokens": 2,
-      "reasoningTokens": 1,
+      "reasoningTokens": 0,
       "totalTokens": 5,
     },
   },
@@ -1872,6 +1890,660 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 ]
 `;
 
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / everything / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"temperature":0.2,"max_tokens":64,"top_p":0.9,"stop":["END"],"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / everything / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / everything / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"temperature":0.2,"max_tokens":64,"top_p":0.9,"stop":["END"],"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / everything / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt5NoReasoning / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt5NoReasoning / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt5NoReasoning / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt5NoReasoning / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6NoReasoning / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-6.1-sol","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6NoReasoning / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6NoReasoning / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-6.1-sol","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6NoReasoning / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-6.1-sol","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"high"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-6.1-sol","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"high"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / plain / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":false}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / plain / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / plain / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / plain / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnChatModel / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"high"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnChatModel / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
+  "model": "m",
+  "rawFinishReason": "stop",
+  "toolCalls": [],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnChatModel / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-4o","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"high"}",
+    "url": "https://api.openai.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnChatModel / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "{"q":",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 0,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / complete > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "url": "https://api.openai.com/v1/responses",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / complete > output 1`] = `
+{
+  "content": "hi",
+  "finishReason": "tool_calls",
+  "id": "resp_1",
+  "model": "m",
+  "reasoning": {
+    "summary": "thought",
+  },
+  "toolCalls": [
+    {
+      "arguments": "{"q":1}",
+      "id": "call_1",
+      "name": "lookup",
+    },
+  ],
+  "usage": {
+    "cachedInputTokens": 0,
+    "cachedOutputTokens": 0,
+    "cachedWriteTokens": 0,
+    "inputTokens": 3,
+    "outputTokens": 2,
+    "reasoningTokens": 1,
+    "totalTokens": 5,
+  },
+}
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / stream > http 1`] = `
+[
+  {
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "url": "https://api.openai.com/v1/responses",
+  },
+]
+`;
+
+exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / stream > output 1`] = `
+[
+  {
+    "delta": {
+      "content": "hi",
+      "reasoning": {
+        "summary": "thought",
+      },
+      "toolCalls": [
+        {
+          "arguments": "{"q":1}",
+          "id": "call_1",
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "tool_calls",
+    "id": "resp_1",
+    "model": "m",
+    "usage": {
+      "cachedInputTokens": 0,
+      "cachedOutputTokens": 0,
+      "cachedWriteTokens": 0,
+      "inputTokens": 3,
+      "outputTokens": 2,
+      "reasoningTokens": 1,
+      "totalTokens": 5,
+    },
+  },
+]
+`;
+
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / everything / complete > http 1`] = `
 [
   {
@@ -2451,8 +3123,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://res.openai.azure.com/openai/v1/responses",
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://res.openai.azure.com/openai/v1/chat/completions",
   },
 ]
 `;
@@ -2460,27 +3132,19 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / reasoningOnGpt5 / complete > output 1`] = `
 {
   "content": "hi",
-  "finishReason": "tool_calls",
-  "id": "resp_1",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
   "model": "m",
-  "reasoning": {
-    "summary": "thought",
-  },
-  "toolCalls": [
-    {
-      "arguments": "{"q":1}",
-      "id": "call_1",
-      "name": "lookup",
-    },
-  ],
+  "rawFinishReason": "stop",
+  "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
     "cachedOutputTokens": 0,
     "cachedWriteTokens": 0,
     "inputTokens": 3,
-    "outputTokens": 2,
-    "reasoningTokens": 1,
-    "totalTokens": 5,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
   },
 }
 `;
@@ -2488,8 +3152,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://res.openai.azure.com/openai/v1/responses",
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://res.openai.azure.com/openai/v1/chat/completions",
   },
 ]
 `;
@@ -2498,20 +3162,46 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 [
   {
     "delta": {
-      "content": "hi",
-      "reasoning": {
-        "summary": "thought",
-      },
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
       "toolCalls": [
         {
-          "arguments": "{"q":1}",
+          "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
     },
     "finishReason": "tool_calls",
-    "id": "resp_1",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
     "model": "m",
     "usage": {
       "cachedInputTokens": 0,
@@ -2519,7 +3209,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
       "cachedWriteTokens": 0,
       "inputTokens": 3,
       "outputTokens": 2,
-      "reasoningTokens": 1,
+      "reasoningTokens": 0,
       "totalTokens": 5,
     },
   },
@@ -3105,8 +3795,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://api.openai.com/v1/responses",
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
   },
 ]
 `;
@@ -3114,27 +3804,19 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / reasoningOnGpt5 / complete > output 1`] = `
 {
   "content": "hi",
-  "finishReason": "tool_calls",
-  "id": "resp_1",
+  "finishReason": "stop",
+  "id": "chatcmpl-1",
   "model": "m",
-  "reasoning": {
-    "summary": "thought",
-  },
-  "toolCalls": [
-    {
-      "arguments": "{"q":1}",
-      "id": "call_1",
-      "name": "lookup",
-    },
-  ],
+  "rawFinishReason": "stop",
+  "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
     "cachedOutputTokens": 0,
     "cachedWriteTokens": 0,
     "inputTokens": 3,
-    "outputTokens": 2,
-    "reasoningTokens": 1,
-    "totalTokens": 5,
+    "outputTokens": 1,
+    "reasoningTokens": 0,
+    "totalTokens": 4,
   },
 }
 `;
@@ -3142,8 +3824,8 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
-    "url": "https://api.openai.com/v1/responses",
+    "payload": "{"model":"gpt-5.6-terra","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Find 1"},{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":1}"}}]},{"role":"tool","content":"found","tool_call_id":"call_0"},{"role":"user","content":[{"type":"text","text":"and now?"}]}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}}],"reasoning_effort":"medium"}",
+    "url": "https://api.openai.com/v1/chat/completions",
   },
 ]
 `;
@@ -3152,20 +3834,46 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 [
   {
     "delta": {
-      "content": "hi",
-      "reasoning": {
-        "summary": "thought",
-      },
+      "content": "He",
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
       "toolCalls": [
         {
-          "arguments": "{"q":1}",
+          "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
+          "name": "lookup",
+        },
+      ],
+    },
+    "finishReason": "stop",
+    "id": "c1",
+    "model": "m",
+  },
+  {
+    "delta": {
+      "toolCalls": [
+        {
+          "arguments": "1}",
+          "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
     },
     "finishReason": "tool_calls",
-    "id": "resp_1",
+    "id": "c1",
+    "model": "m",
+    "rawFinishReason": "tool_calls",
+  },
+  {
+    "delta": {},
+    "id": "c1",
     "model": "m",
     "usage": {
       "cachedInputTokens": 0,
@@ -3173,7 +3881,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
       "cachedWriteTokens": 0,
       "inputTokens": 3,
       "outputTokens": 2,
-      "reasoningTokens": 1,
+      "reasoningTokens": 0,
       "totalTokens": 5,
     },
   },

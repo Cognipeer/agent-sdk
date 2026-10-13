@@ -156,8 +156,8 @@ export class BedrockProvider extends BaseProvider {
             inputTokens: u.inputTokens ?? 0,
             outputTokens: u.outputTokens ?? 0,
             totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-            cachedInputTokens: u.cacheReadInputTokenCount ?? u.cacheReadInputTokens ?? 0,
-            cachedWriteTokens: u.cacheWriteInputTokenCount ?? u.cacheWriteInputTokens ?? 0,
+            cachedInputTokens: u.cacheReadInputTokens ?? u.cacheReadInputTokenCount ?? 0,
+            cachedWriteTokens: u.cacheWriteInputTokens ?? u.cacheWriteInputTokenCount ?? 0,
             cachedOutputTokens: 0,
             reasoningTokens: 0,
           };
@@ -544,8 +544,8 @@ export class BedrockProvider extends BaseProvider {
       inputTokens: usage.inputTokens ?? 0,
       outputTokens: usage.outputTokens ?? 0,
       totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-      cachedInputTokens: usage.cacheReadInputTokenCount ?? 0,
-      cachedWriteTokens: usage.cacheWriteInputTokenCount ?? 0,
+      cachedInputTokens: usage.cacheReadInputTokens ?? usage.cacheReadInputTokenCount ?? 0,
+      cachedWriteTokens: usage.cacheWriteInputTokens ?? usage.cacheWriteInputTokenCount ?? 0,
       cachedOutputTokens: 0,
       // Bedrock bills thinking tokens inside outputTokens; no separate count.
       reasoningTokens: 0,
@@ -613,8 +613,10 @@ function mapBedrockStopReason(reason: string | null | undefined): ChatCompletion
     case "tool_use":
       return "tool_calls";
     case "max_tokens":
+    case "model_context_window_exceeded":
       return "length";
     case "content_filtered":
+    case "guardrail_intervened":
     case "guardrail":
       return "content_filter";
     default:

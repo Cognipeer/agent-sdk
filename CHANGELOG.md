@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock and Vertex. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
 - **`@langchain/*` and `langchain` are optional peer dependencies.** Nothing imports LangChain at module load; `fromLangchainModel` / `fromLangchainTools` keep working when LangChain is installed.
 
+### Breaking
+- **No automatic Responses routing.** OpenAI, Azure and OpenAI-compatible providers no longer switch to the Responses API because a request carries `reasoning` and the model name looks like an o-series / gpt-5 model. Every provider class now defaults to Chat Completions. Pass `api: "responses"` to use Responses, or `responsesApi: "auto"` to keep the old heuristic.
+
+### Added (upstream API selection)
+- **`api: "chat" | "responses"`** on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`. `"responses"` sends every request to the Responses API with real SSE streaming (text, tool-call arguments and `response.reasoning_summary_text.delta` as reasoning parts; `responsesStreaming: false` opts back into one non-streaming call). The existing `responsesApi` option still works as a deprecated alias (`never` = chat, `always` = responses, `auto` = old heuristic, only when passed); `api` wins when both are set.
+- `responsesApiModels` / `responsesStreaming` are now honoured by `AzureProvider` and `OpenAICompatibleProvider` too (previously only a directly configured `OpenAIProvider`).
+- **Claude visible thinking.** On the adaptive (Claude 5.x) thinking form the SDK now sends `thinking.display = "summarized"` (Bedrock-Claude too) unless `reasoning.includeThoughts` is `false`; those models otherwise return empty thinking text. An explicit `extra.thinking` is never modified. Behaviour change: adaptive requests carry the extra `display` field.
+- Anthropic `usage.output_tokens_details.thinking_tokens` is parsed into `reasoningTokens` (non-stream and stream).
+- Vertex embeddings: task type aliases `semantic_similarity`, `question_answering`, `fact_verification`, `code_retrieval_query`.
+
+### Fixed (providers)
+- **Bedrock**: usage reads `cacheReadInputTokens` / `cacheWriteInputTokens` first and the `...TokenCount` names as a fallback (non-stream and stream); stop reasons `guardrail_intervened` map to `content_filter` and `model_context_window_exceeded` to `length` (`guardrail` is still `content_filter`).
+- **SigV4**: the canonical URI is now URI-encoded a second time per path segment for non-S3 services, as AWS requires. Model ids containing `:` previously produced a path the signer and the service canonicalised differently. Verified against a reference signature from `@smithy/signature-v4`. `signRequest` accepts an optional `now` for reproducible tests.
+- **Vertex embeddings**: `extra.parameters` is merged with `outputDimensionality` instead of replacing it, and a prediction without an `embeddings.values` array now raises a `ProviderError` instead of returning `undefined` vectors.
+
 ### Fixed
 - **Anthropic / Bedrock-Claude thinking on newer models.** Claude 5.x models reject `thinking: { type: "enabled", budget_tokens }`. The thinking shape is now chosen per model id: newer models get `thinking: { type: "adaptive" }` plus `output_config.effort` (`minimal` maps to `low`, `none` sends no thinking); older models keep the budget form. New `thinkingMode: "auto" | "adaptive" | "budget"` provider option overrides detection (`supportsAdaptiveThinking` is exported). The Anthropic provider also retries once with the other form when the upstream returns that specific 400. An explicit `extra.thinking` is still passed through unchanged.
 

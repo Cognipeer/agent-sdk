@@ -87,6 +87,7 @@ export class AnthropicProvider extends BaseProvider {
     let model = "";
     let inputTokens = 0;
     let outputTokens = 0;
+    let thinkingTokens = 0;
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
     const currentToolCalls = new Map<number, { id: string; name: string; arguments: string; ordinal: number }>();
@@ -186,6 +187,7 @@ export class AnthropicProvider extends BaseProvider {
           const delta = data.delta;
           if (data.usage) {
             outputTokens = data.usage.output_tokens ?? outputTokens;
+            thinkingTokens = data.usage.output_tokens_details?.thinking_tokens ?? thinkingTokens;
           }
           const finishReason = mapAnthropicStopReason(delta?.stop_reason);
           const rawFinishReason = typeof delta?.stop_reason === "string" ? delta.stop_reason : undefined;
@@ -196,7 +198,7 @@ export class AnthropicProvider extends BaseProvider {
             cachedInputTokens: cacheReadInputTokens,
             cachedWriteTokens: cacheCreationInputTokens,
             cachedOutputTokens: 0,
-            reasoningTokens: 0,
+            reasoningTokens: thinkingTokens,
           };
           const blocks = [...reasoningBlocks.values()].filter(
             (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
@@ -521,10 +523,9 @@ export class AnthropicProvider extends BaseProvider {
       cachedInputTokens: usage.cache_read_input_tokens ?? 0,
       cachedWriteTokens: usage.cache_creation_input_tokens ?? 0,
       cachedOutputTokens: 0,
-      // Anthropic bills thinking tokens inside `output_tokens` and does not
-      // expose a separate count, so reasoningTokens stays 0 here (cost is still
-      // captured via outputTokens). See docs for the limitation.
-      reasoningTokens: 0,
+      // Thinking tokens are billed inside `output_tokens`; newer models also
+      // report the split as `output_tokens_details.thinking_tokens`.
+      reasoningTokens: usage.output_tokens_details?.thinking_tokens ?? 0,
     };
 
     return {

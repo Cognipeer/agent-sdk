@@ -26,7 +26,7 @@ describe("anthropic thinking form", () => {
   it("sends adaptive + output_config.effort for 5.x (minimal -> low)", async () => {
     const { p, bodies } = make("claude-haiku-5-5", [{ status: 200, body: OK }]);
     await p.complete(req({ reasoning: { effort: "minimal" }, temperature: 0.2 }));
-    expect(bodies[0].thinking).toEqual({ type: "adaptive" });
+    expect(bodies[0].thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(bodies[0].output_config).toEqual({ effort: "low" });
     expect(bodies[0].temperature).toBeUndefined();
   });
@@ -41,7 +41,7 @@ describe("anthropic thinking form", () => {
   it("thinkingMode overrides detection", async () => {
     const { p, bodies } = make("claude-sonnet-4-20250514", [{ status: 200, body: OK }], "adaptive");
     await p.complete(req({ reasoning: { effort: "high" } }));
-    expect(bodies[0].thinking).toEqual({ type: "adaptive" });
+    expect(bodies[0].thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(bodies[0].output_config.effort).toBe("high");
   });
 
@@ -57,7 +57,7 @@ describe("anthropic thinking form", () => {
     await p.complete(req({ reasoning: { effort: "low" } }));
     expect(bodies).toHaveLength(2);
     expect(bodies[0].thinking.type).toBe("enabled");
-    expect(bodies[1].thinking).toEqual({ type: "adaptive" });
+    expect(bodies[1].thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(bodies[1].output_config.effort).toBe("low");
   });
 
@@ -81,6 +81,6 @@ describe("anthropic thinking form", () => {
   it("bedrock mapper emits adaptive fields for 5.x", () => {
     const body: any = {};
     applyBedrockReasoning(body, { effort: "high" }, { model: "anthropic.claude-sonnet-5-5-v1:0" });
-    expect(body.additionalModelRequestFields).toEqual({ thinking: { type: "adaptive" }, output_config: { effort: "high" } });
+    expect(body.additionalModelRequestFields).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "high" } });
   });
 });

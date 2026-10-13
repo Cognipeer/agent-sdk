@@ -108,6 +108,10 @@ function applyAdaptiveThinking(
   }
   if (!effort) return;
   const thinking: Record<string, any> = { type: "adaptive" };
+  // Claude 5.x returns an empty `thinking` string unless display is asked for.
+  // Default: summarized, unless the caller opted out with includeThoughts:false.
+  // providerExtras (below) can still set any other display value.
+  if (reasoning.includeThoughts !== false) thinking.display = "summarized";
   if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
   setThinking({ thinking });
   setOutputConfig({ effort });

@@ -26,6 +26,10 @@ export class AzureProvider extends OpenAIProvider {
       fetch: config.fetch,
       timeoutMs: config.timeoutMs,
       maxTokensParam: config.maxTokensParam,
+      api: config.api,
+      responsesApi: config.responsesApi,
+      responsesApiModels: config.responsesApiModels,
+      responsesStreaming: config.responsesStreaming,
     });
     this.endpoint = config.endpoint.replace(/\/$/, "");
     this.apiVersion = config.apiVersion ?? "2024-10-21";

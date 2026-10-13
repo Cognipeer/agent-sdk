@@ -178,7 +178,7 @@ export type ReasoningRequestConfig = {
    * (the API rejects both together). Ignored by other providers.
    */
   thinkingLevel?: string;
-  /** Whether the provider should expose its reasoning/thought summary to the caller. Default false. */
+  /** Whether the provider should expose its reasoning/thought summary to the caller. Gemini: default false. Claude adaptive thinking (5.x): default summarized (`thinking.display = "summarized"`) unless this is `false`; never added when the caller passes an explicit `extra.thinking`. */
   includeThoughts?: boolean;
   /** Provider-specific passthrough merged on top of the mapped shape. */
   providerExtras?: Record<string, any>;
@@ -267,6 +267,10 @@ export type EmbeddingInputType =
   | "search_query"
   | "classification"
   | "clustering"
+  | "semantic_similarity"
+  | "question_answering"
+  | "fact_verification"
+  | "code_retrieval_query"
   | (string & {});
 
 export type EmbeddingRequest = {
@@ -344,9 +348,13 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   defaultHeaders?: Record<string, string>;
   retry?: ProviderRetryConfig;
   /**
+   * @deprecated Use `api: "chat" | "responses"`. Kept as an alias:
+   * `never` = chat, `always` = responses, `auto` = the old name-based heuristic
+   * (only when passed explicitly). Default (unset) is Chat Completions.
+   *
    * WHICH API a reasoning-carrying request is addressed to.
    *
-   *  auto    (default, and today's behaviour) route to the Responses API when
+   *  auto    (opt-in; no longer the default) route to the Responses API when
    *          the request carries `reasoning` AND the model name looks like an
    *          o-series/gpt-5 reasoning model.
    *  never   always Chat Completions. `reasoning` is still mapped, as
@@ -365,6 +373,16 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    * where it matters most: a self-hosted model is named by whoever served it.
    */
   responsesApi?: "auto" | "never" | "always";
+  /**
+   * Which upstream API every request is sent to. Explicit; nothing is guessed
+   * from the model name. Default `"chat"` (Chat Completions). `"responses"`
+   * sends every request to the Responses API (`POST /responses`) and streams it
+   * over real SSE (text, tool-call arguments and reasoning-summary deltas;
+   * set `responsesStreaming: false` to get one non-streaming call instead).
+   * Works on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`.
+   * When set, it wins over the deprecated `responsesApi`.
+   */
+  api?: "chat" | "responses";
   /**
    * Models that go to the Responses API, named explicitly. Opt-in; unset by
    * default, and nothing here is inferred from a model name.
@@ -385,15 +403,16 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    *    `stream_options.include_usage` dropped.
    *  - real SSE streaming, when `responsesStreaming` is also true.
    *
-   * Honoured by `OpenAIProvider` itself only; `AzureProvider` and
-   * `OpenAICompatibleProvider` ignore it.
+   * Honoured by `OpenAIProvider`, `AzureProvider` and
+   * `OpenAICompatibleProvider` alike.
    */
   responsesApiModels?: Array<string | RegExp>;
   /**
-   * Stream Responses API output as it arrives (text and tool-call argument
-   * deltas) for models in `responsesApiModels`. Default false, which keeps the
-   * existing behaviour: one non-streaming Responses call, emitted as a single
-   * chunk. Has no effect on any other request.
+   * Stream Responses API output as it arrives (text, tool-call argument and
+   * reasoning-summary deltas) for `api: "responses"` and for models in
+   * `responsesApiModels`. Default true with `api: "responses"`, false
+   * otherwise (one non-streaming Responses call emitted as a single chunk).
+   * Has no effect on Chat Completions requests.
    */
   responsesStreaming?: boolean;
 };
@@ -433,14 +452,24 @@ export type AzureProviderConfig = ProviderTransportConfig & {
   deploymentName?: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  /** See OpenAIProviderConfig.api. Default "chat". */
+  api?: "chat" | "responses";
+  /** @deprecated Use `api`. */
+  responsesApi?: "auto" | "never" | "always";
+  responsesApiModels?: Array<string | RegExp>;
+  responsesStreaming?: boolean;
 };
 
 export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   provider: "openai-compatible";
   organization?: string;
   retry?: ProviderRetryConfig;
-  /** Default "never": most compatible servers only speak Chat Completions. */
+  /** @deprecated Use `api`. Default is chat. */
   responsesApi?: "auto" | "never" | "always";
+  /** See OpenAIProviderConfig.api. Default "chat". */
+  api?: "chat" | "responses";
+  responsesApiModels?: Array<string | RegExp>;
+  responsesStreaming?: boolean;
   /** See OpenAIProviderConfig.maxTokensParam. Compatible servers default to `auto`. */
   maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
   apiKey: string;

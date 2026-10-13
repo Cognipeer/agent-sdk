@@ -156,13 +156,24 @@ export class VertexProvider extends BaseProvider {
       const body: Record<string, any> = {
         instances: batch.map((content) => ({ content, ...(taskType ? { task_type: taskType } : {}) })),
       };
-      if (request.dimensions != null) body.parameters = { outputDimensionality: request.dimensions };
-      if (request.extra) Object.assign(body, request.extra);
+      const { parameters: extraParameters, ...extraRest } = request.extra ?? {};
+      const parameters: Record<string, any> = {
+        ...(request.dimensions != null ? { outputDimensionality: request.dimensions } : {}),
+        // Caller-supplied parameters are merged in, not replacing the above (an
+        // explicit extra.parameters.outputDimensionality still wins).
+        ...(extraParameters && typeof extraParameters === "object" ? extraParameters : {}),
+      };
+      if (Object.keys(parameters).length > 0) body.parameters = parameters;
+      Object.assign(body, extraRest);
       const res = await this.doFetch(url, body, request.signal);
       const json: any = await res.json();
       raw.push(json);
       for (const p of json.predictions ?? []) {
-        vectors.push(p.embeddings?.values);
+        const values = p.embeddings?.values;
+        if (!Array.isArray(values)) {
+          throw new ProviderError("Vertex embeddings response has a prediction without an embeddings.values array", this.providerName, undefined, json);
+        }
+        vectors.push(values);
         inputTokens += p.embeddings?.statistics?.token_count ?? 0;
       }
     }
@@ -574,6 +585,10 @@ const GEMINI_TASK_TYPES: Record<string, string> = {
   search_query: "RETRIEVAL_QUERY",
   classification: "CLASSIFICATION",
   clustering: "CLUSTERING",
+  semantic_similarity: "SEMANTIC_SIMILARITY",
+  question_answering: "QUESTION_ANSWERING",
+  fact_verification: "FACT_VERIFICATION",
+  code_retrieval_query: "CODE_RETRIEVAL_QUERY",
 };
 
 function mapGeminiFinishReason(reason: string | null | undefined): ChatCompletionResponse["finishReason"] {
