@@ -169,11 +169,13 @@ export function fromNativeProvider(
                 const existing = toolCallBuffers.get(tc.id);
                 if (existing) {
                   if (tc.arguments) existing.arguments += tc.arguments;
+                  if (tc.thoughtSignature) existing.thoughtSignature = tc.thoughtSignature;
                 } else {
                   toolCallBuffers.set(tc.id, {
                     id: tc.id,
                     name: tc.name ?? "",
                     arguments: tc.arguments ?? "",
+                    ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
                   });
                 }
               }
@@ -339,6 +341,7 @@ function toUnifiedMessage(msg: BaseChatMessage): UnifiedMessage {
       id: tc.id,
       name: tc.function?.name ?? tc.name ?? "",
       arguments: tc.function?.arguments ?? tc.arguments ?? "{}",
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -739,6 +742,7 @@ function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
       id: tc.id,
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -765,6 +769,7 @@ function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUs
       id: tc.id,
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
+      ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
     }));
   }
 
@@ -802,7 +807,7 @@ function resolveCapabilities(provider: ProviderType): ModelCapabilities {
       return {
         structuredOutput: "tool_based",
         strictToolCalling: false,
-        streaming: false, // streaming uses binary protocol
+        streaming: true, // ConverseStream (AWS event-stream frames)
         provider: "bedrock",
       };
     case "vertex":

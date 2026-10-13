@@ -49,6 +49,8 @@ export type ToolCall = {
   id: string;
   name: string;
   arguments: string; // JSON string
+  /** Gemini `thoughtSignature` attached to a functionCall part; must be echoed back on the next turn. */
+  thoughtSignature?: string;
 };
 
 /**
@@ -153,6 +155,12 @@ export type ReasoningRequestConfig = {
   effort?: ReasoningEffort;
   /** Explicit per-call token budget for reasoning/thinking. */
   budgetTokens?: number;
+  /**
+   * Gemini 3 style discrete thinking level (e.g. "low" | "high"). Sent as
+   * `thinkingConfig.thinkingLevel` and replaces the derived `thinkingBudget`
+   * (the API rejects both together). Ignored by other providers.
+   */
+  thinkingLevel?: string;
   /** Whether the provider should expose its reasoning/thought summary to the caller. Default false. */
   includeThoughts?: boolean;
   /** Provider-specific passthrough merged on top of the mapped shape. */
@@ -379,6 +387,8 @@ export type VertexProviderConfig = ProviderTransportConfig & {
   serviceAccountJson?: string | Record<string, any>;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  /** Retry policy for 429/5xx (default 3 retries, exponential backoff). */
+  retry?: ProviderRetryConfig;
 };
 
 export type JevProviderConfig = ProviderTransportConfig & {

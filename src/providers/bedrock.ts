@@ -3,6 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
+import { parseEventStream } from "./utils/eventStream.js";
 import { applyBedrockReasoning } from "./utils/reasoning.js";
 import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
 import {
@@ -55,25 +56,117 @@ export class BedrockProvider extends BaseProvider {
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const modelId = request.model || this.defaultModel;
     const body = this.buildConverseBody(request);
-    const json = await this.doFetch(modelId, body, request.signal);
-    return this.parseResponse(json, modelId);
+    const res = await this.doFetch(modelId, body, request.signal, false);
+    return this.parseResponse(await res.json(), modelId);
   }
 
+  /**
+   * Real streaming over ConverseStream. The response is an AWS event-stream
+   * (binary frames); each frame carries one JSON event: messageStart,
+   * contentBlockStart/Delta/Stop (text, toolUse, reasoningContent),
+   * messageStop and, last, metadata (usage). Text, tool-call argument and
+   * reasoning deltas are yielded as they arrive; one closing chunk carries the
+   * finish reason, usage and the signed reasoning blocks.
+   */
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-    // Bedrock ConverseStream uses AWS event stream binary protocol.
-    // For simplicity, we fall back to non-streaming and yield a single chunk.
-    // Full event stream parsing can be added if needed.
-    const response = await this.complete(request);
+    const modelId = request.model || this.defaultModel;
+    const body = this.buildConverseBody(request);
+    const res = await this.doFetch(modelId, body, request.signal, true);
+    if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
+    const id = res.headers.get("x-amzn-requestid") ?? "";
+    const toolsByIndex = new Map<number, { id: string; name: string }>();
+    const reasoningByIndex = new Map<number, ReasoningBlock>();
+    let finishReason: ChatCompletionResponse["finishReason"] | undefined;
+    let usage: TokenUsage | undefined;
+
+    for await (const msg of parseEventStream(res.body, request.signal)) {
+      const messageType = String(msg.headers[":message-type"] ?? "event");
+      const eventType = String(msg.headers[":event-type"] ?? msg.headers[":exception-type"] ?? "");
+      let data: any = {};
+      const text = new TextDecoder().decode(msg.payload);
+      if (text) {
+        try { data = JSON.parse(text); } catch { data = { message: text }; }
+      }
+
+      if (messageType === "exception" || messageType === "error") {
+        const code = String(msg.headers[":exception-type"] ?? msg.headers[":error-code"] ?? eventType);
+        throw new ProviderError(
+          `Bedrock stream error ${code}: ${data.message ?? text}`,
+          this.providerName,
+          bedrockExceptionStatus(code),
+          data,
+        );
+      }
+
+      switch (eventType) {
+        case "contentBlockStart": {
+          const idx = data.contentBlockIndex ?? 0;
+          const tu = data.start?.toolUse;
+          if (tu) {
+            toolsByIndex.set(idx, { id: tu.toolUseId ?? "", name: tu.name ?? "" });
+            yield { id, model: modelId, delta: { toolCalls: [{ id: tu.toolUseId, name: tu.name, arguments: "" }] } };
+          }
+          break;
+        }
+        case "contentBlockDelta": {
+          const idx = data.contentBlockIndex ?? 0;
+          const d = data.delta ?? {};
+          if (typeof d.text === "string" && d.text) {
+            yield { id, model: modelId, delta: { content: d.text } };
+          } else if (d.toolUse) {
+            const tc = toolsByIndex.get(idx);
+            if (tc && typeof d.toolUse.input === "string" && d.toolUse.input) {
+              yield { id, model: modelId, delta: { toolCalls: [{ id: tc.id, name: tc.name, arguments: d.toolUse.input }] } };
+            }
+          } else if (d.reasoningContent) {
+            const rc = d.reasoningContent;
+            const blk: ReasoningBlock = reasoningByIndex.get(idx) ?? { type: "thinking", text: "" };
+            if (typeof rc.text === "string" && rc.text) {
+              blk.text = (blk.text ?? "") + rc.text;
+              reasoningByIndex.set(idx, blk);
+              yield { id, model: modelId, delta: { reasoning: { summary: rc.text } } };
+            }
+            if (typeof rc.signature === "string" && rc.signature) {
+              blk.signature = (blk.signature ?? "") + rc.signature;
+              reasoningByIndex.set(idx, blk);
+            }
+            if (rc.redactedContent) {
+              reasoningByIndex.set(idx, { type: "redacted_thinking", data: rc.redactedContent });
+            }
+          }
+          break;
+        }
+        case "messageStop":
+          finishReason = mapBedrockStopReason(data.stopReason);
+          break;
+        case "metadata": {
+          const u = data.usage ?? {};
+          usage = {
+            inputTokens: u.inputTokens ?? 0,
+            outputTokens: u.outputTokens ?? 0,
+            totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+            cachedInputTokens: u.cacheReadInputTokenCount ?? u.cacheReadInputTokens ?? 0,
+            cachedWriteTokens: u.cacheWriteInputTokenCount ?? u.cacheWriteInputTokens ?? 0,
+            cachedOutputTokens: 0,
+            reasoningTokens: 0,
+          };
+          break;
+        }
+        default:
+          break; // messageStart, contentBlockStop, unknown events
+      }
+    }
+
+    const blocks = [...reasoningByIndex.values()].filter(
+      (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
+    );
     yield {
-      id: response.id,
-      model: response.model,
-      delta: {
-        content: response.content ?? undefined,
-        toolCalls: response.toolCalls.length > 0 ? response.toolCalls : undefined,
-      },
-      usage: response.usage,
-      finishReason: response.finishReason,
+      id,
+      model: modelId,
+      delta: blocks.length > 0 ? { reasoning: { blocks } } : {},
+      finishReason: finishReason ?? "stop",
+      usage,
     };
   }
 
@@ -270,9 +363,9 @@ export class BedrockProvider extends BaseProvider {
     };
   }
 
-  private async doFetch(modelId: string, body: Record<string, any>, signal?: AbortSignal): Promise<any> {
+  private async doFetch(modelId: string, body: Record<string, any>, signal: AbortSignal | undefined, stream: boolean): Promise<Response> {
     const host = `bedrock-runtime.${this.region}.amazonaws.com`;
-    const url = `https://${host}/model/${encodeURIComponent(modelId)}/converse`;
+    const url = `https://${host}/model/${encodeURIComponent(modelId)}/${stream ? "converse-stream" : "converse"}`;
     const bodyStr = JSON.stringify(body);
 
     const res = await this.doFetchWithRetry(() => {
@@ -282,7 +375,7 @@ export class BedrockProvider extends BaseProvider {
         url,
         headers: {
           "Content-Type": "application/json",
-          Accept: "application/json",
+          Accept: stream ? "application/vnd.amazon.eventstream" : "application/json",
           ...this.defaultHeaders,
         },
         body: bodyStr,
@@ -303,7 +396,7 @@ export class BedrockProvider extends BaseProvider {
       );
     }
 
-    return res.json();
+    return res;
   }
 
   private parseResponse(json: any, modelId: string): ChatCompletionResponse {
@@ -382,6 +475,18 @@ function appendBedrockReasoning(content: any[], blocks: ReasoningBlock[] | undef
         });
       }
     }
+  }
+}
+
+function bedrockExceptionStatus(code: string): number | undefined {
+  switch (code) {
+    case "throttlingException": return 429;
+    case "validationException": return 400;
+    case "modelTimeoutException": return 408;
+    case "serviceUnavailableException": return 503;
+    case "internalServerException":
+    case "modelStreamErrorException": return 500;
+    default: return undefined;
   }
 }
 

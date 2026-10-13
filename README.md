@@ -104,10 +104,10 @@ createProvider({ provider: "anthropic", apiKey: process.env.ANTHROPIC_API_KEY! }
 createProvider({ provider: "azure", apiKey: "...", endpoint: "https://my-resource.openai.azure.com", deploymentName: "gpt-4o" })
 
 // AWS Bedrock
-createProvider({ provider: "bedrock", region: "us-east-1", accessKeyId: "...", secretAccessKey: "..." })
+createProvider({ provider: "bedrock", region: "us-east-1", accessKeyId: "...", secretAccessKey: "..." })  // streams via ConverseStream
 
 // Google Vertex AI
-createProvider({ provider: "vertex", projectId: "my-project", accessToken: process.env.VERTEX_TOKEN })
+createProvider({ provider: "vertex", projectId: "my-project", accessToken: process.env.VERTEX_TOKEN })  // retry on 429/5xx, thoughtSignature round-trip; reasoning.thinkingLevel for Gemini 3
 
 // Any OpenAI-compatible endpoint (Ollama, Groq, Together, vLLM, …)
 createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "https://custom.endpoint/v1" })

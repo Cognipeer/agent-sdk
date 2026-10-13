@@ -18,6 +18,26 @@ import {
   ProviderError,
 } from "./types.js";
 
+const DEFAULT_MAX_TOKENS = 4096;
+
+/** Enforces the Anthropic rules around a caller-supplied `thinking` block
+ * without altering the caller's choice: enabled thinking needs
+ * `max_tokens > budget_tokens` and forbids sampling overrides; a disabled or
+ * null block is dropped from the sampling restrictions. */
+function normalizeExplicitThinking(body: Record<string, any>): void {
+  const t = body.thinking;
+  if (t == null) {
+    delete body.thinking;
+    return;
+  }
+  if (t.type !== "enabled") return;
+  const budget = typeof t.budget_tokens === "number" ? t.budget_tokens : 0;
+  if (budget > 0 && (typeof body.max_tokens !== "number" || body.max_tokens <= budget)) {
+    body.max_tokens = budget + 1024;
+  }
+  for (const k of ["temperature", "top_p", "top_k"]) delete body[k];
+}
+
 export class AnthropicProvider extends BaseProvider {
   readonly providerName: ProviderType = "anthropic";
 
@@ -195,7 +215,7 @@ export class AnthropicProvider extends BaseProvider {
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
       messages: this.toAnthropicMessages(messages),
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
       stream,
     };
 
@@ -238,7 +258,19 @@ export class AnthropicProvider extends BaseProvider {
       Object.assign(body, request.extra);
     }
 
-    applyAnthropicReasoning(body, request.reasoning);
+    const explicitThinking = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
+    if (explicitThinking) {
+      // An explicit `extra.thinking` is the caller's final word: derived reasoning
+      // must not overwrite it. Only the hard API rules are enforced around it.
+      normalizeExplicitThinking(body);
+    } else {
+      applyAnthropicReasoning(body, request.reasoning);
+    }
+
+    // max_tokens is mandatory on the Messages API; `extra` may have nulled it.
+    if (typeof body.max_tokens !== "number" || !(body.max_tokens > 0)) {
+      body.max_tokens = DEFAULT_MAX_TOKENS;
+    }
 
     return body;
   }

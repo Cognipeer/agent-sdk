@@ -131,8 +131,11 @@ export function applyGeminiReasoning(
 ): void {
   if (!reasoning) return;
   const budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
-  if (budget == null) return;
-  const thinkingConfig: Record<string, any> = { thinkingBudget: budget };
+  const level = typeof reasoning.thinkingLevel === "string" && reasoning.thinkingLevel ? reasoning.thinkingLevel : undefined;
+  // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
+  if (budget == null && !level) return;
+  const thinkingConfig: Record<string, any> =
+    level && budget !== 0 ? { thinkingLevel: level } : { thinkingBudget: budget ?? 0 };
   if (reasoning.includeThoughts) thinkingConfig.includeThoughts = true;
   if (reasoning.providerExtras) Object.assign(thinkingConfig, reasoning.providerExtras);
   generationConfig.thinkingConfig = thinkingConfig;
