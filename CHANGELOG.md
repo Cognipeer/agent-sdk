@@ -14,11 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gateway-grade request options** on `ChatCompletionRequest`: `streamUsage` (`false` omits `stream_options.include_usage` for servers that reject it), `seed`, `n` (pass-through; only choice 0 is parsed), `parallelToolCalls` (sent only with tools), `logprobs`, `topLogprobs`.
 - **Raw finish reason** next to the normalised one: `rawFinishReason` on `ChatCompletionResponse` and on the stream chunk that carries it (OpenAI `finish_reason`, Anthropic / Bedrock `stop_reason`, Gemini `finishReason`).
 - **Provider response fields kept** in `providerFields` (response and stream chunks) when present: `system_fingerprint`, `service_tier`, message `annotations` and `refusal`, choice `logprobs`.
-- **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock and Vertex. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
+- **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock, Vertex and the Responses stream. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
 - **`@langchain/*` and `langchain` are optional peer dependencies.** Nothing imports LangChain at module load; `fromLangchainModel` / `fromLangchainTools` keep working when LangChain is installed.
 
 ### Breaking
 - **No automatic Responses routing.** OpenAI, Azure and OpenAI-compatible providers no longer switch to the Responses API because a request carries `reasoning` and the model name looks like an o-series / gpt-5 model. Every provider class now defaults to Chat Completions. Pass `api: "responses"` to use Responses, or `responsesApi: "auto"` to keep the old heuristic.
+- **Bedrock `extra` routing**: keys that are not Converse request fields now go inside `additionalModelRequestFields` (merged with the reasoning mapping and with any explicit `extra.additionalModelRequestFields`); Converse's own top-level fields (`guardrailConfig`, `performanceConfig`, `requestMetadata`, `promptVariables`, `additionalModelResponseFieldPaths`, `serviceTier`, `outputConfig`, ...) stay top-level. Previously every key was spread at the top level. Migration: to force a key to the top level (e.g. a Converse field added after this release) put it under `extra.__top`, e.g. `extra: { __top: { newConverseField: 1 } }`.
+
+### Behaviour changes
+- Adaptive (Claude 5.x) requests carry `thinking.display = "summarized"`, and temperature / top_p / top_k are stripped only when thinking is actually enabled (not for `effort: "none"`).
+- Bedrock stop reasons `model_context_window_exceeded` -> `length`, `guardrail_intervened` -> `content_filter`.
+- Anthropic `reasoningTokens` is now populated. It is already included in `outputTokens`: do not add it again.
+- Anthropic streams announce a tool call (id + name) when its block opens; consumers that created a call on first sight of `name` must merge by id/index.
 
 ### Added (upstream API selection)
 - **`api: "chat" | "responses"`** on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`. `"responses"` sends every request to the Responses API with real SSE streaming (text, tool-call arguments and `response.reasoning_summary_text.delta` as reasoning parts; `responsesStreaming: false` opts back into one non-streaming call). The existing `responsesApi` option still works as a deprecated alias (`never` = chat, `always` = responses, `auto` = old heuristic, only when passed); `api` wins when both are set.
@@ -35,8 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Anthropic / Bedrock-Claude thinking on newer models.** Claude 5.x models reject `thinking: { type: "enabled", budget_tokens }`. The thinking shape is now chosen per model id: newer models get `thinking: { type: "adaptive" }` plus `output_config.effort` (`minimal` maps to `low`, `none` sends no thinking); older models keep the budget form. New `thinkingMode: "auto" | "adaptive" | "budget"` provider option overrides detection (`supportsAdaptiveThinking` is exported). The Anthropic provider also retries once with the other form when the upstream returns that specific 400. An explicit `extra.thinking` is still passed through unchanged.
 
-### Changed
-- **Bedrock `extra`**: keys that are not Converse request fields are now sent inside `additionalModelRequestFields` (merged with the reasoning mapping). Converse's own top-level fields (`guardrailConfig`, `performanceConfig`, `requestMetadata`, `promptVariables`, `additionalModelResponseFieldPaths`, `serviceTier`, ...) stay top-level. Previously every `extra` key was spread at the top level, where Bedrock rejects model-specific fields.
 
 ## [0.11.0]
 

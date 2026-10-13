@@ -35,7 +35,7 @@ export function signRequest(req: SigV4Request): Record<string, string> {
   const host = parsed.host;
   // Non-S3 services canonicalise the path with every segment URI-encoded a
   // second time (the already-encoded pathname is encoded again).
-  const canonicalUri = (parsed.pathname || "/").split("/").map((seg) => encodeURIComponent(seg)).join("/");
+  const canonicalUri = (parsed.pathname || "/").split("/").map((seg) => encodeURIComponent(seg).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())).join("/");
   const canonicalQuerystring = sortQueryParams(parsed.searchParams);
 
   // Build headers to sign

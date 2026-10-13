@@ -316,14 +316,17 @@ export class BedrockProvider extends BaseProvider {
     if (request.extra) {
       // Converse's own top-level fields stay where they are; every other key is
       // model-specific and travels in additionalModelRequestFields.
+      // Build the merged object explicitly: never assign or mutate the caller's.
+      const fields: Record<string, any> = { ...(request.extra.additionalModelRequestFields ?? {}) };
+      const topLevel: Record<string, any> = { ...((request.extra as any).__top ?? {}) };
       for (const [key, value] of Object.entries(request.extra)) {
-        if (CONVERSE_TOP_LEVEL_FIELDS.has(key)) {
-          body[key] = value;
-        } else {
-          const fields = (body.additionalModelRequestFields ??= {});
-          fields[key] = value;
-        }
+        if (key === "additionalModelRequestFields" || key === "__top") continue;
+        if (CONVERSE_TOP_LEVEL_FIELDS.has(key)) body[key] = value;
+        else fields[key] = value;
       }
+      // `extra.__top` forces keys to the Converse top level, bypassing the allow-list.
+      Object.assign(body, topLevel);
+      if (Object.keys(fields).length > 0) body.additionalModelRequestFields = fields;
     }
 
     // Native reasoning: maps to additionalModelRequestFields.thinking and
@@ -573,7 +576,7 @@ export class BedrockProvider extends BaseProvider {
 const CONVERSE_TOP_LEVEL_FIELDS = new Set([
   "messages", "system", "inferenceConfig", "toolConfig", "guardrailConfig",
   "additionalModelRequestFields", "additionalModelResponseFieldPaths",
-  "promptVariables", "requestMetadata", "performanceConfig", "serviceTier",
+  "promptVariables", "requestMetadata", "performanceConfig", "serviceTier", "outputConfig",
 ]);
 
 /** Replays captured thinking blocks into a Bedrock Converse assistant content

@@ -358,7 +358,7 @@ export class OpenAIProvider extends BaseProvider {
     let id = "";
     let model = modelId;
     // Keyed by output item id: argument deltas name the item, not the call.
-    const calls = new Map<string, { callId: string; name: string; arguments: string }>();
+    const calls = new Map<string, { callId: string; name: string; arguments: string; index: number }>();
     let final: ChatCompletionResponse | undefined;
     let streamedSummary = false;
 
@@ -383,6 +383,10 @@ export class OpenAIProvider extends BaseProvider {
           if (data.delta) yield { id, model, delta: { content: data.delta } };
           break;
 
+        case "response.reasoning_summary_part.added":
+          if (streamedSummary) yield { id, model, delta: { reasoning: { summary: "\n\n" } } };
+          break;
+
         case "response.reasoning_summary_text.delta":
           if (typeof data.delta === "string" && data.delta) {
             streamedSummary = true;
@@ -393,9 +397,9 @@ export class OpenAIProvider extends BaseProvider {
         case "response.output_item.added": {
           const item = data.item;
           if (item?.type !== "function_call") break;
-          const call = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? "" };
+          const call = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? "", index: calls.size };
           calls.set(item.id ?? call.callId, call);
-          yield { id, model, delta: { toolCalls: [{ id: call.callId, name: call.name, arguments: call.arguments }] } };
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, name: call.name, arguments: call.arguments, index: call.index }] } };
           break;
         }
 
@@ -403,7 +407,7 @@ export class OpenAIProvider extends BaseProvider {
           const call = calls.get(data.item_id);
           if (!call || !data.delta) break;
           call.arguments += data.delta;
-          yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: data.delta }] } };
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: data.delta, index: call.index }] } };
           break;
         }
 
@@ -415,13 +419,13 @@ export class OpenAIProvider extends BaseProvider {
           const full = typeof item.arguments === "string" ? item.arguments : "";
           const call = calls.get(item.id ?? item.call_id);
           if (!call) {
-            const added = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: full };
+            const added = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: full, index: calls.size };
             calls.set(item.id ?? added.callId, added);
-            yield { id, model, delta: { toolCalls: [{ id: added.callId, name: added.name, arguments: full }] } };
+            yield { id, model, delta: { toolCalls: [{ id: added.callId, name: added.name, arguments: full, index: added.index }] } };
           } else if (full.length > call.arguments.length && full.startsWith(call.arguments)) {
             const rest = full.slice(call.arguments.length);
             call.arguments = full;
-            yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: rest }] } };
+            yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: rest, index: call.index }] } };
           }
           break;
         }

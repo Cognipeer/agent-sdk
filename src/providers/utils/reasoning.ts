@@ -80,10 +80,11 @@ export function supportsAdaptiveThinking(model: unknown): boolean {
   if (at < 0) return false;
   for (const tok of id.slice(at + 7).split("-")) {
     if (tok === "fable") return true;
-    if (tok.length > 0 && tok.length <= 2 && tok >= "0" && tok <= "99" && /^\d+$/.test(tok)) {
-      return Number(tok) >= 5;
+    const m = /^(\d+)(?:@|$)/.exec(tok); // also Vertex-style `5@20260101`
+    if (m) {
+      if (m[1].length <= 2) return Number(m[1]) >= 5;
+      return false; // date suffix before any version
     }
-    if (tok.length > 2 && /^\d+$/.test(tok)) return false; // date suffix before any version
   }
   return false;
 }
@@ -98,15 +99,15 @@ function applyAdaptiveThinking(
   reasoning: ReasoningRequestConfig,
   setThinking: (v: { thinking: Record<string, any> }) => void,
   setOutputConfig: (o: Record<string, any>) => void,
-): void {
+): boolean {
   const requested = normalizeEffort(reasoning.effort);
-  if (requested === "none") return;
+  if (requested === "none") return false;
   let effort: "low" | "medium" | "high" | undefined;
   if (requested) effort = requested === "minimal" ? "low" : requested;
   else if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
     effort = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
   }
-  if (!effort) return;
+  if (!effort) return false;
   const thinking: Record<string, any> = { type: "adaptive" };
   // Claude 5.x returns an empty `thinking` string unless display is asked for.
   // Default: summarized, unless the caller opted out with includeThoughts:false.
@@ -115,6 +116,7 @@ function applyAdaptiveThinking(
   if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
   setThinking({ thinking });
   setOutputConfig({ effort });
+  return true;
 }
 
 /** Maps onto Anthropic Messages API body.
@@ -132,8 +134,8 @@ export function applyAnthropicReasoning(
 ): void {
   if (!reasoning) return;
   if (resolveThinkingForm(opts?.model ?? body.model, opts?.mode) === "adaptive") {
-    applyAdaptiveThinking(body, reasoning, (extra) => (body.thinking = extra.thinking), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
-    stripSamplingParams(body, ["temperature", "top_p", "top_k"]);
+    const on = applyAdaptiveThinking(body, reasoning, (extra) => (body.thinking = extra.thinking), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
+    if (on) stripSamplingParams(body, ["temperature", "top_p", "top_k"]);
     return;
   }
   let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);
@@ -168,9 +170,9 @@ export function applyBedrockReasoning(
 ): void {
   if (!reasoning) return;
   if (resolveThinkingForm(opts?.model ?? body.modelId, opts?.mode) === "adaptive") {
-    const fields = (body.additionalModelRequestFields ??= {});
-    applyAdaptiveThinking(body, reasoning, (extra) => (fields.thinking = extra.thinking), (o) => (fields.output_config = { ...(fields.output_config ?? {}), ...o }));
-    stripSamplingParams((body.inferenceConfig ??= {}), ["temperature", "topP"]);
+    const fields = () => (body.additionalModelRequestFields ??= {});
+    const on = applyAdaptiveThinking(body, reasoning, (extra) => (fields().thinking = extra.thinking), (o) => (fields().output_config = { ...(fields().output_config ?? {}), ...o }));
+    if (on && body.inferenceConfig) stripSamplingParams(body.inferenceConfig, ["temperature", "topP"]);
     return;
   }
   let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);

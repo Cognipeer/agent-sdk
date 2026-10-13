@@ -357,9 +357,9 @@ describe("responsesStreaming on a listed model", () => {
       { reasoning: { summary: "Need a lookup." } },
       { content: "Looking " },
       { content: "it up." },
-      { toolCalls: [{ id: "call_1", name: "lookup", arguments: "" }] },
-      { toolCalls: [{ id: "call_1", arguments: "{\"q\":" }] },
-      { toolCalls: [{ id: "call_1", arguments: "42}" }] },
+      { toolCalls: [{ id: "call_1", name: "lookup", arguments: "", index: 0 }] },
+      { toolCalls: [{ id: "call_1", arguments: "{\"q\":", index: 0 }] },
+      { toolCalls: [{ id: "call_1", arguments: "42}", index: 0 }] },
       {},
     ]);
     const last = chunks[chunks.length - 1];
@@ -409,7 +409,7 @@ describe("responsesStreaming on a listed model", () => {
       ]),
     }]);
     const chunks = await collect(streamingProvider().completeStream({ model: "gpt-6.1-sol", messages: history, tools }));
-    expect(chunks[0].delta.toolCalls).toEqual([{ id: "call_9", name: "lookup", arguments: "{\"q\":9}" }]);
+    expect(chunks[0].delta.toolCalls).toEqual([{ id: "call_9", name: "lookup", arguments: "{\"q\":9}", index: 0 }]);
     expect(chunks[chunks.length - 1].finishReason).toBe("tool_calls");
   });
 

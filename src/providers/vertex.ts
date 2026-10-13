@@ -147,7 +147,7 @@ export class VertexProvider extends BaseProvider {
     const model = requireEmbeddingModel(this.providerName, request.model);
     const perRequest = request.batchSize ?? (/gemini-embedding/i.test(model) ? 1 : 100);
     const url = `https://${this.location}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${model}:predict`;
-    const taskType = request.inputType ? GEMINI_TASK_TYPES[request.inputType] ?? request.inputType.toUpperCase() : undefined;
+    const taskType = request.inputType ? (Object.prototype.hasOwnProperty.call(GEMINI_TASK_TYPES, request.inputType) ? GEMINI_TASK_TYPES[request.inputType] : request.inputType.toUpperCase()) : undefined;
     const vectors: number[][] = [];
     const raw: any[] = [];
     let inputTokens = 0;

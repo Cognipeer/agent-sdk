@@ -76,7 +76,7 @@ Why explicit: Responses is a different request shape (`input` instead of `messag
 createProvider({ provider: "openai-compatible", baseURL, apiKey, api: model.upstreamApi }) // "chat" | "responses"
 ```
 
-**Migrating from earlier 0.12 builds / 0.11.** Before this change an `OpenAIProvider` (and Azure) routed a request that carried `reasoning` to Responses when the model name looked like an o-series or gpt-5 model. That heuristic is gone from the default. To keep it, pass `responsesApi: "auto"` (deprecated, kept only as an alias); to move those models to Responses on purpose, pass `api: "responses"`. The other `responsesApi` values still work: `"never"` is `api: "chat"`, `"always"` is `api: "responses"`, except that `"always"` keeps its old single-call (non-streaming) behaviour unless you also set `responsesStreaming: true`. When both are given, `api` wins.
+**Migrating from 0.11.** Before this change an `OpenAIProvider` (and Azure) routed a request that carried `reasoning` to Responses when the model name looked like an o-series or gpt-5 model. That heuristic is gone from the default. To keep it, pass `responsesApi: "auto"` (deprecated, kept only as an alias); to move those models to Responses on purpose, pass `api: "responses"`. The other `responsesApi` values still work: `"never"` is `api: "chat"`, `"always"` is `api: "responses"`, except that `"always"` keeps its old single-call (non-streaming) behaviour unless you also set `responsesStreaming: true`. When both are given, `api` wins.
 
 ##### Per-model opt-in (`responsesApiModels`)
 
@@ -125,6 +125,19 @@ createProvider({
 The request URL is constructed as:
 ```
 {endpoint}/openai/deployments/{deploymentName}/chat/completions?api-version={apiVersion}
+```
+
+The default `apiVersion` (`2024-10-21`) is for Chat Completions only; it does not serve `/openai/responses`. With `api: "responses"` (or `responsesApiModels`) set a Responses-capable version, for example:
+
+```ts
+createProvider({
+  provider: "azure",
+  apiKey: process.env.AZURE_OPENAI_KEY!,
+  endpoint: "https://my-resource.openai.azure.com",
+  deploymentName: "gpt-5",
+  apiVersion: "preview",            // or "v1" / a dated Responses-capable version
+  api: "responses",                 // POST {endpoint}/openai/responses?api-version=preview
+})
 ```
 
 ### AWS Bedrock
@@ -368,7 +381,7 @@ for await (const chunk of provider.completeStream({
 }
 ```
 
-Streaming is supported for OpenAI, Anthropic, Azure, OpenAI-compatible, and Vertex. Bedrock currently falls back to a single non-streaming response (Bedrock's binary event-stream protocol support is planned).
+Streaming is supported for OpenAI, Anthropic, Azure, OpenAI-compatible, Vertex and Bedrock. Bedrock streams over ConverseStream (AWS binary event-stream).
 
 ### Cancellation
 

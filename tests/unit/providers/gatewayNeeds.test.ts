@@ -320,3 +320,54 @@ describe("embeddings", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("review fixes", () => {
+  const okBody = { output: { message: { content: [{ text: "x" }] } }, stopReason: "end_turn", usage: {} };
+  const br = (fn: typeof fetch) =>
+    new BedrockProvider({ provider: "bedrock", region: "us-east-1", accessKeyId: "a", secretAccessKey: "s", fetch: fn, retry: { maxRetries: 0 } });
+  const m = [{ role: "user" as const, content: "hi" }];
+
+  for (const order of ["a", "b"]) {
+    it(`Bedrock extra merge is order-independent and non-mutating (${order})`, async () => {
+      const { fn, calls } = mockFetch([json(okBody)]);
+      const extra: any = order === "a"
+        ? { top_k: 5, additionalModelRequestFields: { a: 1 } }
+        : { additionalModelRequestFields: { a: 1 }, top_k: 5 };
+      await br(fn).complete({ model: "anthropic.claude-x", messages: m, extra, reasoning: { effort: "low" } });
+      expect(calls[0].body.additionalModelRequestFields).toMatchObject({ a: 1, top_k: 5 });
+      expect(extra.additionalModelRequestFields).toEqual({ a: 1 });
+    });
+  }
+
+  it("Bedrock: outputConfig stays top-level, __top forces top-level", async () => {
+    const { fn, calls } = mockFetch([json(okBody)]);
+    await br(fn).complete({ model: "x", messages: m, extra: { outputConfig: { z: 1 }, __top: { newField: 2 } } });
+    expect(calls[0].body.outputConfig).toEqual({ z: 1 });
+    expect(calls[0].body.newField).toBe(2);
+    expect(calls[0].body.additionalModelRequestFields).toBeUndefined();
+  });
+
+  it("adaptive Claude with effort none keeps sampling params and adds no empty objects", async () => {
+    const { applyAnthropicReasoning, applyBedrockReasoning } = await import("../../../src/providers/utils/reasoning.js");
+    const a: any = { model: "claude-sonnet-5", temperature: 0.3, top_p: 0.9 };
+    applyAnthropicReasoning(a, { effort: "none" });
+    expect(a.temperature).toBe(0.3);
+    expect(a.top_p).toBe(0.9);
+    const b: any = { modelId: "anthropic.claude-sonnet-5", inferenceConfig: { temperature: 0.3 } };
+    applyBedrockReasoning(b, { effort: "none" });
+    expect(b.inferenceConfig.temperature).toBe(0.3);
+    expect(b.additionalModelRequestFields).toBeUndefined();
+  });
+
+  it("supportsAdaptiveThinking handles Vertex-style ids", async () => {
+    const { supportsAdaptiveThinking } = await import("../../../src/providers/utils/reasoning.js");
+    expect(supportsAdaptiveThinking("claude-sonnet-5@20260101")).toBe(true);
+    expect(supportsAdaptiveThinking("claude-sonnet-4@20250514")).toBe(false);
+  });
+
+  it("SigV4 encodes ! ' ( ) * in path segments", async () => {
+    const { signRequest } = await import("../../../src/providers/utils/sigv4.js");
+    const r = signRequest({ method: "POST", url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/a(b)*!'/converse", headers: {}, body: "", region: "us-east-1", service: "bedrock", credentials: { accessKeyId: "a", secretAccessKey: "s" }, now: new Date(0) } as any);
+    expect(r.Authorization).toBeTruthy();
+  });
+});

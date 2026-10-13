@@ -14,7 +14,9 @@ function walk(dir: string, out: string[] = []): string[] {
 describe("LangChain stays an optional peer", () => {
   it("no src file imports a LangChain package statically", () => {
     const offenders = walk(join(__dirname, "../../src")).filter((f) =>
-      /^\s*(import|export)\b[^;]*\bfrom\s+["'](@langchain\/|langchain)/m.test(readFileSync(f, "utf8")),
+      readFileSync(f, "utf8").split("\n").some((l) =>
+        /^\s*(import|export)\b/.test(l) && (l.includes("@langchain/") || /from\s+["']langchain/.test(l)) ||
+        /\b(require|import)\s*\(\s*["'](@langchain\/|langchain)/.test(l)),
     );
     expect(offenders).toEqual([]);
   });
