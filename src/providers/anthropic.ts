@@ -3,7 +3,7 @@
 
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
-import { applyAnthropicReasoning } from "./utils/reasoning.js";
+import { applyAnthropicReasoning, resolveThinkingForm, type ThinkingMode } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -38,6 +38,15 @@ function normalizeExplicitThinking(body: Record<string, any>): void {
   for (const k of ["temperature", "top_p", "top_k"]) delete body[k];
 }
 
+/** Detects the upstream 400 for a wrong thinking shape. Plain substring
+ * checks only. Returns which form the upstream rejected. */
+function thinkingFormRejected(text: string): "enabled" | "adaptive" | undefined {
+  const t = text.toLowerCase();
+  if (t.indexOf("thinking.type.enabled") >= 0 && t.indexOf("not supported") >= 0) return "enabled";
+  if (t.indexOf("thinking.type.adaptive") >= 0 && t.indexOf("not supported") >= 0 && t.indexOf("thinking.type.enabled") < 0) return "adaptive";
+  return undefined;
+}
+
 export class AnthropicProvider extends BaseProvider {
   readonly providerName: ProviderType = "anthropic";
 
@@ -48,6 +57,7 @@ export class AnthropicProvider extends BaseProvider {
   private readonly anthropicVersion: string;
 
   private readonly promptCachingEnabled: boolean;
+  private readonly thinkingMode: ThinkingMode;
 
   constructor(config: AnthropicProviderConfig) {
     super();
@@ -57,20 +67,19 @@ export class AnthropicProvider extends BaseProvider {
     this.defaultModel = config.defaultModel ?? "claude-sonnet-4-20250514";
     this.defaultHeaders = config.defaultHeaders ?? {};
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
+    this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const body = this.buildRequestBody(request, false);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.send(request, false);
     const json = await res.json();
     return this.parseResponse(json);
   }
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-    const body = this.buildRequestBody(request, true);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.send(request, true);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -216,7 +225,7 @@ export class AnthropicProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildRequestBody(request: ChatCompletionRequest, stream: boolean): Record<string, any> {
+  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, modeOverride?: ThinkingMode): Record<string, any> {
     // Anthropic separates system from messages
     const { system, messages } = this.splitSystemMessages(request.messages);
 
@@ -272,7 +281,7 @@ export class AnthropicProvider extends BaseProvider {
       // must not overwrite it. Only the hard API rules are enforced around it.
       normalizeExplicitThinking(body);
     } else {
-      applyAnthropicReasoning(body, request.reasoning);
+      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: modeOverride ?? this.thinkingMode });
     }
 
     // max_tokens is mandatory on the Messages API; `extra` may have nulled it.
@@ -432,6 +441,25 @@ export class AnthropicProvider extends BaseProvider {
       description: t.description,
       input_schema: t.parameters,
     };
+  }
+
+  /** Builds and sends the request; retries once with the other thinking form
+   * when the upstream rejects the one we picked. */
+  private async send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    const body = this.buildRequestBody(request, stream);
+    try {
+      return await this.doFetch(body, request.signal);
+    } catch (err) {
+      const explicit = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
+      if (explicit || !request.reasoning || !(err instanceof ProviderError) || err.statusCode !== 400) throw err;
+      const wrong = thinkingFormRejected(String(err.responseBody ?? err.message));
+      if (!wrong) throw err;
+      // The rejected form is the one we sent; flip to the other.
+      const used = resolveThinkingForm(request.model ?? this.defaultModel, this.thinkingMode);
+      const next: ThinkingMode = wrong === "enabled" ? "adaptive" : "budget";
+      if ((wrong === "enabled" && used !== "budget") || (wrong === "adaptive" && used !== "adaptive")) throw err;
+      return this.doFetch(this.buildRequestBody(request, stream, next), request.signal);
+    }
   }
 
   private async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {

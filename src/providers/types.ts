@@ -412,6 +412,14 @@ export type AnthropicProviderConfig = ProviderTransportConfig & {
    * which is the recommended Anthropic recipe for static system + tools.
    */
   prompt_caching?: { enabled: boolean };
+  /**
+   * Thinking request shape. `auto` (default) picks per model id: Claude 5.x
+   * and newer use `thinking:{type:"adaptive"}` + `output_config.effort`, older
+   * models use `thinking:{type:"enabled", budget_tokens}`. Force one with
+   * `adaptive` / `budget`. On the specific 400 for the wrong shape the
+   * provider retries once with the other form.
+   */
+  thinkingMode?: "auto" | "adaptive" | "budget";
 };
 
 export type AzureProviderConfig = ProviderTransportConfig & {
@@ -444,6 +452,8 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
 export type BedrockProviderConfig = ProviderTransportConfig & {
   provider: "bedrock";
   region: string;
+  /** Thinking request shape for Claude models: `auto` (by model id), `adaptive` or `budget`. */
+  thinkingMode?: "auto" | "adaptive" | "budget";
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;

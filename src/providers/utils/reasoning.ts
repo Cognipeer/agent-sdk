@@ -64,6 +64,55 @@ export function applyOpenAIReasoning(
   }
 }
 
+/**
+ * Which `thinking` shape a Claude model accepts. Newer models (the 5.x family)
+ * reject `{type:"enabled", budget_tokens}` and want `{type:"adaptive"}` plus
+ * `output_config.effort`; older ones only know the budget form.
+ * `auto` (default) detects by model id.
+ */
+export type ThinkingMode = "auto" | "adaptive" | "budget";
+
+/** True for Claude model ids of major version 5+ (or the `fable` line). */
+export function supportsAdaptiveThinking(model: unknown): boolean {
+  if (typeof model !== "string") return false;
+  const id = model.toLowerCase();
+  const at = id.indexOf("claude-");
+  if (at < 0) return false;
+  for (const tok of id.slice(at + 7).split("-")) {
+    if (tok === "fable") return true;
+    if (tok.length > 0 && tok.length <= 2 && tok >= "0" && tok <= "99" && /^\d+$/.test(tok)) {
+      return Number(tok) >= 5;
+    }
+    if (tok.length > 2 && /^\d+$/.test(tok)) return false; // date suffix before any version
+  }
+  return false;
+}
+
+export function resolveThinkingForm(model: unknown, mode: ThinkingMode | undefined): "adaptive" | "budget" {
+  if (mode === "adaptive" || mode === "budget") return mode;
+  return supportsAdaptiveThinking(model) ? "adaptive" : "budget";
+}
+
+function applyAdaptiveThinking(
+  _body: Record<string, any>,
+  reasoning: ReasoningRequestConfig,
+  setThinking: (v: { thinking: Record<string, any> }) => void,
+  setOutputConfig: (o: Record<string, any>) => void,
+): void {
+  const requested = normalizeEffort(reasoning.effort);
+  if (requested === "none") return;
+  let effort: "low" | "medium" | "high" | undefined;
+  if (requested) effort = requested === "minimal" ? "low" : requested;
+  else if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
+    effort = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
+  }
+  if (!effort) return;
+  const thinking: Record<string, any> = { type: "adaptive" };
+  if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
+  setThinking({ thinking });
+  setOutputConfig({ effort });
+}
+
 /** Maps onto Anthropic Messages API body.
  *
  * Requires claude-sonnet-3.7+, claude-opus-4, claude-sonnet-4 etc. Anthropic
@@ -75,8 +124,14 @@ export function applyOpenAIReasoning(
 export function applyAnthropicReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
+  opts?: { model?: string; mode?: ThinkingMode },
 ): void {
   if (!reasoning) return;
+  if (resolveThinkingForm(opts?.model ?? body.model, opts?.mode) === "adaptive") {
+    applyAdaptiveThinking(body, reasoning, (extra) => (body.thinking = extra.thinking), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
+    stripSamplingParams(body, ["temperature", "top_p", "top_k"]);
+    return;
+  }
   let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);
   if (!budget) return;
 
@@ -105,8 +160,15 @@ export function applyAnthropicReasoning(
 export function applyBedrockReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
+  opts?: { model?: string; mode?: ThinkingMode },
 ): void {
   if (!reasoning) return;
+  if (resolveThinkingForm(opts?.model ?? body.modelId, opts?.mode) === "adaptive") {
+    const fields = (body.additionalModelRequestFields ??= {});
+    applyAdaptiveThinking(body, reasoning, (extra) => (fields.thinking = extra.thinking), (o) => (fields.output_config = { ...(fields.output_config ?? {}), ...o }));
+    stripSamplingParams((body.inferenceConfig ??= {}), ["temperature", "topP"]);
+    return;
+  }
   let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);
   if (!budget) return;
 

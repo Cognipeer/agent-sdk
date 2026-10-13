@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock and Vertex. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
 - **`@langchain/*` and `langchain` are optional peer dependencies.** Nothing imports LangChain at module load; `fromLangchainModel` / `fromLangchainTools` keep working when LangChain is installed.
 
+### Fixed
+- **Anthropic / Bedrock-Claude thinking on newer models.** Claude 5.x models reject `thinking: { type: "enabled", budget_tokens }`. The thinking shape is now chosen per model id: newer models get `thinking: { type: "adaptive" }` plus `output_config.effort` (`minimal` maps to `low`, `none` sends no thinking); older models keep the budget form. New `thinkingMode: "auto" | "adaptive" | "budget"` provider option overrides detection (`supportsAdaptiveThinking` is exported). The Anthropic provider also retries once with the other form when the upstream returns that specific 400. An explicit `extra.thinking` is still passed through unchanged.
+
 ### Changed
 - **Bedrock `extra`**: keys that are not Converse request fields are now sent inside `additionalModelRequestFields` (merged with the reasoning mapping). Converse's own top-level fields (`guardrailConfig`, `performanceConfig`, `requestMetadata`, `promptVariables`, `additionalModelResponseFieldPaths`, `serviceTier`, ...) stay top-level. Previously every `extra` key was spread at the top level, where Bedrock rejects model-specific fields.
 

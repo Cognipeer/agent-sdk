@@ -4,7 +4,7 @@
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
 import { parseEventStream } from "./utils/eventStream.js";
-import { applyBedrockReasoning } from "./utils/reasoning.js";
+import { applyBedrockReasoning, type ThinkingMode } from "./utils/reasoning.js";
 import { chunkArray, mapWithConcurrency, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
 import {
@@ -33,12 +33,15 @@ export class BedrockProvider extends BaseProvider {
 
   private readonly promptCachingEnabled: boolean;
 
+  private readonly thinkingMode: ThinkingMode;
+
   constructor(config: BedrockProviderConfig) {
     super();
     this.configureTransport(config);
     this.region = config.region;
     this.defaultModel = config.defaultModel ?? "anthropic.claude-sonnet-4-20250514-v1:0";
     this.defaultHeaders = config.defaultHeaders ?? {};
+    this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
 
@@ -325,7 +328,7 @@ export class BedrockProvider extends BaseProvider {
 
     // Native reasoning: maps to additionalModelRequestFields.thinking and
     // enforces the budget/temperature rules for thinking-capable models.
-    applyBedrockReasoning(body, request.reasoning);
+    applyBedrockReasoning(body, request.reasoning, { model: request.model || this.defaultModel, mode: this.thinkingMode });
 
     return body;
   }
