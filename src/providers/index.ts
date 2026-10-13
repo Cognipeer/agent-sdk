@@ -20,6 +20,12 @@ export type {
   ChatCompletionChunk,
   TokenUsage,
   FinishReason,
+  ProviderResponseFields,
+  // Embeddings
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EmbeddingUsage,
+  EmbeddingInputType,
   // Provider configs
   ProviderConfig,
   ProviderType,

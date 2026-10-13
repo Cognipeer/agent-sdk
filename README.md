@@ -56,7 +56,7 @@ Highlights:
 
 ## Install
 
-Install the SDK and its (optional) LangChain peer dependency:
+Install the SDK. Every `@langchain/*` package (and `langchain`) is an *optional* peer dependency, nothing imports LangChain unless you use the LangChain adapters:
 
 ```sh
 npm install @cognipeer/agent-sdk zod
@@ -112,6 +112,31 @@ createProvider({ provider: "vertex", projectId: "my-project", accessToken: proce
 // Any OpenAI-compatible endpoint (Ollama, Groq, Together, vLLM, …)
 createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "https://custom.endpoint/v1" })
 ```
+
+### Embeddings
+
+Every provider with an embeddings endpoint exposes `embed()`. It returns one vector per input, in order, plus token usage:
+
+```ts
+const provider = createProvider({ provider: "openai", apiKey: process.env.OPENAI_API_KEY! });
+const { vectors, usage } = await provider.embed({
+  model: "text-embedding-3-small",
+  input: ["first text", "second text"],
+  dimensions: 256,          // models that support shortening
+  inputType: "search_query" // Cohere on Bedrock, task type on Vertex
+});
+```
+
+| Provider | Endpoint | Notes |
+| --- | --- | --- |
+| `openai`, `openai-compatible` | `POST /embeddings` | batched (2048), `encodingFormat: "base64"` is decoded |
+| `azure` | `/openai/deployments/{model}/embeddings` | `model` is the deployment name |
+| `bedrock` | `InvokeModel` | Titan Text Embeddings v1/v2, Cohere Embed v3/v4 |
+| `vertex` | `:predict` | text-embedding, multilingual, `gemini-embedding` |
+
+### Gateway use
+
+For hosts that front the providers with their own gateway: `ChatCompletionRequest` takes `streamUsage`, `seed`, `n`, `parallelToolCalls`, `logprobs` and `topLogprobs`; responses and stream chunks keep the provider's `rawFinishReason` and `providerFields` (`system_fingerprint`, `service_tier`, `annotations`, `refusal`, `logprobs`); streamed tool-call deltas carry an `index`. On Bedrock, `extra` keys that are not Converse request fields travel in `additionalModelRequestFields`.
 
 ### Smart agent (planning + summarization)
 

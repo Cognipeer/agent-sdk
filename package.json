@@ -1,6 +1,6 @@
 {
   "name": "@cognipeer/agent-sdk",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Composable lightweight smart agent core (no LangGraph) with pluggable model adapters.",
   "license": "MIT",
   "type": "module",
@@ -59,8 +59,46 @@
     "url": "https://github.com/Cognipeer/agent-sdk/issues"
   },
   "homepage": "https://github.com/Cognipeer/agent-sdk#readme",
+  "peerDependencies": {
+    "@langchain/core": "^0.3.0 || ^1.0.0",
+    "@langchain/openai": "^0.3.0 || ^1.0.0",
+    "@langchain/anthropic": "^0.3.0 || ^1.0.0",
+    "@langchain/aws": "^0.3.0 || ^1.0.0",
+    "@langchain/google-vertexai": "^0.3.0 || ^1.0.0",
+    "@langchain/community": "^0.3.0 || ^1.0.0",
+    "@langchain/ollama": "^0.3.0 || ^1.0.0",
+    "@langchain/langgraph-sdk": "^0.3.0 || ^1.0.0",
+    "langchain": "^0.3.0 || ^1.0.0"
+  },
   "peerDependenciesMeta": {
     "openai": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@langchain/openai": {
+      "optional": true
+    },
+    "@langchain/anthropic": {
+      "optional": true
+    },
+    "@langchain/aws": {
+      "optional": true
+    },
+    "@langchain/google-vertexai": {
+      "optional": true
+    },
+    "@langchain/community": {
+      "optional": true
+    },
+    "@langchain/ollama": {
+      "optional": true
+    },
+    "@langchain/langgraph-sdk": {
+      "optional": true
+    },
+    "langchain": {
       "optional": true
     }
   },

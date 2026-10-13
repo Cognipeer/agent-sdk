@@ -51,6 +51,8 @@ export type ToolCall = {
   arguments: string; // JSON string
   /** Gemini `thoughtSignature` attached to a functionCall part; must be echoed back on the next turn. */
   thoughtSignature?: string;
+  /** Position of the call within the assistant turn. Set on streamed deltas so a consumer can frame them (OpenAI `tool_calls[].index`). */
+  index?: number;
 };
 
 /**
@@ -116,6 +118,21 @@ export type ChatCompletionRequest = {
     name?: string;
   };
   stream?: boolean;
+  /**
+   * Streaming only. `false` opts out of `stream_options.include_usage` on
+   * OpenAI-shaped endpoints (some servers reject the option). Default true.
+   */
+  streamUsage?: boolean;
+  /** OpenAI-family: deterministic sampling seed. Passed through. */
+  seed?: number;
+  /** OpenAI-family: number of choices. Pass-through only; only choice 0 is parsed. */
+  n?: number;
+  /** OpenAI-family: allow/forbid parallel tool calls. Passed through when set. */
+  parallelToolCalls?: boolean;
+  /** OpenAI-family: return token log probabilities. Passed through. */
+  logprobs?: boolean;
+  /** OpenAI-family: how many top log probabilities per token. Passed through. */
+  topLogprobs?: number;
   // Provider-specific extras passed raw into the body (escape hatch)
   extra?: Record<string, any>;
   /**
@@ -195,6 +212,15 @@ export function emptyUsage(): TokenUsage {
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "error";
 
+export type ProviderResponseFields = {
+  system_fingerprint?: string;
+  service_tier?: string;
+  annotations?: any[];
+  refusal?: string | null;
+  logprobs?: any;
+  [key: string]: any;
+};
+
 export type ChatCompletionResponse = {
   id: string;
   model: string;
@@ -202,6 +228,13 @@ export type ChatCompletionResponse = {
   toolCalls: ToolCall[];
   usage: TokenUsage;
   finishReason: FinishReason;
+  /** The provider's own finish/stop reason string, unnormalised (e.g. "end_turn", "function_call"). */
+  rawFinishReason?: string;
+  /**
+   * Provider response fields the unified shape has no slot for, kept when present:
+   * `system_fingerprint`, `service_tier`, `annotations`, `refusal`, `logprobs`.
+   */
+  providerFields?: ProviderResponseFields;
   /** Native reasoning blocks + summary captured from the response, if any. */
   reasoning?: ReasoningPayload;
   raw: any; // Original provider response
@@ -220,6 +253,52 @@ export type ChatCompletionChunk = {
   };
   usage?: TokenUsage;
   finishReason?: FinishReason;
+  /** The provider's own finish reason string, unnormalised. Present on the chunk that carries it. */
+  rawFinishReason?: string;
+  /** See ChatCompletionResponse.providerFields; per-chunk (fingerprint, tier, delta refusal/annotations, logprobs). */
+  providerFields?: ProviderResponseFields;
+};
+
+// ─── Embeddings ──────────────────────────────────────────────────────────────
+
+/** Why the text is being embedded; mapped to each provider's own task/input type. */
+export type EmbeddingInputType =
+  | "search_document"
+  | "search_query"
+  | "classification"
+  | "clustering"
+  | (string & {});
+
+export type EmbeddingRequest = {
+  /** Model id (OpenAI/compatible), deployment name (Azure), model id (Bedrock), model name (Vertex). */
+  model: string;
+  /** Texts to embed. One vector per entry, in the same order. */
+  input: string[];
+  /** Requested output dimensions, for models that support shortening (OpenAI v3, Titan v2, Cohere v4, Gemini). */
+  dimensions?: number;
+  /** OpenAI-shaped endpoints: wire encoding. Vectors are always returned as number[] either way. */
+  encodingFormat?: "float" | "base64";
+  /** Task hint (Cohere on Bedrock, Gemini on Vertex). Ignored by providers without one. */
+  inputType?: EmbeddingInputType;
+  /** Max texts per HTTP request. Defaults per provider (OpenAI 2048, Vertex 100, Gemini-embedding 1, Titan 1). */
+  batchSize?: number;
+  /** Provider-specific fields merged into each request body (escape hatch). */
+  extra?: Record<string, any>;
+  signal?: AbortSignal;
+};
+
+export type EmbeddingUsage = {
+  inputTokens: number;
+  totalTokens: number;
+};
+
+export type EmbeddingResponse = {
+  model: string;
+  /** One vector per input, in input order. */
+  vectors: number[][];
+  usage: EmbeddingUsage;
+  /** Raw provider responses, one per HTTP request made. */
+  raw: any[];
 };
 
 // ─── Provider Configs ────────────────────────────────────────────────────────

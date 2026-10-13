@@ -70,6 +70,33 @@ export class AzureProvider extends OpenAIProvider {
     return res;
   }
 
+  /** Azure embeddings: the deployment named by the request's model (falling back
+   * to the configured deployment) in the path, api-key auth. */
+  protected override async embeddingsFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+    const deployment = body.model || this.deploymentName;
+    if (!deployment) {
+      throw new ProviderError("Azure embeddings require a deployment name or model", this.providerName, 400);
+    }
+    const url = `${this.endpoint}/openai/deployments/${deployment}/embeddings?api-version=${this.apiVersion}`;
+    const { model: _model, ...bodyWithoutModel } = body;
+    const payload = JSON.stringify(bodyWithoutModel);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": this.azureApiKey,
+        ...this.defaultHeaders,
+      },
+      body: payload,
+      signal,
+    }), signal);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderError(`Azure OpenAI embeddings API error ${res.status}: ${text}`, this.providerName, res.status, text);
+    }
+    return res;
+  }
+
   /** Azure exposes the Responses API at /openai/responses with api-key auth.
    * Reasoning summaries require a preview api-version; callers can override via
    * the `apiVersion` config. */

@@ -15,6 +15,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -53,6 +54,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -67,6 +69,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -74,6 +77,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -107,6 +111,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -145,6 +150,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -159,6 +165,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -166,6 +173,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -199,6 +207,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -237,6 +246,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -251,6 +261,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -258,6 +269,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -291,6 +303,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -329,6 +342,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -343,6 +357,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -350,6 +365,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -383,6 +399,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -421,6 +438,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -435,6 +453,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -442,6 +461,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -475,6 +495,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -513,6 +534,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -527,6 +549,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -534,6 +557,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -645,6 +669,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -683,6 +708,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -697,6 +723,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -704,6 +731,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -737,6 +765,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -775,6 +804,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -789,6 +819,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -796,6 +827,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -829,6 +861,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -867,6 +900,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -881,6 +915,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -888,6 +923,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -921,6 +957,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -959,6 +996,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -973,6 +1011,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -980,6 +1019,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -1013,6 +1053,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -1051,6 +1092,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1065,6 +1107,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1072,6 +1115,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -1105,6 +1149,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -1143,6 +1188,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1157,6 +1203,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1164,6 +1211,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -1197,6 +1245,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -1235,6 +1284,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1249,6 +1299,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1256,6 +1307,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -1835,6 +1887,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -1873,6 +1926,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1887,6 +1941,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1894,6 +1949,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -1927,6 +1983,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -1965,6 +2022,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1979,6 +2037,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -1986,6 +2045,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2019,6 +2079,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2057,6 +2118,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2071,6 +2133,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2078,6 +2141,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2111,6 +2175,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2149,6 +2214,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2163,6 +2229,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2170,6 +2237,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2203,6 +2271,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2241,6 +2310,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2255,6 +2325,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2262,6 +2333,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2295,6 +2367,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2333,6 +2406,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2347,6 +2421,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2354,6 +2429,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2465,6 +2541,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2503,6 +2580,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2517,6 +2595,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2524,6 +2603,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2557,6 +2637,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2595,6 +2676,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2609,6 +2691,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2616,6 +2699,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2649,6 +2733,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2687,6 +2772,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2701,6 +2787,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2708,6 +2795,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2741,6 +2829,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2779,6 +2868,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2793,6 +2883,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2800,6 +2891,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2833,6 +2925,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2871,6 +2964,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2885,6 +2979,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2892,6 +2987,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -2925,6 +3021,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -2963,6 +3060,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2977,6 +3075,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -2984,6 +3083,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3095,6 +3195,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3133,6 +3234,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3147,6 +3249,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3154,6 +3257,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3187,6 +3291,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3225,6 +3330,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3239,6 +3345,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3246,6 +3353,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3279,6 +3387,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3317,6 +3426,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3331,6 +3441,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3338,6 +3449,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3371,6 +3483,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3409,6 +3522,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3423,6 +3537,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3430,6 +3545,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3463,6 +3579,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3501,6 +3618,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3515,6 +3633,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3522,6 +3641,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3555,6 +3675,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3593,6 +3714,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3607,6 +3729,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3614,6 +3737,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},
@@ -3647,6 +3771,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "stop",
   "id": "chatcmpl-1",
   "model": "m",
+  "rawFinishReason": "stop",
   "toolCalls": [],
   "usage": {
     "cachedInputTokens": 0,
@@ -3685,6 +3810,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "{"q":",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3699,6 +3825,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         {
           "arguments": "1}",
           "id": "call_1",
+          "index": 0,
           "name": "lookup",
         },
       ],
@@ -3706,6 +3833,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "c1",
     "model": "m",
+    "rawFinishReason": "tool_calls",
   },
   {
     "delta": {},

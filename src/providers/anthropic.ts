@@ -80,7 +80,8 @@ export class AnthropicProvider extends BaseProvider {
     let outputTokens = 0;
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
-    const currentToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+    const currentToolCalls = new Map<number, { id: string; name: string; arguments: string; ordinal: number }>();
+    let toolOrdinal = 0;
     // Accumulate thinking blocks by content-block index so we can replay them.
     const reasoningBlocks = new Map<number, ReasoningBlock>();
 
@@ -115,7 +116,12 @@ export class AnthropicProvider extends BaseProvider {
               id: block.id ?? "",
               name: block.name ?? "",
               arguments: "",
+              ordinal: toolOrdinal++,
             });
+            const opened = currentToolCalls.get(idx)!;
+            // Announce the call when it opens, so a tool that takes no input
+            // (no input_json_delta ever follows) is still seen by the consumer.
+            yield { id, model, delta: { toolCalls: [{ id: opened.id, name: opened.name, arguments: "", index: opened.ordinal }] } };
           } else if (block?.type === "thinking") {
             reasoningBlocks.set(idx, { type: "thinking", text: block.thinking ?? "", signature: block.signature });
           } else if (block?.type === "redacted_thinking") {
@@ -155,7 +161,7 @@ export class AnthropicProvider extends BaseProvider {
                 id,
                 model,
                 delta: {
-                  toolCalls: [{ id: tc.id, name: tc.name, arguments: delta.partial_json }],
+                  toolCalls: [{ id: tc.id, name: tc.name, arguments: delta.partial_json, index: tc.ordinal }],
                 },
               };
             }
@@ -173,6 +179,7 @@ export class AnthropicProvider extends BaseProvider {
             outputTokens = data.usage.output_tokens ?? outputTokens;
           }
           const finishReason = mapAnthropicStopReason(delta?.stop_reason);
+          const rawFinishReason = typeof delta?.stop_reason === "string" ? delta.stop_reason : undefined;
           const usage: TokenUsage = {
             inputTokens,
             outputTokens,
@@ -190,6 +197,7 @@ export class AnthropicProvider extends BaseProvider {
             model,
             delta: blocks.length > 0 ? { reasoning: { blocks } } : {},
             finishReason,
+            ...(rawFinishReason ? { rawFinishReason } : {}),
             usage,
           };
           break;
@@ -498,6 +506,7 @@ export class AnthropicProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapAnthropicStopReason(json.stop_reason),
+      ...(typeof json.stop_reason === "string" ? { rawFinishReason: json.stop_reason } : {}),
       reasoning: reasoningBlocks.length > 0
         ? { blocks: reasoningBlocks, summary: summaryParts.join("\n").trim() || undefined }
         : undefined,

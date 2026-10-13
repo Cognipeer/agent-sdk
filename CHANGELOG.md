@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0]
+
+### Added
+- **Embeddings on the native providers**: `provider.embed({ model, input: string[], dimensions?, encodingFormat?, inputType?, batchSize?, extra?, signal? })` returns `{ model, vectors, usage: { inputTokens, totalTokens }, raw }`, one vector per input in input order. OpenAI / openai-compatible: `POST /embeddings`, batched (2048 per request), `dimensions`, `encodingFormat: "base64"` is decoded for you. Azure: deployment-scoped path with `api-key` auth. Bedrock `InvokeModel`: Amazon Titan Text Embeddings v1/v2 (one text per call, 4 in flight) and Cohere Embed v3/v4 (batched, `inputType` -> `input_type`, `dimensions` -> `output_dimension`). Vertex `:predict`: text-embedding / multilingual / `gemini-embedding` (one instance per request), `inputType` -> task type, `dimensions` -> `outputDimensionality`. Providers without an embeddings endpoint (Anthropic, Jev) reject with a 400 `ProviderError`. New exported types `EmbeddingRequest`, `EmbeddingResponse`, `EmbeddingUsage`, `EmbeddingInputType`.
+- **Gateway-grade request options** on `ChatCompletionRequest`: `streamUsage` (`false` omits `stream_options.include_usage` for servers that reject it), `seed`, `n` (pass-through; only choice 0 is parsed), `parallelToolCalls` (sent only with tools), `logprobs`, `topLogprobs`.
+- **Raw finish reason** next to the normalised one: `rawFinishReason` on `ChatCompletionResponse` and on the stream chunk that carries it (OpenAI `finish_reason`, Anthropic / Bedrock `stop_reason`, Gemini `finishReason`).
+- **Provider response fields kept** in `providerFields` (response and stream chunks) when present: `system_fingerprint`, `service_tier`, message `annotations` and `refusal`, choice `logprobs`.
+- **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock and Vertex. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
+- **`@langchain/*` and `langchain` are optional peer dependencies.** Nothing imports LangChain at module load; `fromLangchainModel` / `fromLangchainTools` keep working when LangChain is installed.
+
+### Changed
+- **Bedrock `extra`**: keys that are not Converse request fields are now sent inside `additionalModelRequestFields` (merged with the reasoning mapping). Converse's own top-level fields (`guardrailConfig`, `performanceConfig`, `requestMetadata`, `promptVariables`, `additionalModelResponseFieldPaths`, `serviceTier`, ...) stay top-level. Previously every `extra` key was spread at the top level, where Bedrock rejects model-specific fields.
+
 ## [0.11.0]
 
 ### Added
