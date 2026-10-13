@@ -178,6 +178,11 @@ describe("Anthropic thinking and max_tokens", () => {
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
     expect(body.max_tokens).toBeGreaterThan(8192);
   });
+  it("lifts a derived budget below the API minimum (1024) instead of sending a 400", async () => {
+    const body = await anthropic(undefined, { reasoning: { budgetTokens: 300 } });
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    expect(body.max_tokens).toBeGreaterThan(1024);
+  });
   it("always sends a positive max_tokens, even if extra nulls it", async () => {
     expect((await anthropic()).max_tokens).toBe(4096);
     expect((await anthropic({ max_tokens: null })).max_tokens).toBe(4096);
