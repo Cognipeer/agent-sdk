@@ -75,6 +75,7 @@ export {
   JevProvider,
   ProviderError,
   emptyUsage,
+  supportsAdaptiveThinking,
 } from "./providers/index.js";
 export type {
   ChatCompletionRequest,
