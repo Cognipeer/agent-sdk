@@ -31,6 +31,7 @@ export class BedrockProvider extends BaseProvider {
 
   constructor(config: BedrockProviderConfig) {
     super();
+    this.configureTransport(config);
     this.region = config.region;
     this.defaultModel = config.defaultModel ?? "anthropic.claude-sonnet-4-20250514-v1:0";
     this.defaultHeaders = config.defaultHeaders ?? {};
@@ -289,7 +290,7 @@ export class BedrockProvider extends BaseProvider {
         service: "bedrock",
         credentials: this.credentials,
       });
-      return fetch(url, { method: "POST", headers, body: bodyStr, signal });
+      return this.httpFetch(url, { method: "POST", headers, body: bodyStr, signal });
     }, signal);
 
     if (!res.ok) {

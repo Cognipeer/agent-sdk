@@ -7,6 +7,7 @@ import type {
   ChatCompletionChunk,
   ProviderType,
 } from "./types.js";
+import { ProviderError } from "./types.js";
 import { abortableSleep, abortReason } from "../utils/abort.js";
 
 export type ProviderRetryPolicy = {
@@ -32,6 +33,57 @@ const DEFAULT_RETRY: Required<Pick<ProviderRetryPolicy, "maxRetries" | "baseDela
 export abstract class BaseProvider {
   abstract readonly providerName: ProviderType;
   protected retryPolicy: ProviderRetryPolicy = DEFAULT_RETRY;
+  /** Injected `fetch` (config.fetch); falls back to the global one at call time. */
+  protected fetchImpl?: typeof fetch;
+  /** Per-request timeout in ms (config.timeoutMs). Undefined = no timeout. */
+  protected timeoutMs?: number;
+
+  /** Applies the transport options shared by every provider config. */
+  protected configureTransport(config: { fetch?: typeof fetch; timeoutMs?: number }): void {
+    this.fetchImpl = config.fetch;
+    this.timeoutMs = typeof config.timeoutMs === "number" && config.timeoutMs > 0 ? config.timeoutMs : undefined;
+  }
+
+  /**
+   * The single HTTP entry point for every provider call site. Uses the
+   * configured `fetch` and applies `timeoutMs`: the timer covers the time until
+   * the response HEADERS arrive and is cleared after that, so a long-running
+   * stream is never cut by it (use the request `signal` to cancel a stream).
+   * A timeout surfaces as a `ProviderError` with status 408. The caller's
+   * `signal` still aborts the request as before.
+   */
+  protected async httpFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const doFetch = this.fetchImpl ?? fetch;
+    const timeoutMs = this.timeoutMs;
+    if (!timeoutMs) return doFetch(url, init);
+
+    const controller = new AbortController();
+    const outer = init.signal ?? undefined;
+    let timedOut = false;
+    const onOuterAbort = () => controller.abort(outer?.reason);
+    if (outer) {
+      if (outer.aborted) controller.abort(outer.reason);
+      else outer.addEventListener("abort", onOuterAbort, { once: true });
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error(`timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    try {
+      const res = await doFetch(url, { ...init, signal: controller.signal });
+      // Stream bodies keep reading under the caller's signal; drop only the timer.
+      return res;
+    } catch (err) {
+      if (timedOut) {
+        throw new ProviderError(`${this.providerName} request timed out after ${timeoutMs}ms`, this.providerName, 408);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      // The outer listener is deliberately left attached: it must keep
+      // forwarding a later abort to the (still streaming) response.
+    }
+  }
 
   /** Non-streaming completion */
   abstract complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse>;

@@ -31,6 +31,7 @@ export class VertexProvider extends BaseProvider {
 
   constructor(config: VertexProviderConfig) {
     super();
+    this.configureTransport(config);
     this.projectId = config.projectId;
     this.location = config.location ?? "us-central1";
     this.defaultModel = config.defaultModel ?? "gemini-2.0-flash";
@@ -375,7 +376,7 @@ export class VertexProvider extends BaseProvider {
     const signature = sign.sign(sa.private_key, "base64url");
     const jwt = `${signingInput}.${signature}`;
 
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenRes = await this.httpFetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
@@ -393,7 +394,7 @@ export class VertexProvider extends BaseProvider {
   private async doFetch(url: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const token = await this.getAccessToken();
 
-    const res = await fetch(url, {
+    const res = await this.httpFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

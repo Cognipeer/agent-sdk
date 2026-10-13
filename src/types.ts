@@ -1373,6 +1373,12 @@ export type StreamEvent = {
   isFinal?: boolean;
 };
 
+/** Incremental model reasoning text (providers that expose it while streaming). */
+export type ReasoningEvent = {
+  type: "reasoning";
+  text: string;
+};
+
 export type CancelledEvent = {
   type: "cancelled";
   stage?: string;
@@ -1588,6 +1594,7 @@ export type SmartAgentEvent = (
   | GuardrailEvent
   | ProgressEvent
   | StreamEvent
+  | ReasoningEvent
   | CancelledEvent
   | SubagentEvent
   | ReflectionEvent

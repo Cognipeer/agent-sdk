@@ -102,6 +102,10 @@ export type ChatCompletionRequest = {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
+  /** OpenAI-family only; other providers ignore it. */
+  presencePenalty?: number;
+  /** OpenAI-family only; other providers ignore it. */
+  frequencyPenalty?: number;
   tools?: ToolDefinition[];
   toolChoice?: "auto" | "required" | "none" | { name: string };
   responseFormat?: {
@@ -223,7 +227,28 @@ export type ProviderRetryConfig = {
   shouldRetry?: (error: any, attempt: number) => boolean;
 };
 
-export type OpenAIProviderConfig = {
+/** Transport options shared by every provider config. */
+export type ProviderTransportConfig = {
+  /**
+   * Custom `fetch` used at EVERY HTTP call site of the provider (chat, stream,
+   * Responses, token exchange). Lets a host inject an SSRF-safe or proxied
+   * fetch. Defaults to the global `fetch`.
+   */
+  fetch?: typeof fetch;
+  /**
+   * Per-request timeout in ms, measured until the response headers arrive
+   * (an established stream is not cut by it). Default: none.
+   */
+  timeoutMs?: number;
+};
+
+export type OpenAIProviderConfig = ProviderTransportConfig & {
+  /**
+   * Which token-limit field to send: `max_tokens` or `max_completion_tokens`.
+   * `auto` (default) uses `max_completion_tokens` for o-series / gpt-5 models
+   * and `max_tokens` otherwise.
+   */
+  maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
   provider: "openai";
   apiKey: string;
   baseURL?: string;
@@ -286,7 +311,7 @@ export type OpenAIProviderConfig = {
   responsesStreaming?: boolean;
 };
 
-export type AnthropicProviderConfig = {
+export type AnthropicProviderConfig = ProviderTransportConfig & {
   provider: "anthropic";
   apiKey: string;
   baseURL?: string;
@@ -302,8 +327,11 @@ export type AnthropicProviderConfig = {
   prompt_caching?: { enabled: boolean };
 };
 
-export type AzureProviderConfig = {
+export type AzureProviderConfig = ProviderTransportConfig & {
   provider: "azure";
+  retry?: ProviderRetryConfig;
+  /** See OpenAIProviderConfig.maxTokensParam. */
+  maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
   apiKey: string;
   endpoint: string; // e.g. https://my-resource.openai.azure.com
   apiVersion?: string;
@@ -312,15 +340,21 @@ export type AzureProviderConfig = {
   defaultHeaders?: Record<string, string>;
 };
 
-export type OpenAICompatibleProviderConfig = {
+export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   provider: "openai-compatible";
+  organization?: string;
+  retry?: ProviderRetryConfig;
+  /** Default "never": most compatible servers only speak Chat Completions. */
+  responsesApi?: "auto" | "never" | "always";
+  /** See OpenAIProviderConfig.maxTokensParam. Compatible servers default to `auto`. */
+  maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
   apiKey: string;
   baseURL: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
 };
 
-export type BedrockProviderConfig = {
+export type BedrockProviderConfig = ProviderTransportConfig & {
   provider: "bedrock";
   region: string;
   accessKeyId?: string;
@@ -337,7 +371,7 @@ export type BedrockProviderConfig = {
   prompt_caching?: { enabled: boolean };
 };
 
-export type VertexProviderConfig = {
+export type VertexProviderConfig = ProviderTransportConfig & {
   provider: "vertex";
   projectId: string;
   location?: string;
@@ -347,7 +381,7 @@ export type VertexProviderConfig = {
   defaultHeaders?: Record<string, string>;
 };
 
-export type JevProviderConfig = {
+export type JevProviderConfig = ProviderTransportConfig & {
   provider: "jev";
   apiKey: string;
   /** Defaults to https://api.typesafe.ai. */

@@ -31,6 +31,7 @@ export class AnthropicProvider extends BaseProvider {
 
   constructor(config: AnthropicProviderConfig) {
     super();
+    this.configureTransport(config);
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? "https://api.anthropic.com").replace(/\/$/, "");
     this.defaultModel = config.defaultModel ?? "claude-sonnet-4-20250514";
@@ -402,7 +403,7 @@ export class AnthropicProvider extends BaseProvider {
       ...this.defaultHeaders,
     };
     const payload = JSON.stringify(body);
-    const res = await this.doFetchWithRetry(() => fetch(url, { method: "POST", headers, body: payload, signal }), signal);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

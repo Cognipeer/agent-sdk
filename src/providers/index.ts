@@ -24,6 +24,7 @@ export type {
   ProviderConfig,
   ProviderType,
   OpenAIProviderConfig,
+  ProviderTransportConfig,
   AnthropicProviderConfig,
   AzureProviderConfig,
   OpenAICompatibleProviderConfig,
@@ -48,7 +49,7 @@ export { JevProvider, JEV_DEFAULT_BASE_URL } from "./jev.js";
 export type { JevQuestion, JevSystemOneRequest, JevSystemOneResult } from "./jev.js";
 
 // Adapter
-export { fromNativeProvider, type NativeModelOptions } from "./adapter.js";
+export { fromNativeProvider, toMessageUsage, type NativeModelOptions, type MessageUsage } from "./adapter.js";
 
 // Factory
 import type { ProviderConfig } from "./types.js";

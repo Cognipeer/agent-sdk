@@ -64,6 +64,7 @@ export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreaming
 export {
   createProvider,
   fromNativeProvider,
+  toMessageUsage,
   BaseProvider,
   OpenAIProvider,
   AnthropicProvider,
@@ -101,6 +102,8 @@ export type {
   JevSystemOneRequest,
   JevSystemOneResult,
   NativeModelOptions,
+  MessageUsage,
+  ProviderTransportConfig,
 } from "./providers/index.js";
 export { GuardrailPhase } from "./types.js";
 export type {
