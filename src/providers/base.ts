@@ -6,6 +6,8 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
   ProviderType,
+  EmbeddingRequest,
+  EmbeddingResponse,
 } from "./types.js";
 import { ProviderError } from "./types.js";
 import { abortableSleep, abortReason } from "../utils/abort.js";
@@ -83,6 +85,15 @@ export abstract class BaseProvider {
       // The outer listener is deliberately left attached: it must keep
       // forwarding a later abort to the (still streaming) response.
     }
+  }
+
+  /**
+   * Embeds `request.input`. Implemented by the providers that have an
+   * embeddings endpoint (OpenAI, Azure, openai-compatible, Bedrock, Vertex);
+   * the others reject with a 400 ProviderError.
+   */
+  async embed(_request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    throw new ProviderError(`${this.providerName} does not support embeddings`, this.providerName, 400);
   }
 
   /** Non-streaming completion */

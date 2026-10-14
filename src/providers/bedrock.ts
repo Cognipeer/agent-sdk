@@ -1,10 +1,12 @@
 // AWS Bedrock Converse API provider.
 // Uses AWS SigV4 signing with fetch – no AWS SDK dependency.
 
+import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
 import { parseEventStream } from "./utils/eventStream.js";
-import { applyBedrockReasoning } from "./utils/reasoning.js";
+import { applyBedrockReasoning, type ThinkingMode } from "./utils/reasoning.js";
+import { chunkArray, mapWithConcurrency, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
 import {
   type ChatCompletionRequest,
@@ -16,6 +18,8 @@ import {
   type ToolDefinition,
   type ReasoningBlock,
   type BedrockProviderConfig,
+  type EmbeddingRequest,
+  type EmbeddingResponse,
   type ProviderType,
   ProviderError,
 } from "./types.js";
@@ -30,12 +34,15 @@ export class BedrockProvider extends BaseProvider {
 
   private readonly promptCachingEnabled: boolean;
 
+  private readonly thinkingMode: ThinkingMode;
+
   constructor(config: BedrockProviderConfig) {
     super();
     this.configureTransport(config);
     this.region = config.region;
     this.defaultModel = config.defaultModel ?? "anthropic.claude-sonnet-4-20250514-v1:0";
     this.defaultHeaders = config.defaultHeaders ?? {};
+    this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
 
@@ -55,8 +62,7 @@ export class BedrockProvider extends BaseProvider {
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const modelId = request.model || this.defaultModel;
-    const body = this.buildConverseBody(request);
-    const res = await this.doFetch(modelId, body, request.signal, false);
+    const res = await this.converseFetch(modelId, request, false);
     return this.parseResponse(await res.json(), modelId);
   }
 
@@ -70,14 +76,15 @@ export class BedrockProvider extends BaseProvider {
    */
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const modelId = request.model || this.defaultModel;
-    const body = this.buildConverseBody(request);
-    const res = await this.doFetch(modelId, body, request.signal, true);
+    const res = await this.converseFetch(modelId, request, true);
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
     const id = res.headers.get("x-amzn-requestid") ?? "";
-    const toolsByIndex = new Map<number, { id: string; name: string }>();
+    const toolsByIndex = new Map<number, { id: string; name: string; ordinal: number }>();
     const reasoningByIndex = new Map<number, ReasoningBlock>();
     let finishReason: ChatCompletionResponse["finishReason"] | undefined;
+    let rawFinishReason: string | undefined;
+    let toolOrdinal = 0;
     let usage: TokenUsage | undefined;
 
     for await (const msg of parseEventStream(res.body, request.signal)) {
@@ -104,8 +111,9 @@ export class BedrockProvider extends BaseProvider {
           const idx = data.contentBlockIndex ?? 0;
           const tu = data.start?.toolUse;
           if (tu) {
-            toolsByIndex.set(idx, { id: tu.toolUseId ?? "", name: tu.name ?? "" });
-            yield { id, model: modelId, delta: { toolCalls: [{ id: tu.toolUseId, name: tu.name, arguments: "" }] } };
+            const ordinal = toolOrdinal++;
+            toolsByIndex.set(idx, { id: tu.toolUseId ?? "", name: tu.name ?? "", ordinal });
+            yield { id, model: modelId, delta: { toolCalls: [{ id: tu.toolUseId, name: tu.name, arguments: "", index: ordinal }] } };
           }
           break;
         }
@@ -117,7 +125,7 @@ export class BedrockProvider extends BaseProvider {
           } else if (d.toolUse) {
             const tc = toolsByIndex.get(idx);
             if (tc && typeof d.toolUse.input === "string" && d.toolUse.input) {
-              yield { id, model: modelId, delta: { toolCalls: [{ id: tc.id, name: tc.name, arguments: d.toolUse.input }] } };
+              yield { id, model: modelId, delta: { toolCalls: [{ id: tc.id, name: tc.name, arguments: d.toolUse.input, index: tc.ordinal }] } };
             }
           } else if (d.reasoningContent) {
             const rc = d.reasoningContent;
@@ -139,6 +147,7 @@ export class BedrockProvider extends BaseProvider {
         }
         case "messageStop":
           finishReason = mapBedrockStopReason(data.stopReason);
+          if (typeof data.stopReason === "string") rawFinishReason = data.stopReason;
           break;
         case "metadata": {
           const u = data.usage ?? {};
@@ -146,8 +155,8 @@ export class BedrockProvider extends BaseProvider {
             inputTokens: u.inputTokens ?? 0,
             outputTokens: u.outputTokens ?? 0,
             totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-            cachedInputTokens: u.cacheReadInputTokenCount ?? u.cacheReadInputTokens ?? 0,
-            cachedWriteTokens: u.cacheWriteInputTokenCount ?? u.cacheWriteInputTokens ?? 0,
+            cachedInputTokens: u.cacheReadInputTokens ?? u.cacheReadInputTokenCount ?? 0,
+            cachedWriteTokens: u.cacheWriteInputTokens ?? u.cacheWriteInputTokenCount ?? 0,
             cachedOutputTokens: 0,
             reasoningTokens: 0,
           };
@@ -166,13 +175,101 @@ export class BedrockProvider extends BaseProvider {
       model: modelId,
       delta: blocks.length > 0 ? { reasoning: { blocks } } : {},
       finishReason: finishReason ?? "stop",
+      ...(rawFinishReason ? { rawFinishReason } : {}),
       usage,
     };
   }
 
+  // ─── Embeddings ──────────────────────────────────────────────────────────
+
+  /**
+   * InvokeModel embeddings. Supported families (by model id, inference-profile
+   * prefixes such as `us.` allowed):
+   *  - Amazon Titan Text Embeddings (v1, v2): one text per call, `dimensions`
+   *    (v2: 256/512/1024) and `normalize` via `extra`.
+   *  - Cohere Embed (v3, v4): a batch of texts per call (default 96), `inputType`
+   *    maps to `input_type`, `dimensions` to `output_dimension` (v4).
+   */
+  override async embed(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    const model = requireEmbeddingModel(this.providerName, request.model);
+    const id = model.toLowerCase();
+    const raw: any[] = [];
+    let inputTokens = 0;
+    let vectors: number[][] = [];
+
+    if (id.includes("titan-embed")) {
+      const results = await mapWithConcurrency(request.input, 4, async (text) => {
+        const body: Record<string, any> = { inputText: text };
+        if (request.dimensions != null && !id.includes("titan-embed-text-v1")) body.dimensions = request.dimensions;
+        if (request.extra) Object.assign(body, request.extra);
+        const res = await this.invokeModel(model, body, request.signal);
+        const json: any = await res.json();
+        return { json, tokens: json.inputTextTokenCount ?? Number(res.headers.get("x-amzn-bedrock-input-token-count") ?? 0) };
+      }, request.signal);
+      for (const r of results) {
+        raw.push(r.json);
+        inputTokens += r.tokens || 0;
+        vectors.push(r.json.embedding ?? r.json.embeddingsByType?.float);
+      }
+    } else if (id.includes("cohere.embed")) {
+      for (const batch of chunkArray(request.input, request.batchSize ?? 96)) {
+        const body: Record<string, any> = {
+          texts: batch,
+          input_type: request.inputType ?? "search_document",
+          embedding_types: ["float"],
+        };
+        if (request.dimensions != null) body.output_dimension = request.dimensions;
+        if (request.extra) Object.assign(body, request.extra);
+        const res = await this.invokeModel(model, body, request.signal);
+        const json: any = await res.json();
+        raw.push(json);
+        // v3: embeddings is number[][]; with embedding_types (and v4): { float: number[][] }.
+        const emb = Array.isArray(json.embeddings) ? json.embeddings : json.embeddings?.float;
+        vectors.push(...(emb ?? []));
+        inputTokens += Number(res.headers.get("x-amzn-bedrock-input-token-count") ?? 0) || 0;
+      }
+    } else {
+      throw new ProviderError(
+        `Bedrock embeddings are supported for Amazon Titan and Cohere Embed models, not "${model}"`,
+        this.providerName,
+        400,
+      );
+    }
+
+    assertVectorCount(this.providerName, vectors, request.input.length);
+    return { model, vectors, usage: { inputTokens, totalTokens: inputTokens }, raw };
+  }
+
+  private async invokeModel(modelId: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+    const host = `bedrock-runtime.${this.region}.amazonaws.com`;
+    const url = `https://${host}/model/${encodeURIComponent(modelId)}/invoke`;
+    const bodyStr = JSON.stringify(body);
+    const res = await this.doFetchWithRetry(() => {
+      const headers = signRequest({
+        method: "POST",
+        url,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...this.defaultHeaders,
+        },
+        body: bodyStr,
+        region: this.region,
+        service: "bedrock",
+        credentials: this.credentials,
+      });
+      return this.httpFetch(url, { method: "POST", headers, body: bodyStr, signal });
+    }, signal);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderError(`Bedrock API error ${res.status}: ${text}`, this.providerName, res.status, text);
+    }
+    return res;
+  }
+
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildConverseBody(request: ChatCompletionRequest): Record<string, any> {
+  private buildConverseBody(request: ChatCompletionRequest, downgradeToolChoice = false): Record<string, any> {
     const { system, messages } = this.splitSystemMessages(request.messages);
 
     const body: Record<string, any> = {
@@ -204,8 +301,9 @@ export class BedrockProvider extends BaseProvider {
         tools,
       };
 
+      const forceOk = !downgradeToolChoice && supportsForcedToolChoice(request.model || this.defaultModel);
       if (request.toolChoice != null) {
-        if (request.toolChoice === "auto") {
+        if (request.toolChoice === "auto" || (!forceOk && request.toolChoice !== "none")) {
           body.toolConfig.toolChoice = { auto: {} };
         } else if (request.toolChoice === "required") {
           body.toolConfig.toolChoice = { any: {} };
@@ -216,12 +314,24 @@ export class BedrockProvider extends BaseProvider {
     }
 
     if (request.extra) {
-      Object.assign(body, request.extra);
+      // Converse's own top-level fields stay where they are; every other key is
+      // model-specific and travels in additionalModelRequestFields.
+      // Build the merged object explicitly: never assign or mutate the caller's.
+      const fields: Record<string, any> = { ...(request.extra.additionalModelRequestFields ?? {}) };
+      const topLevel: Record<string, any> = { ...((request.extra as any).__top ?? {}) };
+      for (const [key, value] of Object.entries(request.extra)) {
+        if (key === "additionalModelRequestFields" || key === "__top") continue;
+        if (CONVERSE_TOP_LEVEL_FIELDS.has(key)) body[key] = value;
+        else fields[key] = value;
+      }
+      // `extra.__top` forces keys to the Converse top level, bypassing the allow-list.
+      Object.assign(body, topLevel);
+      if (Object.keys(fields).length > 0) body.additionalModelRequestFields = fields;
     }
 
     // Native reasoning: maps to additionalModelRequestFields.thinking and
     // enforces the budget/temperature rules for thinking-capable models.
-    applyBedrockReasoning(body, request.reasoning);
+    applyBedrockReasoning(body, request.reasoning, { model: request.model || this.defaultModel, mode: this.thinkingMode });
 
     return body;
   }
@@ -363,6 +473,20 @@ export class BedrockProvider extends BaseProvider {
     };
   }
 
+  /** Sends the Converse call; retries once with toolChoice auto when the
+   * model rejects forced tool use. */
+  private async converseFetch(modelId: string, request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    const body = this.buildConverseBody(request);
+    try {
+      return await this.doFetch(modelId, body, request.signal, stream);
+    } catch (err) {
+      const tc = body.toolConfig?.toolChoice;
+      if (!(err instanceof ProviderError) || err.statusCode !== 400 || !tc || tc.auto) throw err;
+      if (!forcedToolChoiceRejected(String(err.responseBody ?? err.message))) throw err;
+      return this.doFetch(modelId, this.buildConverseBody(request, true), request.signal, stream);
+    }
+  }
+
   private async doFetch(modelId: string, body: Record<string, any>, signal: AbortSignal | undefined, stream: boolean): Promise<Response> {
     const host = `bedrock-runtime.${this.region}.amazonaws.com`;
     const url = `https://${host}/model/${encodeURIComponent(modelId)}/${stream ? "converse-stream" : "converse"}`;
@@ -437,8 +561,8 @@ export class BedrockProvider extends BaseProvider {
       inputTokens: usage.inputTokens ?? 0,
       outputTokens: usage.outputTokens ?? 0,
       totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-      cachedInputTokens: usage.cacheReadInputTokenCount ?? 0,
-      cachedWriteTokens: usage.cacheWriteInputTokenCount ?? 0,
+      cachedInputTokens: usage.cacheReadInputTokens ?? usage.cacheReadInputTokenCount ?? 0,
+      cachedWriteTokens: usage.cacheWriteInputTokens ?? usage.cacheWriteInputTokenCount ?? 0,
       cachedOutputTokens: 0,
       // Bedrock bills thinking tokens inside outputTokens; no separate count.
       reasoningTokens: 0,
@@ -451,6 +575,7 @@ export class BedrockProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapBedrockStopReason(json.stopReason),
+      ...(typeof json.stopReason === "string" ? { rawFinishReason: json.stopReason } : {}),
       reasoning: reasoningBlocks.length > 0
         ? { blocks: reasoningBlocks, summary: summaryParts.join("\n").trim() || undefined }
         : undefined,
@@ -460,6 +585,13 @@ export class BedrockProvider extends BaseProvider {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Fields the Converse / ConverseStream request defines itself. */
+const CONVERSE_TOP_LEVEL_FIELDS = new Set([
+  "messages", "system", "inferenceConfig", "toolConfig", "guardrailConfig",
+  "additionalModelRequestFields", "additionalModelResponseFieldPaths",
+  "promptVariables", "requestMetadata", "performanceConfig", "serviceTier", "outputConfig",
+]);
 
 /** Replays captured thinking blocks into a Bedrock Converse assistant content
  * array as `reasoningContent` blocks, ahead of text/toolUse blocks. */
@@ -498,8 +630,10 @@ function mapBedrockStopReason(reason: string | null | undefined): ChatCompletion
     case "tool_use":
       return "tool_calls";
     case "max_tokens":
+    case "model_context_window_exceeded":
       return "length";
     case "content_filtered":
+    case "guardrail_intervened":
     case "guardrail":
       return "content_filter";
     default:

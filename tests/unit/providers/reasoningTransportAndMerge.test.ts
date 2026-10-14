@@ -30,7 +30,7 @@ import type { ChatCompletionRequest } from "../../../src/providers/types.js";
 
 /** Reaches the protected router without going near the network. */
 function routesToResponses(
-  config: { responsesApi?: "auto" | "never" | "always"; defaultModel?: string },
+  config: { responsesApi?: "auto" | "never" | "always"; api?: "chat" | "responses"; defaultModel?: string },
   request: Partial<ChatCompletionRequest>,
 ): boolean {
   const provider = new OpenAIProvider({
@@ -38,6 +38,7 @@ function routesToResponses(
     apiKey: "test",
     defaultModel: config.defaultModel ?? "gpt-4o",
     ...(config.responsesApi ? { responsesApi: config.responsesApi } : {}),
+    ...(config.api ? { api: config.api } : {}),
   });
   return (provider as any).useResponsesApi({
     model: request.model,
@@ -47,8 +48,13 @@ function routesToResponses(
 }
 
 describe("OpenAIProvider transport selection", () => {
-  it("defaults to auto: a reasoning request on a gpt-5 name goes to Responses", () => {
+  it("defaults to auto: a reasoning request on a gpt-5 name goes to Responses, api:'chat' pins chat", () => {
     expect(routesToResponses({}, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(true);
+    expect(routesToResponses({ api: "chat" }, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(false);
+  });
+
+  it("responsesApi:'auto' (explicit) restores the name heuristic", () => {
+    expect(routesToResponses({ responsesApi: "auto" }, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(true);
   });
 
   it("auto never fires without a reasoning config, whatever the model is called", () => {
@@ -75,9 +81,9 @@ describe("OpenAIProvider transport selection", () => {
 
   it("falls back to the default model name when the request names none", () => {
     expect(
-      routesToResponses({ defaultModel: "gpt-5.6-terra" }, { reasoning: { effort: "low" } }),
+      routesToResponses({ responsesApi: "auto", defaultModel: "gpt-5.6-terra" }, { reasoning: { effort: "low" } }),
     ).toBe(true);
-    expect(routesToResponses({ defaultModel: "gpt-4o" }, { reasoning: { effort: "low" } })).toBe(false);
+    expect(routesToResponses({ responsesApi: "auto", defaultModel: "gpt-4o" }, { reasoning: { effort: "low" } })).toBe(false);
   });
 });
 

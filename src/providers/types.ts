@@ -51,6 +51,8 @@ export type ToolCall = {
   arguments: string; // JSON string
   /** Gemini `thoughtSignature` attached to a functionCall part; must be echoed back on the next turn. */
   thoughtSignature?: string;
+  /** Position of the call within the assistant turn. Set on streamed deltas so a consumer can frame them (OpenAI `tool_calls[].index`). */
+  index?: number;
 };
 
 /**
@@ -116,6 +118,21 @@ export type ChatCompletionRequest = {
     name?: string;
   };
   stream?: boolean;
+  /**
+   * Streaming only. `false` opts out of `stream_options.include_usage` on
+   * OpenAI-shaped endpoints (some servers reject the option). Default true.
+   */
+  streamUsage?: boolean;
+  /** OpenAI-family: deterministic sampling seed. Passed through. */
+  seed?: number;
+  /** OpenAI-family: number of choices. Pass-through only; only choice 0 is parsed. */
+  n?: number;
+  /** OpenAI-family: allow/forbid parallel tool calls. Passed through when set. */
+  parallelToolCalls?: boolean;
+  /** OpenAI-family: return token log probabilities. Passed through. */
+  logprobs?: boolean;
+  /** OpenAI-family: how many top log probabilities per token. Passed through. */
+  topLogprobs?: number;
   // Provider-specific extras passed raw into the body (escape hatch)
   extra?: Record<string, any>;
   /**
@@ -161,7 +178,7 @@ export type ReasoningRequestConfig = {
    * (the API rejects both together). Ignored by other providers.
    */
   thinkingLevel?: string;
-  /** Whether the provider should expose its reasoning/thought summary to the caller. Default false. */
+  /** Whether the provider should expose its reasoning/thought summary to the caller. Gemini: default false. Claude adaptive thinking (5.x): default summarized (`thinking.display = "summarized"`) unless this is `false`; never added when the caller passes an explicit `extra.thinking`. */
   includeThoughts?: boolean;
   /** Provider-specific passthrough merged on top of the mapped shape. */
   providerExtras?: Record<string, any>;
@@ -195,6 +212,15 @@ export function emptyUsage(): TokenUsage {
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "error";
 
+export type ProviderResponseFields = {
+  system_fingerprint?: string;
+  service_tier?: string;
+  annotations?: any[];
+  refusal?: string | null;
+  logprobs?: any;
+  [key: string]: any;
+};
+
 export type ChatCompletionResponse = {
   id: string;
   model: string;
@@ -202,6 +228,13 @@ export type ChatCompletionResponse = {
   toolCalls: ToolCall[];
   usage: TokenUsage;
   finishReason: FinishReason;
+  /** The provider's own finish/stop reason string, unnormalised (e.g. "end_turn", "function_call"). */
+  rawFinishReason?: string;
+  /**
+   * Provider response fields the unified shape has no slot for, kept when present:
+   * `system_fingerprint`, `service_tier`, `annotations`, `refusal`, `logprobs`.
+   */
+  providerFields?: ProviderResponseFields;
   /** Native reasoning blocks + summary captured from the response, if any. */
   reasoning?: ReasoningPayload;
   raw: any; // Original provider response
@@ -220,6 +253,56 @@ export type ChatCompletionChunk = {
   };
   usage?: TokenUsage;
   finishReason?: FinishReason;
+  /** The provider's own finish reason string, unnormalised. Present on the chunk that carries it. */
+  rawFinishReason?: string;
+  /** See ChatCompletionResponse.providerFields; per-chunk (fingerprint, tier, delta refusal/annotations, logprobs). */
+  providerFields?: ProviderResponseFields;
+};
+
+// ─── Embeddings ──────────────────────────────────────────────────────────────
+
+/** Why the text is being embedded; mapped to each provider's own task/input type. */
+export type EmbeddingInputType =
+  | "search_document"
+  | "search_query"
+  | "classification"
+  | "clustering"
+  | "semantic_similarity"
+  | "question_answering"
+  | "fact_verification"
+  | "code_retrieval_query"
+  | (string & {});
+
+export type EmbeddingRequest = {
+  /** Model id (OpenAI/compatible), deployment name (Azure), model id (Bedrock), model name (Vertex). */
+  model: string;
+  /** Texts to embed. One vector per entry, in the same order. */
+  input: string[];
+  /** Requested output dimensions, for models that support shortening (OpenAI v3, Titan v2, Cohere v4, Gemini). */
+  dimensions?: number;
+  /** OpenAI-shaped endpoints: wire encoding. Vectors are always returned as number[] either way. */
+  encodingFormat?: "float" | "base64";
+  /** Task hint (Cohere on Bedrock, Gemini on Vertex). Ignored by providers without one. */
+  inputType?: EmbeddingInputType;
+  /** Max texts per HTTP request. Defaults per provider (OpenAI 2048, Vertex 100, Gemini-embedding 1, Titan 1). */
+  batchSize?: number;
+  /** Provider-specific fields merged into each request body (escape hatch). */
+  extra?: Record<string, any>;
+  signal?: AbortSignal;
+};
+
+export type EmbeddingUsage = {
+  inputTokens: number;
+  totalTokens: number;
+};
+
+export type EmbeddingResponse = {
+  model: string;
+  /** One vector per input, in input order. */
+  vectors: number[][];
+  usage: EmbeddingUsage;
+  /** Raw provider responses, one per HTTP request made. */
+  raw: any[];
 };
 
 // ─── Provider Configs ────────────────────────────────────────────────────────
@@ -265,9 +348,13 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   defaultHeaders?: Record<string, string>;
   retry?: ProviderRetryConfig;
   /**
+   * @deprecated Use `api: "chat" | "responses" | "auto"`. Kept as an alias:
+   * `never` = chat, `always` = responses, `auto` = the name-based heuristic.
+   * When `api` is also set, `api` wins.
+   *
    * WHICH API a reasoning-carrying request is addressed to.
    *
-   *  auto    (default, and today's behaviour) route to the Responses API when
+   *  auto    (the default for OpenAI and Azure) route to the Responses API when
    *          the request carries `reasoning` AND the model name looks like an
    *          o-series/gpt-5 reasoning model.
    *  never   always Chat Completions. `reasoning` is still mapped, as
@@ -286,9 +373,25 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    * where it matters most: a self-hosted model is named by whoever served it.
    */
   responsesApi?: "auto" | "never" | "always";
+  /** @internal Set by OpenAICompatibleProvider: `auto` then means Chat Completions. */
+  _autoMeansChat?: boolean;
+  /**
+   * Which upstream API requests are sent to. `"auto"` (default) keeps the
+   * 0.11 behaviour of each class: OpenAI and Azure use Responses when the
+   * request carries `reasoning` and the model name looks like an o-series /
+   * gpt-5 model, otherwise Chat Completions; OpenAI-compatible always uses
+   * Chat Completions (the model name is the server operator's). `"chat"` always
+   * sends Chat Completions. `"responses"`
+   * sends every request to the Responses API (`POST /responses`) and streams it
+   * over real SSE (text, tool-call arguments and reasoning-summary deltas;
+   * set `responsesStreaming: false` to get one non-streaming call instead).
+   * Works on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`.
+   * When set, it wins over the deprecated `responsesApi`.
+   */
+  api?: "chat" | "responses" | "auto";
   /**
    * Models that go to the Responses API, named explicitly. Opt-in; unset by
-   * default, and nothing here is inferred from a model name.
+   * default.
    *
    * A string matches the request's model (or `defaultModel`) exactly; a RegExp
    * is tested against it. A match routes the request to Responses whether or
@@ -306,15 +409,16 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    *    `stream_options.include_usage` dropped.
    *  - real SSE streaming, when `responsesStreaming` is also true.
    *
-   * Honoured by `OpenAIProvider` itself only; `AzureProvider` and
-   * `OpenAICompatibleProvider` ignore it.
+   * Honoured by `OpenAIProvider`, `AzureProvider` and
+   * `OpenAICompatibleProvider` alike.
    */
   responsesApiModels?: Array<string | RegExp>;
   /**
-   * Stream Responses API output as it arrives (text and tool-call argument
-   * deltas) for models in `responsesApiModels`. Default false, which keeps the
-   * existing behaviour: one non-streaming Responses call, emitted as a single
-   * chunk. Has no effect on any other request.
+   * Stream Responses API output as it arrives (text, tool-call argument and
+   * reasoning-summary deltas) for `api: "responses"` and for models in
+   * `responsesApiModels`. Default true with `api: "responses"`, false
+   * otherwise (one non-streaming Responses call emitted as a single chunk).
+   * Has no effect on Chat Completions requests.
    */
   responsesStreaming?: boolean;
 };
@@ -333,6 +437,14 @@ export type AnthropicProviderConfig = ProviderTransportConfig & {
    * which is the recommended Anthropic recipe for static system + tools.
    */
   prompt_caching?: { enabled: boolean };
+  /**
+   * Thinking request shape. `auto` (default) picks per model id: Claude 5.x
+   * and newer use `thinking:{type:"adaptive"}` + `output_config.effort`, older
+   * models use `thinking:{type:"enabled", budget_tokens}`. Force one with
+   * `adaptive` / `budget`. On the specific 400 for the wrong shape the
+   * provider retries once with the other form.
+   */
+  thinkingMode?: "auto" | "adaptive" | "budget";
 };
 
 export type AzureProviderConfig = ProviderTransportConfig & {
@@ -346,14 +458,24 @@ export type AzureProviderConfig = ProviderTransportConfig & {
   deploymentName?: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  /** See OpenAIProviderConfig.api. Default "auto". */
+  api?: "chat" | "responses" | "auto";
+  /** @deprecated Use `api`. */
+  responsesApi?: "auto" | "never" | "always";
+  responsesApiModels?: Array<string | RegExp>;
+  responsesStreaming?: boolean;
 };
 
 export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   provider: "openai-compatible";
   organization?: string;
   retry?: ProviderRetryConfig;
-  /** Default "never": most compatible servers only speak Chat Completions. */
+  /** @deprecated Use `api`. Default: see `api`. */
   responsesApi?: "auto" | "never" | "always";
+  /** See OpenAIProviderConfig.api. Default "auto". */
+  api?: "chat" | "responses" | "auto";
+  responsesApiModels?: Array<string | RegExp>;
+  responsesStreaming?: boolean;
   /** See OpenAIProviderConfig.maxTokensParam. Compatible servers default to `auto`. */
   maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
   apiKey: string;
@@ -365,6 +487,8 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
 export type BedrockProviderConfig = ProviderTransportConfig & {
   provider: "bedrock";
   region: string;
+  /** Thinking request shape for Claude models: `auto` (by model id), `adaptive` or `budget`. */
+  thinkingMode?: "auto" | "adaptive" | "budget";
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;

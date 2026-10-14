@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0]
+
+### Added
+- **Embeddings on the native providers**: `provider.embed({ model, input: string[], dimensions?, encodingFormat?, inputType?, batchSize?, extra?, signal? })` returns `{ model, vectors, usage: { inputTokens, totalTokens }, raw }`, one vector per input in input order. OpenAI / openai-compatible: `POST /embeddings`, batched (2048 per request), `dimensions`, `encodingFormat: "base64"` is decoded for you. Azure: deployment-scoped path with `api-key` auth. Bedrock `InvokeModel`: Amazon Titan Text Embeddings v1/v2 (one text per call, 4 in flight) and Cohere Embed v3/v4 (batched, `inputType` -> `input_type`, `dimensions` -> `output_dimension`). Vertex `:predict`: text-embedding / multilingual / `gemini-embedding` (one instance per request), `inputType` -> task type, `dimensions` -> `outputDimensionality`. Providers without an embeddings endpoint (Anthropic, Jev) reject with a 400 `ProviderError`. New exported types `EmbeddingRequest`, `EmbeddingResponse`, `EmbeddingUsage`, `EmbeddingInputType`.
+- **Gateway-grade request options** on `ChatCompletionRequest`: `streamUsage` (`false` omits `stream_options.include_usage` for servers that reject it), `seed`, `n` (pass-through; only choice 0 is parsed), `parallelToolCalls` (sent only with tools), `logprobs`, `topLogprobs`.
+- **Raw finish reason** next to the normalised one: `rawFinishReason` on `ChatCompletionResponse` and on the stream chunk that carries it (OpenAI `finish_reason`, Anthropic / Bedrock `stop_reason`, Gemini `finishReason`).
+- **Provider response fields kept** in `providerFields` (response and stream chunks) when present: `system_fingerprint`, `service_tier`, message `annotations` and `refusal`, choice `logprobs`.
+- **Tool-call stream deltas carry `index`** (`ToolCall.index`): the OpenAI `tool_calls[].index`, and a per-turn ordinal for Anthropic, Bedrock, Vertex and the Responses stream. Anthropic now announces a tool call (id + name) when its content block opens, so a tool with no input is no longer invisible to a stream consumer.
+- **`@langchain/*` and `langchain` are optional peer dependencies.** Nothing imports LangChain at module load; `fromLangchainModel` / `fromLangchainTools` keep working when LangChain is installed.
+
+### Breaking
+- **Bedrock `extra` routing**: keys that are not Converse request fields now go inside `additionalModelRequestFields` (merged with the reasoning mapping and with any explicit `extra.additionalModelRequestFields`); Converse's own top-level fields (`guardrailConfig`, `performanceConfig`, `requestMetadata`, `promptVariables`, `additionalModelResponseFieldPaths`, `serviceTier`, `outputConfig`, ...) stay top-level. Previously every key was spread at the top level. Migration: to force a key to the top level (e.g. a Converse field added after this release) put it under `extra.__top`, e.g. `extra: { __top: { newConverseField: 1 } }`.
+
+### Behaviour changes
+- Adaptive (Claude 5.x) requests carry `thinking.display = "summarized"`, and temperature / top_p / top_k are stripped only when thinking is actually enabled (not for `effort: "none"`).
+- Bedrock stop reasons `model_context_window_exceeded` -> `length`, `guardrail_intervened` -> `content_filter`.
+- Anthropic `reasoningTokens` is now populated. It is already included in `outputTokens`: do not add it again.
+- Anthropic streams announce a tool call (id + name) when its block opens; consumers that created a call on first sight of `name` must merge by id/index.
+
+### Added (upstream API selection)
+- **`api: "chat" | "responses" | "auto"`** on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`. Default `"auto"` keeps the 0.11 behaviour of each class (OpenAI and Azure: Responses when the request carries `reasoning` and the model name looks like an o-series / gpt-5 model; OpenAI-compatible: always Chat Completions), so upgrading changes nothing. `"chat"` always uses Chat Completions. `"responses"` sends every request to the Responses API with real SSE streaming (text, tool-call arguments and `response.reasoning_summary_text.delta` as reasoning parts; `responsesStreaming: false` opts back into one non-streaming call). The existing `responsesApi` option still works as a deprecated alias (`never` = chat, `always` = responses, `auto` = auto); `api` wins when both are set.
+- `responsesApiModels` / `responsesStreaming` are now honoured by `AzureProvider` and `OpenAICompatibleProvider` too (previously only a directly configured `OpenAIProvider`).
+- **Claude visible thinking.** On the adaptive (Claude 5.x) thinking form the SDK now sends `thinking.display = "summarized"` (Bedrock-Claude too) unless `reasoning.includeThoughts` is `false`; those models otherwise return empty thinking text. An explicit `extra.thinking` is never modified. Behaviour change: adaptive requests carry the extra `display` field.
+- Anthropic `usage.output_tokens_details.thinking_tokens` is parsed into `reasoningTokens` (non-stream and stream).
+- Vertex embeddings: task type aliases `semantic_similarity`, `question_answering`, `fact_verification`, `code_retrieval_query`.
+
+### Fixed (providers)
+- **Bedrock**: usage reads `cacheReadInputTokens` / `cacheWriteInputTokens` first and the `...TokenCount` names as a fallback (non-stream and stream); stop reasons `guardrail_intervened` map to `content_filter` and `model_context_window_exceeded` to `length` (`guardrail` is still `content_filter`).
+- **SigV4**: the canonical URI is now URI-encoded a second time per path segment for non-S3 services, as AWS requires. Model ids containing `:` previously produced a path the signer and the service canonicalised differently. Verified against a reference signature from `@smithy/signature-v4`. `signRequest` accepts an optional `now` for reproducible tests.
+- **Vertex embeddings**: `extra.parameters` is merged with `outputDimensionality` instead of replacing it, and a prediction without an `embeddings.values` array now raises a `ProviderError` instead of returning `undefined` vectors.
+
+### Fixed (forced tool choice)
+- **Claude 5.x Sonnet / Opus reject `tool_choice` `any` / `tool`** with a 400 (`tool_choice: type "tool" and "any" are not supported for this model`). Anthropic and Bedrock providers now map `required` and a specific tool to `auto` for those models (new `supportsForcedToolChoice(modelId)` helper; Haiku and older models keep forcing), and retry once with `auto` when any other model answers that exact 400. The tool-based structured output path keeps working: a text answer is parsed by the existing fallback.
+
+### Fixed
+- **Anthropic / Bedrock-Claude thinking on newer models.** Claude 5.x models reject `thinking: { type: "enabled", budget_tokens }`. The thinking shape is now chosen per model id: newer models get `thinking: { type: "adaptive" }` plus `output_config.effort` (`minimal` maps to `low`, `none` sends no thinking); older models keep the budget form. New `thinkingMode: "auto" | "adaptive" | "budget"` provider option overrides detection (`supportsAdaptiveThinking` is exported). The Anthropic provider also retries once with the other form when the upstream returns that specific 400. An explicit `extra.thinking` is still passed through unchanged.
+
+
 ## [0.11.0]
 
 ### Added

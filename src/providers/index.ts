@@ -20,6 +20,12 @@ export type {
   ChatCompletionChunk,
   TokenUsage,
   FinishReason,
+  ProviderResponseFields,
+  // Embeddings
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EmbeddingUsage,
+  EmbeddingInputType,
   // Provider configs
   ProviderConfig,
   ProviderType,
@@ -36,6 +42,7 @@ export type {
 export { ProviderError, emptyUsage } from "./types.js";
 
 // Base
+export { supportsAdaptiveThinking, type ThinkingMode } from "./utils/reasoning.js";
 export { BaseProvider } from "./base.js";
 
 // Providers

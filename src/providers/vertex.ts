@@ -5,6 +5,7 @@ import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyGeminiReasoning } from "./utils/reasoning.js";
 import { inferMediaTypeFromUrl } from "./utils/media.js";
+import { chunkArray, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -14,6 +15,8 @@ import {
   type UnifiedMessage,
   type ToolDefinition,
   type VertexProviderConfig,
+  type EmbeddingRequest,
+  type EmbeddingResponse,
   type ProviderType,
   ProviderError,
 } from "./types.js";
@@ -133,6 +136,51 @@ export class VertexProvider extends BaseProvider {
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────
+
+  /**
+   * Vertex `:predict` embeddings (text-embedding-00x, text-multilingual-embedding,
+   * gemini-embedding-001). `inputType` maps to the task type; `dimensions` to
+   * `outputDimensionality`. gemini-embedding takes one instance per request, the
+   * text-embedding models up to `batchSize` (default 100).
+   */
+  override async embed(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    const model = requireEmbeddingModel(this.providerName, request.model);
+    const perRequest = request.batchSize ?? (/gemini-embedding/i.test(model) ? 1 : 100);
+    const url = `https://${this.location}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${model}:predict`;
+    const taskType = request.inputType ? (Object.prototype.hasOwnProperty.call(GEMINI_TASK_TYPES, request.inputType) ? GEMINI_TASK_TYPES[request.inputType] : request.inputType.toUpperCase()) : undefined;
+    const vectors: number[][] = [];
+    const raw: any[] = [];
+    let inputTokens = 0;
+
+    for (const batch of chunkArray(request.input, perRequest)) {
+      const body: Record<string, any> = {
+        instances: batch.map((content) => ({ content, ...(taskType ? { task_type: taskType } : {}) })),
+      };
+      const { parameters: extraParameters, ...extraRest } = request.extra ?? {};
+      const parameters: Record<string, any> = {
+        ...(request.dimensions != null ? { outputDimensionality: request.dimensions } : {}),
+        // Caller-supplied parameters are merged in, not replacing the above (an
+        // explicit extra.parameters.outputDimensionality still wins).
+        ...(extraParameters && typeof extraParameters === "object" ? extraParameters : {}),
+      };
+      if (Object.keys(parameters).length > 0) body.parameters = parameters;
+      Object.assign(body, extraRest);
+      const res = await this.doFetch(url, body, request.signal);
+      const json: any = await res.json();
+      raw.push(json);
+      for (const p of json.predictions ?? []) {
+        const values = p.embeddings?.values;
+        if (!Array.isArray(values)) {
+          throw new ProviderError("Vertex embeddings response has a prediction without an embeddings.values array", this.providerName, undefined, json);
+        }
+        vectors.push(values);
+        inputTokens += p.embeddings?.statistics?.token_count ?? 0;
+      }
+    }
+
+    assertVectorCount(this.providerName, vectors, request.input.length);
+    return { model, vectors, usage: { inputTokens, totalTokens: inputTokens }, raw };
+  }
 
   private buildUrl(modelId: string, stream: boolean): string {
     const base = `https://${this.location}-aiplatform.googleapis.com/v1`;
@@ -474,6 +522,7 @@ export class VertexProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapGeminiFinishReason(candidate?.finishReason),
+      ...(typeof candidate?.finishReason === "string" ? { rawFinishReason: candidate.finishReason } : {}),
       reasoning: thoughtParts.length > 0 ? { summary: thoughtParts.join("\n").trim() || undefined } : undefined,
       raw: json,
     };
@@ -495,7 +544,8 @@ export class VertexProvider extends BaseProvider {
         if (!delta.toolCalls) delta.toolCalls = [];
         delta.toolCalls.push({
           // Unique across the whole stream: the adapter merges chunks by id.
-          id: `call_${counter.next++}`,
+          id: `call_${counter.next}`,
+          index: counter.next++,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
           ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
@@ -523,11 +573,23 @@ export class VertexProvider extends BaseProvider {
       delta,
       usage,
       finishReason: mapGeminiFinishReason(candidate?.finishReason),
+      ...(typeof candidate?.finishReason === "string" ? { rawFinishReason: candidate.finishReason } : {}),
     };
   }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const GEMINI_TASK_TYPES: Record<string, string> = {
+  search_document: "RETRIEVAL_DOCUMENT",
+  search_query: "RETRIEVAL_QUERY",
+  classification: "CLASSIFICATION",
+  clustering: "CLUSTERING",
+  semantic_similarity: "SEMANTIC_SIMILARITY",
+  question_answering: "QUESTION_ANSWERING",
+  fact_verification: "FACT_VERIFICATION",
+  code_retrieval_query: "CODE_RETRIEVAL_QUERY",
+};
 
 function mapGeminiFinishReason(reason: string | null | undefined): ChatCompletionResponse["finishReason"] {
   switch (reason) {

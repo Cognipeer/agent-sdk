@@ -17,6 +17,8 @@ export type SigV4Request = {
   region: string;
   service: string;
   credentials: SigV4Credentials;
+  /** Signing time; defaults to now. Mainly for reproducible tests. */
+  now?: Date;
 };
 
 /**
@@ -25,13 +27,15 @@ export type SigV4Request = {
  * and optionally x-amz-security-token headers added.
  */
 export function signRequest(req: SigV4Request): Record<string, string> {
-  const now = new Date();
+  const now = req.now ?? new Date();
   const dateStamp = toDateStamp(now);
   const amzDate = toAmzDate(now);
 
   const parsed = new URL(req.url);
   const host = parsed.host;
-  const canonicalUri = parsed.pathname || "/";
+  // Non-S3 services canonicalise the path with every segment URI-encoded a
+  // second time (the already-encoded pathname is encoded again).
+  const canonicalUri = (parsed.pathname || "/").split("/").map((seg) => encodeURIComponent(seg).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())).join("/");
   const canonicalQuerystring = sortQueryParams(parsed.searchParams);
 
   // Build headers to sign

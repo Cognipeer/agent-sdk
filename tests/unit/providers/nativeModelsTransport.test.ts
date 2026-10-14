@@ -77,7 +77,7 @@ describe("injected fetch is used at every call site", () => {
   it("azure responses route uses the injected fetch", async () => {
     const globalSpy = vi.spyOn(globalThis, "fetch");
     const m = mockFetch(() => json({ id: "r", model: "o3", output: [], usage: {} }));
-    const az = new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "http://az", deploymentName: "o3", fetch: m.fn });
+    const az = new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "http://az", deploymentName: "o3", fetch: m.fn, api: "responses" });
     await az.complete({ model: "o3", messages: msgs, reasoning: { effort: "low" } });
     expect(m.calls[0].url).toContain("/openai/responses");
     expect(globalSpy).not.toHaveBeenCalled();

@@ -125,6 +125,7 @@ const PROVIDERS: Record<string, () => BaseProvider> = {
   openaiDefault: () => new OpenAIProvider({ provider: "openai", apiKey: "k" }),
   openaiAzureV1: () =>
     new OpenAIProvider({ provider: "openai", apiKey: "k", baseURL: "https://res.openai.azure.com/openai/v1" }),
+  openaiAuto: () => new OpenAIProvider({ provider: "openai", apiKey: "k", responsesApi: "auto" }),
   openaiNever: () => new OpenAIProvider({ provider: "openai", apiKey: "k", responsesApi: "never" }),
   openaiAlways: () => new OpenAIProvider({ provider: "openai", apiKey: "k", responsesApi: "always" }),
   azure: () =>

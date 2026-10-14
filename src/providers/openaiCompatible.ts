@@ -20,8 +20,14 @@ export class OpenAICompatibleProvider extends OpenAIProvider {
       fetch: config.fetch,
       timeoutMs: config.timeoutMs,
       maxTokensParam: config.maxTokensParam,
-      // Most compatible servers only speak Chat Completions.
-      responsesApi: config.responsesApi ?? "never",
+      api: config.api,
+      // Unlike OpenAI / Azure, "auto" on a compatible server means Chat
+      // Completions (the 0.11 default): the model name is the operator's.
+      // `responsesApiModels` still applies; `responsesApi: "auto"` opts in.
+      _autoMeansChat: true,
+      responsesApi: config.responsesApi,
+      responsesApiModels: config.responsesApiModels,
+      responsesStreaming: config.responsesStreaming,
     });
   }
 }

@@ -1,9 +1,10 @@
 // Anthropic Messages API provider.
 // Direct fetch-based implementation – no SDK dependency.
 
+import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
-import { applyAnthropicReasoning } from "./utils/reasoning.js";
+import { applyAnthropicReasoning, resolveThinkingForm, type ThinkingMode } from "./utils/reasoning.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -38,6 +39,15 @@ function normalizeExplicitThinking(body: Record<string, any>): void {
   for (const k of ["temperature", "top_p", "top_k"]) delete body[k];
 }
 
+/** Detects the upstream 400 for a wrong thinking shape. Plain substring
+ * checks only. Returns which form the upstream rejected. */
+function thinkingFormRejected(text: string): "enabled" | "adaptive" | undefined {
+  const t = text.toLowerCase();
+  if (t.indexOf("thinking.type.enabled") >= 0 && t.indexOf("not supported") >= 0) return "enabled";
+  if (t.indexOf("thinking.type.adaptive") >= 0 && t.indexOf("not supported") >= 0 && t.indexOf("thinking.type.enabled") < 0) return "adaptive";
+  return undefined;
+}
+
 export class AnthropicProvider extends BaseProvider {
   readonly providerName: ProviderType = "anthropic";
 
@@ -48,6 +58,7 @@ export class AnthropicProvider extends BaseProvider {
   private readonly anthropicVersion: string;
 
   private readonly promptCachingEnabled: boolean;
+  private readonly thinkingMode: ThinkingMode;
 
   constructor(config: AnthropicProviderConfig) {
     super();
@@ -57,20 +68,19 @@ export class AnthropicProvider extends BaseProvider {
     this.defaultModel = config.defaultModel ?? "claude-sonnet-4-20250514";
     this.defaultHeaders = config.defaultHeaders ?? {};
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
+    this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const body = this.buildRequestBody(request, false);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.send(request, false);
     const json = await res.json();
     return this.parseResponse(json);
   }
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-    const body = this.buildRequestBody(request, true);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.send(request, true);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -78,9 +88,11 @@ export class AnthropicProvider extends BaseProvider {
     let model = "";
     let inputTokens = 0;
     let outputTokens = 0;
+    let thinkingTokens = 0;
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
-    const currentToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+    const currentToolCalls = new Map<number, { id: string; name: string; arguments: string; ordinal: number }>();
+    let toolOrdinal = 0;
     // Accumulate thinking blocks by content-block index so we can replay them.
     const reasoningBlocks = new Map<number, ReasoningBlock>();
 
@@ -115,7 +127,12 @@ export class AnthropicProvider extends BaseProvider {
               id: block.id ?? "",
               name: block.name ?? "",
               arguments: "",
+              ordinal: toolOrdinal++,
             });
+            const opened = currentToolCalls.get(idx)!;
+            // Announce the call when it opens, so a tool that takes no input
+            // (no input_json_delta ever follows) is still seen by the consumer.
+            yield { id, model, delta: { toolCalls: [{ id: opened.id, name: opened.name, arguments: "", index: opened.ordinal }] } };
           } else if (block?.type === "thinking") {
             reasoningBlocks.set(idx, { type: "thinking", text: block.thinking ?? "", signature: block.signature });
           } else if (block?.type === "redacted_thinking") {
@@ -155,7 +172,7 @@ export class AnthropicProvider extends BaseProvider {
                 id,
                 model,
                 delta: {
-                  toolCalls: [{ id: tc.id, name: tc.name, arguments: delta.partial_json }],
+                  toolCalls: [{ id: tc.id, name: tc.name, arguments: delta.partial_json, index: tc.ordinal }],
                 },
               };
             }
@@ -171,8 +188,10 @@ export class AnthropicProvider extends BaseProvider {
           const delta = data.delta;
           if (data.usage) {
             outputTokens = data.usage.output_tokens ?? outputTokens;
+            thinkingTokens = data.usage.output_tokens_details?.thinking_tokens ?? thinkingTokens;
           }
           const finishReason = mapAnthropicStopReason(delta?.stop_reason);
+          const rawFinishReason = typeof delta?.stop_reason === "string" ? delta.stop_reason : undefined;
           const usage: TokenUsage = {
             inputTokens,
             outputTokens,
@@ -180,7 +199,7 @@ export class AnthropicProvider extends BaseProvider {
             cachedInputTokens: cacheReadInputTokens,
             cachedWriteTokens: cacheCreationInputTokens,
             cachedOutputTokens: 0,
-            reasoningTokens: 0,
+            reasoningTokens: thinkingTokens,
           };
           const blocks = [...reasoningBlocks.values()].filter(
             (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
@@ -190,6 +209,7 @@ export class AnthropicProvider extends BaseProvider {
             model,
             delta: blocks.length > 0 ? { reasoning: { blocks } } : {},
             finishReason,
+            ...(rawFinishReason ? { rawFinishReason } : {}),
             usage,
           };
           break;
@@ -208,7 +228,7 @@ export class AnthropicProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildRequestBody(request: ChatCompletionRequest, stream: boolean): Record<string, any> {
+  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, modeOverride?: ThinkingMode, downgradeToolChoice = false): Record<string, any> {
     // Anthropic separates system from messages
     const { system, messages } = this.splitSystemMessages(request.messages);
 
@@ -243,14 +263,15 @@ export class AnthropicProvider extends BaseProvider {
     }
 
     if (request.toolChoice != null) {
+      const forceOk = !downgradeToolChoice && supportsForcedToolChoice(body.model);
       if (request.toolChoice === "auto") {
         body.tool_choice = { type: "auto" };
       } else if (request.toolChoice === "required") {
-        body.tool_choice = { type: "any" };
+        body.tool_choice = forceOk ? { type: "any" } : { type: "auto" };
       } else if (request.toolChoice === "none") {
         // Anthropic doesn't have a direct "none" – omit tools
       } else {
-        body.tool_choice = { type: "tool", name: request.toolChoice.name };
+        body.tool_choice = forceOk ? { type: "tool", name: request.toolChoice.name } : { type: "auto" };
       }
     }
 
@@ -264,7 +285,7 @@ export class AnthropicProvider extends BaseProvider {
       // must not overwrite it. Only the hard API rules are enforced around it.
       normalizeExplicitThinking(body);
     } else {
-      applyAnthropicReasoning(body, request.reasoning);
+      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: modeOverride ?? this.thinkingMode });
     }
 
     // max_tokens is mandatory on the Messages API; `extra` may have nulled it.
@@ -426,6 +447,37 @@ export class AnthropicProvider extends BaseProvider {
     };
   }
 
+  /** Builds and sends the request; retries once with the other thinking form
+   * when the upstream rejects the one we picked. */
+  private async send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    let mode: ThinkingMode | undefined;
+    let downgrade = false;
+    let flippedThinking = false;
+    for (;;) {
+      const body = this.buildRequestBody(request, stream, mode, downgrade);
+      try {
+        return await this.doFetch(body, request.signal);
+      } catch (err) {
+        if (!(err instanceof ProviderError) || err.statusCode !== 400) throw err;
+        const text = String(err.responseBody ?? err.message);
+        // Model refuses forced tool use: retry once with tool_choice auto.
+        if (!downgrade && body.tool_choice && body.tool_choice.type !== "auto" && forcedToolChoiceRejected(text)) {
+          downgrade = true;
+          continue;
+        }
+        const explicit = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
+        if (flippedThinking || explicit || !request.reasoning) throw err;
+        const wrong = thinkingFormRejected(text);
+        if (!wrong) throw err;
+        // The rejected form is the one we sent; flip to the other.
+        const used = resolveThinkingForm(request.model ?? this.defaultModel, this.thinkingMode);
+        if ((wrong === "enabled" && used !== "budget") || (wrong === "adaptive" && used !== "adaptive")) throw err;
+        mode = wrong === "enabled" ? "adaptive" : "budget";
+        flippedThinking = true;
+      }
+    }
+  }
+
   private async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
     const url = `${this.baseURL}/v1/messages`;
     const headers = {
@@ -485,10 +537,9 @@ export class AnthropicProvider extends BaseProvider {
       cachedInputTokens: usage.cache_read_input_tokens ?? 0,
       cachedWriteTokens: usage.cache_creation_input_tokens ?? 0,
       cachedOutputTokens: 0,
-      // Anthropic bills thinking tokens inside `output_tokens` and does not
-      // expose a separate count, so reasoningTokens stays 0 here (cost is still
-      // captured via outputTokens). See docs for the limitation.
-      reasoningTokens: 0,
+      // Thinking tokens are billed inside `output_tokens`; newer models also
+      // report the split as `output_tokens_details.thinking_tokens`.
+      reasoningTokens: usage.output_tokens_details?.thinking_tokens ?? 0,
     };
 
     return {
@@ -498,6 +549,7 @@ export class AnthropicProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason: mapAnthropicStopReason(json.stop_reason),
+      ...(typeof json.stop_reason === "string" ? { rawFinishReason: json.stop_reason } : {}),
       reasoning: reasoningBlocks.length > 0
         ? { blocks: reasoningBlocks, summary: summaryParts.join("\n").trim() || undefined }
         : undefined,

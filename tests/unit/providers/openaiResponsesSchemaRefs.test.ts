@@ -82,7 +82,7 @@ const RESPONSES_ROUTES: Record<string, { provider: () => BaseProvider; request: 
     request: (schema) => ({ model: "gpt-4o", messages, responseFormat: { type: "json_schema", name: "structured_response", schema } }),
   },
   "auto gpt-5 + reasoning + responseFormat": {
-    provider: () => new OpenAIProvider(key),
+    provider: () => new OpenAIProvider({ ...key, responsesApi: "auto" }),
     request: (schema) => ({
       model: "gpt-5.6-terra",
       messages,
@@ -104,7 +104,7 @@ const RESPONSES_ROUTES: Record<string, { provider: () => BaseProvider; request: 
     viaExtra: true,
   },
   "azure auto gpt-5 + reasoning + responseFormat": {
-    provider: () => new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "https://r.openai.azure.com" }),
+    provider: () => new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "https://r.openai.azure.com", responsesApi: "auto" }),
     request: (schema) => ({
       model: "gpt-5.6-terra",
       messages,

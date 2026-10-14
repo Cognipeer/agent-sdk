@@ -53,9 +53,35 @@ createProvider({
 })
 ```
 
-#### Routing specific models to the Responses API (opt-in)
+#### Choosing the upstream API: Chat Completions or Responses
 
-Some models reason by default and reject function tools on Chat Completions, with or without a reasoning field (for example the GPT-6 family on an Azure `/openai/v1` endpoint: *"Function tools with reasoning_effort are not supported … use /v1/responses"*). List those models explicitly:
+`api` selects the upstream API on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`. The default is `"auto"`, which is exactly what 0.11 did, so upgrading changes nothing; `"chat"` and `"responses"` are explicit choices.
+
+```ts
+createProvider({
+  provider: "openai",            // also "azure" and "openai-compatible"
+  apiKey: process.env.OPENAI_API_KEY!,
+  api: "responses",              // "auto" (default) | "chat" | "responses"
+})
+```
+
+| `api` | Behaviour |
+|---|---|
+| `"auto"` (default) | Same as 0.11. OpenAI and Azure: Responses when the request carries `reasoning` and the model name looks like an o-series / gpt-5 model, otherwise Chat Completions. OpenAI-compatible: always Chat Completions (the model name is the server operator's, so it is never guessed). |
+| `"chat"` | Every request goes to `/chat/completions` (Azure: the deployment route). `reasoning` is mapped to `reasoning_effort`. |
+| `"responses"` | Every request goes to `/responses` (Azure: `/openai/responses`). `completeStream()` uses real SSE streaming: text, tool-call argument and reasoning-summary deltas arrive as they are produced, then one closing chunk carries usage and finish reason. Set `responsesStreaming: false` to make one non-streaming call emitted as a single chunk. Chat Completions spellings in `extra` that `/responses` rejects are re-spelled (`reasoning_effort` becomes `reasoning.effort`, `max_tokens` becomes `max_output_tokens`, `response_format` becomes `text.format`, `stream_options.include_usage` is dropped). |
+
+Why offer explicit values: Responses is a different request shape (`input` instead of `messages`, `text.format` instead of `response_format`, flat tool objects) and a different response parse. Guessing it from a model name silently changed the transport for self-hosted servers and gateways that serve only one of the two. If your application has a per-model setting, pass it straight through:
+
+```ts
+createProvider({ provider: "openai-compatible", baseURL, apiKey, api: model.upstreamApi }) // "auto" | "chat" | "responses"
+```
+
+**Compatibility with 0.11.** Nothing to migrate: `api` defaults to `"auto"`, which keeps each class's 0.11 behaviour (OpenAI and Azure: name heuristic; OpenAI-compatible: Chat Completions). The deprecated `responsesApi` option still works: `"never"` is `api: "chat"`, `"always"` is `api: "responses"` (keeping its old single-call behaviour unless you also set `responsesStreaming: true`), `"auto"` is `api: "auto"`. When both are given, `api` wins; `responsesApi: "auto"` on an OpenAI-compatible provider opts it into the name heuristic.
+
+##### Per-model opt-in (`responsesApiModels`)
+
+Some models reason by default and reject function tools on Chat Completions, with or without a reasoning field (for example the GPT-6 family on an Azure `/openai/v1` endpoint: *"Function tools with reasoning_effort are not supported ... use /v1/responses"*). To send only those models to Responses, list them:
 
 ```ts
 createProvider({
@@ -63,38 +89,13 @@ createProvider({
   apiKey: process.env.AZURE_OPENAI_KEY!,
   baseURL: "https://my-resource.openai.azure.com/openai/v1",
   responsesApiModels: ["gpt-6.1-sol", /^gpt-6-/], // exact strings or RegExps
-  responsesStreaming: true,                      // optional, default false
+  responsesStreaming: true,                      // stream these models over SSE
 })
 ```
 
-For a listed model only:
+For a listed model: requests go to `/responses` whether or not they carry `reasoning`; the `extra` re-spelling above applies; with `responsesStreaming: true` the stream is real SSE, otherwise one non-streaming call is emitted as one chunk. Unlisted models stay on Chat Completions. `api: "chat"` (or `responsesApi: "never"`) overrides the list. The list works on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider` alike.
 
-- Requests go to `/responses`, whether or not they carry `reasoning`.
-- Chat Completions fields in `extra` that `/responses` rejects are re-spelled, with their values unchanged:
-  - `reasoning_effort` becomes `reasoning.effort`, so `"xhigh"` works. A `reasoning` config on the request still wins.
-  - `max_tokens` and `max_completion_tokens` become `max_output_tokens`.
-  - `response_format` becomes `text.format`.
-  - `stream_options.include_usage` is dropped.
-
-  Other keys pass through as they are. Note that these models also reject `temperature`, `top_p` and `stop` on `/responses`.
-- With `responsesStreaming: true`, `completeStream()` streams text and tool-call argument deltas as they arrive. Without it, the Responses call stays non-streaming and is emitted as one chunk, as before.
-
-**Model families instead of names.** A RegExp covers families that don't exist yet. For example, `/^gpt-(?:[6-9]|[1-9]\d+)(?!\d)/i` matches gpt-6, gpt-7.2-mini and gpt-10, but not gpt-5.x, gpt-4o or o3. For exceptions inside a family, either use a lookahead (`/^(?!gpt-6-luna$)gpt-…/`) or resolve the transport per model and state it outright:
-
-```ts
-const responses = overrides[model] ? overrides[model] === "responses" : patterns.some((p) => p.test(model));
-createProvider({
-  provider: "openai",
-  apiKey, baseURL,
-  responsesApi: responses ? "always" : "never", // "never" pins a model to Chat Completions
-  responsesApiModels: responses ? [model] : [],
-  responsesStreaming: true,
-});
-```
-
-Reasoning effort values in `extra` are passed through without validation, so which values a model accepts is the caller's configuration, not the SDK's.
-
-Nothing else changes. Unlisted models route exactly as before, and nothing is inferred from a model name. `responsesApi: "never"` overrides the list. Only `OpenAIProvider` reads these options; `AzureProvider` and `OpenAICompatibleProvider` ignore them.
+A RegExp covers families that do not exist yet, for example `/^gpt-(?:[6-9]|[1-9]\d+)(?!\d)/i` matches gpt-6, gpt-7.2-mini and gpt-10, but not gpt-5.x, gpt-4o or o3. Note that reasoning models on `/responses` also reject `temperature`, `top_p` and `stop`. Reasoning effort values in `extra` are passed through unvalidated, so which values a model accepts is the caller's configuration.
 
 ### Anthropic
 
@@ -125,6 +126,19 @@ createProvider({
 The request URL is constructed as:
 ```
 {endpoint}/openai/deployments/{deploymentName}/chat/completions?api-version={apiVersion}
+```
+
+The default `apiVersion` (`2024-10-21`) is for Chat Completions only; it does not serve `/openai/responses`. With `api: "responses"` (or `responsesApiModels`) set a Responses-capable version, for example:
+
+```ts
+createProvider({
+  provider: "azure",
+  apiKey: process.env.AZURE_OPENAI_KEY!,
+  endpoint: "https://my-resource.openai.azure.com",
+  deploymentName: "gpt-5",
+  apiVersion: "preview",            // or "v1" / a dated Responses-capable version
+  api: "responses",                 // POST {endpoint}/openai/responses?api-version=preview
+})
 ```
 
 ### AWS Bedrock
@@ -288,14 +302,14 @@ Provider mapping:
 | OpenAI | `body.reasoning_effort = effort` |
 | Azure OpenAI | Same as OpenAI (`AzureProvider` extends `OpenAIProvider`) |
 | OpenAI-compatible | Same as OpenAI when the endpoint understands the field |
-| Anthropic | `body.thinking = { type: "enabled", budget_tokens }` |
+| Anthropic | Older models: `body.thinking = { type: "enabled", budget_tokens }`. Claude 5.x: `thinking = { type: "adaptive", display: "summarized" }` plus `output_config.effort` |
 | Vertex / Gemini | `generationConfig.thinkingConfig = { thinkingBudget, includeThoughts }` |
-| Bedrock | Currently ignored (no-op) |
+| Bedrock | Claude models: same shapes as Anthropic inside `additionalModelRequestFields`. Other models: ignored |
 
 Notes:
 
 - If `budgetTokens` is omitted, Anthropic and Vertex derive a default from `effort`.
-- `includeThoughts` currently affects Gemini/Vertex thought summaries.
+- `includeThoughts` affects Gemini/Vertex thought summaries and Claude visible thinking. Claude 5.x models return an empty `thinking` text unless `thinking.display` is requested, so on the adaptive form the SDK sends `display: "summarized"` unless `includeThoughts` is `false`. The text is a summary of the reasoning, not the raw chain of thought. An explicit `extra.thinking` is never modified, and `providerExtras` can override `display` (for example another documented value).
 - `providerExtras` is merged into the provider-specific reasoning object/body.
 - Unsupported models/endpoints usually return a provider error instead of silently degrading.
 
@@ -349,9 +363,9 @@ Provider-specific field mapping:
 | Provider | `cachedInputTokens` source | `cachedWriteTokens` source | `reasoningTokens` source |
 |---|---|---|---|
 | OpenAI | `prompt_tokens_details.cached_tokens` | — | `completion_tokens_details.reasoning_tokens` |
-| Anthropic | `cache_read_input_tokens` | `cache_creation_input_tokens` | — |
+| Anthropic | `cache_read_input_tokens` | `cache_creation_input_tokens` | `output_tokens_details.thinking_tokens` (when the API reports it) |
 | Azure | same as OpenAI | — | same as OpenAI |
-| Bedrock | `cacheReadInputTokenCount` | `cacheWriteInputTokenCount` | — |
+| Bedrock | `cacheReadInputTokens` (falls back to `cacheReadInputTokenCount`) | `cacheWriteInputTokens` (falls back to `cacheWriteInputTokenCount`) | — |
 | Vertex | `cachedContentTokenCount` | — | `thoughtsTokenCount` |
 
 ## Streaming
@@ -368,7 +382,7 @@ for await (const chunk of provider.completeStream({
 }
 ```
 
-Streaming is supported for OpenAI, Anthropic, Azure, OpenAI-compatible, and Vertex. Bedrock currently falls back to a single non-streaming response (Bedrock's binary event-stream protocol support is planned).
+Streaming is supported for OpenAI, Anthropic, Azure, OpenAI-compatible, Vertex and Bedrock. Bedrock streams over ConverseStream (AWS binary event-stream).
 
 ### Cancellation
 

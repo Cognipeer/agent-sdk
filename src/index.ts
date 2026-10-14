@@ -75,6 +75,7 @@ export {
   JevProvider,
   ProviderError,
   emptyUsage,
+  supportsAdaptiveThinking,
 } from "./providers/index.js";
 export type {
   ChatCompletionRequest,
@@ -82,6 +83,11 @@ export type {
   ChatCompletionChunk,
   TokenUsage,
   FinishReason,
+  ProviderResponseFields,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EmbeddingUsage,
+  EmbeddingInputType,
   UnifiedMessage,
   TextContent,
   ImageContent,

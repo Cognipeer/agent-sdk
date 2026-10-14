@@ -6,6 +6,7 @@ import { parseSSEStream } from "./utils/sse.js";
 import { applyOpenAIReasoning } from "./utils/reasoning.js";
 import { audioMimeToOpenAIFormat } from "./utils/media.js";
 import { inlineJsonSchemaRefs } from "./utils/jsonSchemaRefs.js";
+import { chunkArray, decodeBase64Vector, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -17,6 +18,9 @@ import {
   type ToolDefinition,
   type OpenAIProviderConfig,
   type ProviderType,
+  type ProviderResponseFields,
+  type EmbeddingRequest,
+  type EmbeddingResponse,
   ProviderError,
   emptyUsage,
 } from "./types.js";
@@ -32,6 +36,10 @@ export class OpenAIProvider extends BaseProvider {
   // Private, and read only by OpenAIProvider itself: see the constructor.
   private readonly responsesApiModels: Array<string | RegExp>;
   private readonly responsesStreaming: boolean;
+  private readonly apiExplicitChat: boolean;
+  private readonly apiExplicitResponses: boolean;
+  /** `api: "responses"` was passed (the legacy `responsesApi: "always"` keeps its old single-call behaviour). */
+  private readonly apiResponsesNative: boolean;
   protected readonly maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens";
 
   constructor(config: OpenAIProviderConfig) {
@@ -45,13 +53,19 @@ export class OpenAIProvider extends BaseProvider {
       ...config.defaultHeaders,
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
-    this.responsesApi = config.responsesApi ?? "auto";
-    // The per-model opt-ins belong to an OpenAIProvider configured directly.
-    // Subclasses (Azure, openai-compatible) build the config they pass up here
-    // themselves and route Responses differently, so they never take part.
-    const ownInstance = new.target === OpenAIProvider;
-    this.responsesApiModels = ownInstance ? [...(config.responsesApiModels ?? [])] : [];
-    this.responsesStreaming = ownInstance && config.responsesStreaming === true;
+    // Upstream API selection: `api` "chat" / "responses" are explicit choices;
+    // "auto" (the default, and what 0.11 did) keeps the model-name heuristic,
+    // unless the deprecated `responsesApi` alias states otherwise.
+    const legacy = config.responsesApi;
+    const explicit = config.api === "chat" || config.api === "responses" ? config.api : undefined;
+    this.responsesApi = explicit === "responses" ? "always"
+      : explicit === "chat" ? "never"
+      : legacy ?? (config._autoMeansChat ? "never" : "auto");
+    this.apiExplicitChat = explicit === "chat" || (explicit === undefined && legacy === "never");
+    this.apiExplicitResponses = this.responsesApi === "always";
+    this.apiResponsesNative = explicit === "responses";
+    this.responsesApiModels = [...(config.responsesApiModels ?? [])];
+    this.responsesStreaming = config.responsesStreaming ?? this.apiResponsesNative;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
@@ -79,9 +93,10 @@ export class OpenAIProvider extends BaseProvider {
    * A model listed in `responsesApiModels` is the caller stating the answer
    * for that model alone; `never` still overrides it. */
   protected useResponsesApi(request: ChatCompletionRequest): boolean {
-    if (this.responsesApi === "never") return false;
-    if (this.responsesApi === "always") return true;
+    if (this.apiExplicitChat) return false;
+    if (this.apiExplicitResponses) return true;
     if (this.isResponsesApiModel(request)) return true;
+    if (this.responsesApi !== "auto") return false;
     if (!request.reasoning) return false;
     return isReasoningModel(request.model || this.defaultModel);
   }
@@ -98,7 +113,7 @@ export class OpenAIProvider extends BaseProvider {
 
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     if (this.useResponsesApi(request)) {
-      if (this.responsesStreaming && this.isResponsesApiModel(request)) {
+      if (this.responsesStreaming && (this.apiResponsesNative || this.isResponsesApiModel(request))) {
         yield* this.streamResponses(request);
         return;
       }
@@ -162,6 +177,9 @@ export class OpenAIProvider extends BaseProvider {
         delta: {},
         finishReason: mapFinishReason(choice.finish_reason),
       };
+      if (typeof choice.finish_reason === "string") out.rawFinishReason = choice.finish_reason;
+      const fields = pickProviderFields(chunk, delta, choice);
+      if (fields) out.providerFields = fields;
 
       if (delta.content) {
         out.delta.content = delta.content;
@@ -182,7 +200,7 @@ export class OpenAIProvider extends BaseProvider {
           if (tc.id) buf.id = tc.id;
           if (tc.function?.name) buf.name = tc.function.name;
           if (tc.function?.arguments) buf.arguments += tc.function.arguments;
-          partials.push({ id: buf.id, name: buf.name || undefined, arguments: tc.function?.arguments });
+          partials.push({ id: buf.id, name: buf.name || undefined, arguments: tc.function?.arguments, index: idx });
         }
         out.delta.toolCalls = partials;
       }
@@ -190,6 +208,57 @@ export class OpenAIProvider extends BaseProvider {
       if (usage) out.usage = usage;
       yield out;
     }
+  }
+
+  // ─── Embeddings ──────────────────────────────────────────────────────────
+
+  /** POST /embeddings, batched (default 2048 inputs per request, the OpenAI cap). */
+  override async embed(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    const model = requireEmbeddingModel(this.providerName, request.model);
+    const batches = chunkArray(request.input, request.batchSize ?? 2048);
+    const vectors: number[][] = [];
+    const raw: any[] = [];
+    let inputTokens = 0;
+    let totalTokens = 0;
+    let responseModel = model;
+
+    for (const batch of batches) {
+      const body: Record<string, any> = { model, input: batch };
+      if (request.dimensions != null) body.dimensions = request.dimensions;
+      if (request.encodingFormat) body.encoding_format = request.encodingFormat;
+      if (request.extra) Object.assign(body, request.extra);
+      const res = await this.embeddingsFetch(body, request.signal);
+      const json: any = await res.json();
+      raw.push(json);
+      const data: any[] = Array.isArray(json.data) ? [...json.data] : [];
+      // `index` is authoritative when present; some servers return out of order.
+      data.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      for (const d of data) {
+        vectors.push(typeof d.embedding === "string" ? decodeBase64Vector(d.embedding) : d.embedding);
+      }
+      inputTokens += json.usage?.prompt_tokens ?? 0;
+      totalTokens += json.usage?.total_tokens ?? json.usage?.prompt_tokens ?? 0;
+      responseModel = json.model ?? responseModel;
+    }
+
+    assertVectorCount(this.providerName, vectors, request.input.length);
+    return { model: responseModel, vectors, usage: { inputTokens, totalTokens }, raw };
+  }
+
+  protected async embeddingsFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+    const url = `${this.baseURL}/embeddings`;
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      ...this.defaultHeaders,
+    };
+    const payload = JSON.stringify(body);
+    const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderError(`OpenAI embeddings API error ${res.status}: ${text}`, this.providerName, res.status, text);
+    }
+    return res;
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────
@@ -201,7 +270,7 @@ export class OpenAIProvider extends BaseProvider {
       stream,
     };
 
-    if (stream) {
+    if (stream && request.streamUsage !== false) {
       body.stream_options = { include_usage: true };
     }
     const modelId = String(body.model);
@@ -218,9 +287,14 @@ export class OpenAIProvider extends BaseProvider {
     if (request.stop) body.stop = request.stop;
     if (request.presencePenalty != null) body.presence_penalty = request.presencePenalty;
     if (request.frequencyPenalty != null) body.frequency_penalty = request.frequencyPenalty;
+    if (request.seed != null) body.seed = request.seed;
+    if (request.n != null) body.n = request.n;
+    if (request.logprobs != null) body.logprobs = request.logprobs;
+    if (request.topLogprobs != null) body.top_logprobs = request.topLogprobs;
 
     if (request.tools?.length) {
       body.tools = request.tools.map((t) => this.toOpenAITool(t));
+      if (request.parallelToolCalls != null) body.parallel_tool_calls = request.parallelToolCalls;
     }
 
     if (request.toolChoice != null && request.tools?.length) {
@@ -259,7 +333,7 @@ export class OpenAIProvider extends BaseProvider {
 
   protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const body = this.buildResponsesBody(request);
-    if (this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
+    if (this.apiResponsesNative || this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
     const res = await this.responsesFetch(body, request.signal);
     const json = await res.json();
     return this.parseResponsesResponse(json, request.model || this.defaultModel);
@@ -284,8 +358,9 @@ export class OpenAIProvider extends BaseProvider {
     let id = "";
     let model = modelId;
     // Keyed by output item id: argument deltas name the item, not the call.
-    const calls = new Map<string, { callId: string; name: string; arguments: string }>();
+    const calls = new Map<string, { callId: string; name: string; arguments: string; index: number }>();
     let final: ChatCompletionResponse | undefined;
+    let streamedSummary = false;
 
     for await (const event of parseSSEStream(res.body, request.signal)) {
       if (event.data === "[DONE]") break;
@@ -308,12 +383,23 @@ export class OpenAIProvider extends BaseProvider {
           if (data.delta) yield { id, model, delta: { content: data.delta } };
           break;
 
+        case "response.reasoning_summary_part.added":
+          if (streamedSummary) yield { id, model, delta: { reasoning: { summary: "\n\n" } } };
+          break;
+
+        case "response.reasoning_summary_text.delta":
+          if (typeof data.delta === "string" && data.delta) {
+            streamedSummary = true;
+            yield { id, model, delta: { reasoning: { summary: data.delta } } };
+          }
+          break;
+
         case "response.output_item.added": {
           const item = data.item;
           if (item?.type !== "function_call") break;
-          const call = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? "" };
+          const call = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? "", index: calls.size };
           calls.set(item.id ?? call.callId, call);
-          yield { id, model, delta: { toolCalls: [{ id: call.callId, name: call.name, arguments: call.arguments }] } };
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, name: call.name, arguments: call.arguments, index: call.index }] } };
           break;
         }
 
@@ -321,7 +407,7 @@ export class OpenAIProvider extends BaseProvider {
           const call = calls.get(data.item_id);
           if (!call || !data.delta) break;
           call.arguments += data.delta;
-          yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: data.delta }] } };
+          yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: data.delta, index: call.index }] } };
           break;
         }
 
@@ -333,13 +419,13 @@ export class OpenAIProvider extends BaseProvider {
           const full = typeof item.arguments === "string" ? item.arguments : "";
           const call = calls.get(item.id ?? item.call_id);
           if (!call) {
-            const added = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: full };
+            const added = { callId: item.call_id ?? item.id ?? "", name: item.name ?? "", arguments: full, index: calls.size };
             calls.set(item.id ?? added.callId, added);
-            yield { id, model, delta: { toolCalls: [{ id: added.callId, name: added.name, arguments: full }] } };
+            yield { id, model, delta: { toolCalls: [{ id: added.callId, name: added.name, arguments: full, index: added.index }] } };
           } else if (full.length > call.arguments.length && full.startsWith(call.arguments)) {
             const rest = full.slice(call.arguments.length);
             call.arguments = full;
-            yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: rest }] } };
+            yield { id, model, delta: { toolCalls: [{ id: call.callId, arguments: rest, index: call.index }] } };
           }
           break;
         }
@@ -365,7 +451,8 @@ export class OpenAIProvider extends BaseProvider {
     yield {
       id: final?.id || id,
       model: final?.model || model,
-      delta: final?.reasoning ? { reasoning: final.reasoning } : {},
+      // Summary text already went out as deltas; do not repeat it.
+      delta: final?.reasoning && !streamedSummary ? { reasoning: final.reasoning } : {},
       usage: final?.usage,
       finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
     };
@@ -673,6 +760,7 @@ export class OpenAIProvider extends BaseProvider {
 
     const reasoningText = extractReasoningText(message);
 
+    const providerFields = pickProviderFields(json, message, choice);
     return {
       id: json.id ?? "",
       model: json.model ?? "",
@@ -680,6 +768,8 @@ export class OpenAIProvider extends BaseProvider {
       toolCalls,
       usage: this.extractUsage(json.usage),
       finishReason: mapFinishReason(choice?.finish_reason),
+      ...(typeof choice?.finish_reason === "string" ? { rawFinishReason: choice.finish_reason } : {}),
+      ...(providerFields ? { providerFields } : {}),
       ...(reasoningText ? { reasoning: { summary: reasoningText } } : {}),
       raw: json,
     };
@@ -712,6 +802,19 @@ function extractReasoningText(src: any): string | undefined {
     if (typeof v === "string" && v.length > 0) return v;
   }
   return undefined;
+}
+
+/** Response fields with no slot in the unified shape, kept when present:
+ * top-level `system_fingerprint` / `service_tier`, the message's (or stream
+ * delta's) `refusal` / `annotations`, and the choice's `logprobs`. */
+function pickProviderFields(top: any, message: any, choice: any): ProviderResponseFields | undefined {
+  const out: ProviderResponseFields = {};
+  if (top?.system_fingerprint != null) out.system_fingerprint = top.system_fingerprint;
+  if (top?.service_tier != null) out.service_tier = top.service_tier;
+  if (message?.annotations != null) out.annotations = message.annotations;
+  if (message?.refusal != null) out.refusal = message.refusal;
+  if (choice?.logprobs != null) out.logprobs = choice.logprobs;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Detects OpenAI reasoning models (o-series and gpt-5 family). */
