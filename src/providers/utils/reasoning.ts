@@ -4,23 +4,26 @@
 // can pass a unified config regardless of the current provider.
 
 import type { ReasoningRequestConfig, ReasoningEffort } from "../types.js";
+import {
+  MODEL_RULES,
+  resolveModelRule,
+  mapReasoningEffort,
+  allowsSampling,
+  type ModelRule,
+} from "../../models/rules.js";
 
 export type OpenAIReasoningMode = "legacy_effort" | "responses";
 
 // ─── Effort → token-budget tables ──────────────────────────────────────────
-// Centralised so every provider derives budgets from the same numbers. Values
-// are deliberately conservative; Anthropic/Bedrock additionally clamp the
-// budget below `max_tokens` (a provider hard requirement).
+// Centralised in model-rules.json so every provider (and the console) derives
+// budgets from the same numbers. Values are deliberately conservative;
+// Anthropic/Bedrock additionally clamp the budget below `max_tokens` (a
+// provider hard requirement).
 export const ANTHROPIC_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   // 0 = off. `applyAnthropicReasoning` bails on a falsy budget and emits no
   // thinking block, which on Anthropic IS off — thinking there is opt-in.
   none: 0,
-  minimal: 1024,
-  low: 2048,
-  medium: 8192,
-  high: 16384,
-  xhigh: 24576,
-  max: 32768,
+  ...MODEL_RULES.budgets,
 };
 
 export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
@@ -28,13 +31,7 @@ export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   // Anthropic it has to be SENT — hence `applyGeminiReasoning` testing for null
   // rather than falsiness.
   none: 0,
-  minimal: 512,
-  low: 1024,
-  medium: 4096,
-  high: 12000,
-  // Both map to the largest budget the Gemini 2.5 line accepts on Flash.
-  xhigh: 24576,
-  max: 24576,
+  ...MODEL_RULES.geminiBudgets,
 };
 
 /** Minimum gap between the thinking budget and `max_tokens` for Anthropic/Bedrock. */
@@ -43,45 +40,6 @@ const THINKING_OUTPUT_RESERVE = 1024;
 const MIN_THINKING_BUDGET = 1024;
 /** Floor for `max_tokens` once thinking is enabled (budget + reserve at least this). */
 const THINKING_MIN_MAX_TOKENS = 4096;
-
-type OpenAIEffortLine = "gpt5x" | "gpt5base" | "oseries" | "other";
-
-/**
- * Which effort vocabulary an OpenAI-family model id speaks.
- *  gpt5x    gpt-5.1+ and gpt-N (N>=6): none, low, medium, high, xhigh
- *  gpt5base gpt-5, -mini, -nano, -codex: minimal, low, medium, high
- *  oseries  o1/o3/o4 and gpt-oss: low, medium, high
- * Namespaced ids (`openai/gpt-6`, `global.openai.gpt-6-luna`) count; `-chat`
- * variants are not reasoning models and fall in `other`.
- */
-export function openAIEffortLine(modelId: string | undefined): OpenAIEffortLine {
-  if (!modelId) return "other";
-  const m = modelId.toLowerCase();
-  if (/chat/.test(m)) return "other";
-  if (/(^|[/._:-])gpt-?oss/.test(m) || /(^|[/._:-])o[0-9]/.test(m)) return "oseries";
-  const g = /(^|[/._:-])gpt-?(\d+)(?:\.(\d+))?/.exec(m);
-  if (!g) return "other";
-  const major = Number(g[2]);
-  if (major >= 6 || (major === 5 && g[3] !== undefined)) return "gpt5x";
-  if (major === 5) return "gpt5base";
-  return "other";
-}
-
-/** Clamps an effort to a value the model accepts (never sends one it rejects). Unknown models pass through. */
-export function clampOpenAIEffort(modelId: string | undefined, effort: ReasoningEffort): ReasoningEffort {
-  switch (openAIEffortLine(modelId)) {
-    case "gpt5x":
-      if (effort === "max") return "xhigh";
-      return effort === "minimal" ? "low" : effort;
-    case "gpt5base":
-      return effort === "xhigh" || effort === "max" ? "high" : effort;
-    case "oseries":
-      if (effort === "xhigh" || effort === "max") return "high";
-      return effort === "minimal" ? "low" : effort;
-    default:
-      return effort;
-  }
-}
 
 /** Maps a unified reasoning config onto the OpenAI Chat Completions body.
  *
@@ -94,10 +52,14 @@ export function applyOpenAIReasoning(
   reasoning: ReasoningRequestConfig | undefined,
   mode: OpenAIReasoningMode = "legacy_effort",
   model?: string,
+  rule?: ModelRule,
 ): void {
   if (!reasoning) return;
   const requested = normalizeEffort(reasoning.effort);
-  const effort = requested && clampOpenAIEffort(model ?? body.model, requested);
+  const r = rule ?? resolveModelRule({ provider: "openai", model: model ?? body.model });
+  // The rule decides what the model takes: an unsupported value is mapped to the
+  // nearest supported one, and a model without reasoning control gets none.
+  const effort = requested && mapReasoningEffort(r, requested, mode === "responses" ? "responses" : "chat").effort;
   if (mode === "responses") {
     const obj: Record<string, any> = {};
     if (effort) obj.effort = effort;
@@ -118,50 +80,56 @@ export function applyOpenAIReasoning(
  */
 export type ThinkingMode = "auto" | "adaptive" | "budget";
 
-/** True for Claude model ids of major version 5+ (or the `fable` line). */
+/** True when the model's rule uses `thinking:{type:"adaptive"}` + `output_config.effort` (Claude 4.6+ / 5.x). */
 export function supportsAdaptiveThinking(model: unknown): boolean {
   if (typeof model !== "string") return false;
-  const id = model.toLowerCase();
-  const at = id.indexOf("claude-");
-  if (at < 0) return false;
-  for (const tok of id.slice(at + 7).split("-")) {
-    if (tok === "fable") return true;
-    const m = /^(\d+)(?:@|$)/.exec(tok); // also Vertex-style `5@20260101`
-    if (m) {
-      if (m[1].length <= 2) return Number(m[1]) >= 5;
-      return false; // date suffix before any version
-    }
-  }
-  return false;
+  return resolveModelRule({ provider: "anthropic", model }).reasoning.style === "adaptive";
 }
 
-export function resolveThinkingForm(model: unknown, mode: ThinkingMode | undefined): "adaptive" | "budget" {
+export function resolveThinkingForm(model: unknown, mode: ThinkingMode | undefined, rule?: ModelRule): "adaptive" | "budget" {
   if (mode === "adaptive" || mode === "budget") return mode;
+  if (rule) return rule.reasoning.style === "adaptive" ? "adaptive" : "budget";
   return supportsAdaptiveThinking(model) ? "adaptive" : "budget";
 }
 
+type ThinkingOpts = { model?: string; mode?: ThinkingMode; rule?: ModelRule };
+
+/** Drops the sampling params the rule does not allow (all of them for Claude 5.x; while thinking for older Claude). */
+export function enforceAnthropicSampling(target: Record<string, any>, rule: ModelRule, thinkingOn: boolean, bedrock = false): void {
+  const fields: Array<[string, "temperature" | "topP" | "topK"]> = bedrock
+    ? [["temperature", "temperature"], ["topP", "topP"]]
+    : [["temperature", "temperature"], ["top_p", "topP"], ["top_k", "topK"]];
+  for (const [key, field] of fields) {
+    if (key in target && !allowsSampling(rule, field, target[key], thinkingOn)) delete target[key];
+  }
+}
+
+/** Adaptive thinking: the effort goes through the rule's mapping; `none` uses the off mechanism. Returns whether thinking is ON. */
 function applyAdaptiveThinking(
-  _body: Record<string, any>,
   reasoning: ReasoningRequestConfig,
-  setThinking: (v: { thinking: Record<string, any> }) => void,
+  rule: ModelRule,
+  setThinking: (v: Record<string, any>) => void,
   setOutputConfig: (o: Record<string, any>) => void,
 ): boolean {
-  const requested = normalizeEffort(reasoning.effort);
-  if (requested === "none") return false;
-  let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
-  if (requested) effort = requested === "minimal" ? "low" : requested;
-  else if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
-    effort = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
+  let requested = normalizeEffort(reasoning.effort);
+  if (!requested && typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
+    requested = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
   }
-  if (!effort) return false;
+  if (!requested) return false;
+  const mapped = mapReasoningEffort(rule, requested);
+  if (mapped.off) {
+    setThinking({ type: mapped.off });
+    return false;
+  }
+  if (!mapped.effort || mapped.effort === "none") return false;
   const thinking: Record<string, any> = { type: "adaptive" };
   // Claude 5.x returns an empty `thinking` string unless display is asked for.
   // Default: summarized, unless the caller opted out with includeThoughts:false.
   // providerExtras (below) can still set any other display value.
   if (reasoning.includeThoughts !== false) thinking.display = "summarized";
   if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
-  setThinking({ thinking });
-  setOutputConfig({ effort });
+  setThinking(thinking);
+  setOutputConfig({ effort: mapped.effort });
   return true;
 }
 
@@ -172,20 +140,29 @@ function applyAdaptiveThinking(
  * caller didn't specify one) AND that `budget_tokens < max_tokens`. When
  * thinking is enabled Anthropic also rejects non-default `temperature`/`top_p`/
  * `top_k`, so we strip them here so callers can pass a unified config safely.
+ * Which sampling params a model takes, and which thinking form, comes from its
+ * rule in model-rules.json.
  */
 export function applyAnthropicReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
-  opts?: { model?: string; mode?: ThinkingMode },
+  opts?: ThinkingOpts,
 ): void {
-  if (!reasoning) return;
-  if (resolveThinkingForm(opts?.model ?? body.model, opts?.mode) === "adaptive") {
-    const on = applyAdaptiveThinking(body, reasoning, (extra) => (body.thinking = extra.thinking), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
-    if (on) stripSamplingParams(body, ["temperature", "top_p", "top_k"]);
+  const rule = opts?.rule ?? resolveModelRule({ provider: "anthropic", model: opts?.model ?? body.model });
+  if (!reasoning) {
+    enforceAnthropicSampling(body, rule, false);
     return;
   }
-  let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);
-  if (!budget) return;
+  if (resolveThinkingForm(opts?.model ?? body.model, opts?.mode, rule) === "adaptive") {
+    const on = applyAdaptiveThinking(reasoning, rule, (t) => (body.thinking = t), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
+    enforceAnthropicSampling(body, rule, on);
+    return;
+  }
+  let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET, rule);
+  if (!budget) {
+    enforceAnthropicSampling(body, rule, false);
+    return;
+  }
 
   // Ensure max_tokens leaves room for the visible answer on top of thinking.
   const currentMax = typeof body.max_tokens === "number" ? body.max_tokens : 0;
@@ -202,7 +179,7 @@ export function applyAnthropicReasoning(
   body.thinking = thinking;
 
   // Thinking mode forbids sampling overrides.
-  stripSamplingParams(body, ["temperature", "top_p", "top_k"]);
+  enforceAnthropicSampling(body, rule, true);
 }
 
 /** Maps onto AWS Bedrock Converse for thinking-capable Anthropic models via
@@ -212,17 +189,24 @@ export function applyAnthropicReasoning(
 export function applyBedrockReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
-  opts?: { model?: string; mode?: ThinkingMode },
+  opts?: ThinkingOpts,
 ): void {
-  if (!reasoning) return;
-  if (resolveThinkingForm(opts?.model ?? body.modelId, opts?.mode) === "adaptive") {
-    const fields = () => (body.additionalModelRequestFields ??= {});
-    const on = applyAdaptiveThinking(body, reasoning, (extra) => (fields().thinking = extra.thinking), (o) => (fields().output_config = { ...(fields().output_config ?? {}), ...o }));
-    if (on && body.inferenceConfig) stripSamplingParams(body.inferenceConfig, ["temperature", "topP"]);
+  const rule = opts?.rule ?? resolveModelRule({ provider: "bedrock", model: opts?.model ?? body.modelId });
+  if (!reasoning) {
+    if (body.inferenceConfig) enforceAnthropicSampling(body.inferenceConfig, rule, false, true);
     return;
   }
-  let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET);
-  if (!budget) return;
+  if (resolveThinkingForm(opts?.model ?? body.modelId, opts?.mode, rule) === "adaptive") {
+    const fields = () => (body.additionalModelRequestFields ??= {});
+    const on = applyAdaptiveThinking(reasoning, rule, (t) => (fields().thinking = t), (o) => (fields().output_config = { ...(fields().output_config ?? {}), ...o }));
+    if (body.inferenceConfig) enforceAnthropicSampling(body.inferenceConfig, rule, on, true);
+    return;
+  }
+  let budget = resolveBudget(reasoning, ANTHROPIC_EFFORT_BUDGET, rule);
+  if (!budget) {
+    if (body.inferenceConfig) enforceAnthropicSampling(body.inferenceConfig, rule, false, true);
+    return;
+  }
 
   const inference = (body.inferenceConfig ??= {});
   const currentMax = typeof inference.maxTokens === "number" ? inference.maxTokens : 0;
@@ -238,7 +222,7 @@ export function applyBedrockReasoning(
   extra.thinking = thinking;
 
   // Thinking mode forbids sampling overrides on the inferenceConfig.
-  stripSamplingParams(inference, ["temperature", "topP"]);
+  enforceAnthropicSampling(inference, rule, true, true);
 }
 
 /** Maps onto Google Vertex / Gemini generationConfig. */
@@ -258,12 +242,6 @@ export function applyGeminiReasoning(
   generationConfig.thinkingConfig = thinkingConfig;
 }
 
-function stripSamplingParams(target: Record<string, any>, keys: string[]): void {
-  for (const k of keys) {
-    if (k in target) delete target[k];
-  }
-}
-
 function clampBudget(budget: number, maxTokens: number | undefined): number {
   if (typeof maxTokens !== "number" || maxTokens <= 0) return budget;
   const ceiling = maxTokens - THINKING_OUTPUT_RESERVE;
@@ -280,6 +258,7 @@ function normalizeEffort(effort: ReasoningEffort | undefined): ReasoningEffort |
 function resolveBudget(
   reasoning: ReasoningRequestConfig,
   effortBudget: Record<ReasoningEffort, number>,
+  rule?: ModelRule,
 ): number | undefined {
   // `none` wins over an explicit budget, and the order is the whole point: a
   // caller that says "do not think" while an endpoint-level budgetTokens is
@@ -290,6 +269,7 @@ function resolveBudget(
   if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
     return Math.floor(reasoning.budgetTokens);
   }
-  if (effort && effortBudget[effort]) return effortBudget[effort];
+  const mapped = effort && rule ? mapReasoningEffort(rule, effort).effort : effort;
+  if (mapped && effortBudget[mapped]) return effortBudget[mapped];
   return undefined;
 }

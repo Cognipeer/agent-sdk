@@ -77,6 +77,28 @@ export {
   emptyUsage,
   supportsAdaptiveThinking,
 } from "./providers/index.js";
+// Per-model request rules (model-rules.json): resolution, effort mapping, typed 400 errors.
+export {
+  MODEL_RULES,
+  resolveModelRule,
+  mapReasoningEffort,
+  modelIdCandidates,
+  ModelRequestError,
+  parseModelError,
+  listLearnedModelRules,
+  rememberModelRulePatch,
+  clearLearnedModelRules,
+} from "./models/index.js";
+export type {
+  ModelRule,
+  ModelRules,
+  ResolvedModelRule,
+  RulePatch,
+  ReasoningEffort,
+  EffortMapping,
+  ModelRequestErrorCode,
+  ModelRuleLearnedEvent,
+} from "./models/index.js";
 export type {
   ChatCompletionRequest,
   ChatCompletionResponse,

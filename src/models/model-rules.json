@@ -1,0 +1,622 @@
+{
+  "version": 1,
+  "effortLadder": [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "budgets": {
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 24576,
+    "max": 32768
+  },
+  "geminiBudgets": {
+    "minimal": 512,
+    "low": 1024,
+    "medium": 4096,
+    "high": 12000,
+    "xhigh": 24576,
+    "max": 24576
+  },
+  "rules": [
+    {
+      "id": "openai-chat-models",
+      "family": "openai",
+      "match": "^(?:chatgpt|gpt-[\\d.]+[a-z0-9.-]*?-chat)",
+      "reasoning": {
+        "style": "none",
+        "efforts": [],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_completion_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Chat-tuned *-chat variants are not reasoning models: ordinary sampling, no reasoning field."
+    },
+    {
+      "id": "openai-gpt-6-plus",
+      "family": "openai",
+      "match": "^gpt-?(?:[6-9]|[1-9]\\d+)(?:[.-]|$)",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "off": "none",
+        "responsesEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "sampling": {
+        "temperature": "default-only",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_completion_tokens",
+      "chatTools": {
+        "reasoning": "force-none"
+      },
+      "source": "verified-2026-10-14",
+      "note": "gpt-N, N>=6. Chat Completions takes none/low/medium/high/xhigh (minimal and max are 400s); Responses also takes max. Function tools with an effort other than none are a 400 on Chat Completions and the default effort is not none, so none is sent explicitly. Rejects max_tokens, temperature != 1, top_p, penalties, logprobs."
+    },
+    {
+      "id": "openai-gpt-5x",
+      "family": "openai",
+      "match": "^gpt-?5\\.[1-9]",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "off": "none",
+        "responsesEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "sampling": {
+        "temperature": "default-only",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_completion_tokens",
+      "chatTools": {
+        "reasoning": "force-none"
+      },
+      "source": "verified-2026-10-14",
+      "note": "gpt-5.1 and newer 5.x. Same wire rules as gpt-6: no minimal/max on Chat Completions (Responses takes max), function tools need reasoning_effort none on Chat Completions."
+    },
+    {
+      "id": "openai-gpt-5-base",
+      "family": "openai",
+      "match": "^gpt-?5(?![.\\d])",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "default-only",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_completion_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "gpt-5, -mini, -nano, -codex: minimal/low/medium/high, reasoning cannot be turned off (none maps to minimal)."
+    },
+    {
+      "id": "openai-o-series",
+      "family": "openai",
+      "match": "^o[1-9]\\d?(?![a-z0-9])",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "default-only",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_completion_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "o1/o3/o4 family: low/medium/high, no sampling overrides."
+    },
+    {
+      "id": "openai-gpt-oss",
+      "family": "openai",
+      "match": "^gpt-?oss",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Open-weight gpt-oss: low/medium/high; sampling and max_tokens behave like an ordinary chat model."
+    },
+    {
+      "id": "openai-legacy-gpt",
+      "family": "openai",
+      "match": "^(?:gpt-?[0-4](?![0-9])|text-|davinci|babbage)",
+      "reasoning": {
+        "style": "none",
+        "efforts": [],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "gpt-4o, gpt-4.1, gpt-3.5 and older: no reasoning, ordinary sampling."
+    },
+    {
+      "id": "openai-compatible-toggle",
+      "family": "openai",
+      "match": "^(?:deepseek-(?:r\\d|reasoner)|qwq|qwen-?3)",
+      "reasoning": {
+        "style": "toggle",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "none"
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "DeepSeek R/reasoner, QwQ, Qwen3: on/off style hosts. The effort is forwarded as-is (including none, which switches thinking off on thinking-by-default models)."
+    },
+    {
+      "id": "openai-default",
+      "family": "openai",
+      "match": ".*",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "none"
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Permissive default for unknown OpenAI-wire models: pass what the caller asked; the provider learns from 400s."
+    },
+    {
+      "id": "claude-haiku-5",
+      "family": "anthropic",
+      "match": "^claude-(?:haiku-5|5(?:-\\d+)?-haiku)(?!\\d)",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "disabled"
+      },
+      "sampling": {
+        "temperature": "unsupported",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "verified-2026-10-14",
+      "note": "Claude Haiku 5.x: thinking:{type:adaptive} + output_config.effort; thinking:{type:enabled,budget_tokens} is rejected. Off = thinking:{type:disabled}. Sampling params are rejected."
+    },
+    {
+      "id": "claude-sonnet-5",
+      "family": "anthropic",
+      "match": "^claude-(?:sonnet-5|5(?:-\\d+)?-sonnet)(?!\\d)",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "between_tools"
+      },
+      "sampling": {
+        "temperature": "unsupported",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "verified-2026-10-14",
+      "note": "Claude Sonnet 5.x: adaptive + output_config.effort. thinking:{type:disabled} is rejected; off = thinking:{type:between_tools}. Sampling params are rejected."
+    },
+    {
+      "id": "claude-opus-5",
+      "family": "anthropic",
+      "match": "^claude-(?:opus-5|5(?:-\\d+)?-opus)(?!\\d)",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "unsupported",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "verified-2026-10-14",
+      "note": "Claude Opus 5.x: adaptive + output_config.effort; thinking cannot be turned off (none maps to the lowest effort). Sampling params are rejected."
+    },
+    {
+      "id": "claude-fable",
+      "family": "anthropic",
+      "match": "^claude-fable",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "unsupported",
+        "topP": false,
+        "topK": false,
+        "penalties": false,
+        "logprobs": false
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Claude Fable line: treated like the 5.x adaptive models."
+    },
+    {
+      "id": "claude-4-7",
+      "family": "anthropic",
+      "match": "^claude-(?:(?:opus|sonnet|haiku)-4[-.]7|4[-.]7-(?:opus|sonnet|haiku))(?!\\d)",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "disabled"
+      },
+      "sampling": {
+        "temperature": "thinking-requires-1",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Claude 4.7: adaptive thinking, low/medium/high/xhigh/max."
+    },
+    {
+      "id": "claude-4-6",
+      "family": "anthropic",
+      "match": "^claude-(?:(?:opus|sonnet|haiku)-4[-.]6|4[-.]6-(?:opus|sonnet|haiku))(?!\\d)",
+      "reasoning": {
+        "style": "adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "off": "disabled"
+      },
+      "sampling": {
+        "temperature": "thinking-requires-1",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Claude 4.6: adaptive thinking, low/medium/high/max (no xhigh)."
+    },
+    {
+      "id": "claude-legacy-budget",
+      "family": "anthropic",
+      "match": "^claude-(?:3|4-|(?:opus|sonnet|haiku)-4)",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "thinking-requires-1",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Claude 3.7 and 4.0-4.5: thinking:{type:enabled,budget_tokens}; every effort maps to a budget; sampling overrides are not allowed while thinking."
+    },
+    {
+      "id": "anthropic-default",
+      "family": "anthropic",
+      "match": ".*",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "thinking-requires-1",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Permissive default for unknown Anthropic-wire models: budget style (the long-standing form); the provider flips the thinking form when the API says so."
+    },
+    {
+      "id": "gemini-budget",
+      "family": "gemini",
+      "match": "^gemini",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "none"
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 2.5-style thinkingBudget; effort maps to a token budget, none = budget 0."
+    },
+    {
+      "id": "gemini-default",
+      "family": "gemini",
+      "match": ".*",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "none"
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Permissive default for unknown Gemini-wire models."
+    },
+    {
+      "id": "other-default",
+      "family": "other",
+      "match": ".*",
+      "reasoning": {
+        "style": "effort",
+        "efforts": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": "none"
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Permissive default for model families the SDK has no rules for."
+    }
+  ]
+}

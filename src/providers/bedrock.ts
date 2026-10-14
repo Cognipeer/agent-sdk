@@ -6,6 +6,8 @@ import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
 import { parseEventStream } from "./utils/eventStream.js";
 import { applyBedrockReasoning, type ThinkingMode } from "./utils/reasoning.js";
+import { resolveModelRule, applyDropParams, type RulePatch } from "../models/rules.js";
+import { runWithModelAdjustments } from "../models/adjust.js";
 import { chunkArray, mapWithConcurrency, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
 import {
@@ -269,7 +271,7 @@ export class BedrockProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildConverseBody(request: ChatCompletionRequest, downgradeToolChoice = false): Record<string, any> {
+  private buildConverseBody(request: ChatCompletionRequest, downgradeToolChoice = false, overlay?: RulePatch): Record<string, any> {
     const { system, messages } = this.splitSystemMessages(request.messages);
 
     const body: Record<string, any> = {
@@ -331,7 +333,13 @@ export class BedrockProvider extends BaseProvider {
 
     // Native reasoning: maps to additionalModelRequestFields.thinking and
     // enforces the budget/temperature rules for thinking-capable models.
-    applyBedrockReasoning(body, request.reasoning, { model: request.model || this.defaultModel, mode: this.thinkingMode });
+    const rule = resolveModelRule({ provider: this.providerName, model: request.model || this.defaultModel, patch: overlay });
+    applyBedrockReasoning(body, request.reasoning, { model: request.model || this.defaultModel, mode: this.thinkingMode, rule });
+    // Converse names sampling fields in camelCase inside inferenceConfig.
+    if (body.inferenceConfig && rule.dropParams?.length) {
+      for (const p of rule.dropParams) delete body.inferenceConfig[p === "top_p" ? "topP" : p === "max_tokens" ? "maxTokens" : p];
+    }
+    applyDropParams(body, rule);
 
     return body;
   }
@@ -475,16 +483,29 @@ export class BedrockProvider extends BaseProvider {
 
   /** Sends the Converse call; retries once with toolChoice auto when the
    * model rejects forced tool use. */
-  private async converseFetch(modelId: string, request: ChatCompletionRequest, stream: boolean): Promise<Response> {
-    const body = this.buildConverseBody(request);
-    try {
-      return await this.doFetch(modelId, body, request.signal, stream);
-    } catch (err) {
-      const tc = body.toolConfig?.toolChoice;
-      if (!(err instanceof ProviderError) || err.statusCode !== 400 || !tc || tc.auto) throw err;
-      if (!forcedToolChoiceRejected(String(err.responseBody ?? err.message))) throw err;
-      return this.doFetch(modelId, this.buildConverseBody(request, true), request.signal, stream);
-    }
+  private converseFetch(modelId: string, request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    let downgrade = false;
+    return runWithModelAdjustments({
+      provider: this.providerName,
+      model: modelId,
+      endpoint: "converse",
+      onLearned: this.onModelRuleLearned,
+      run: async (overlay, guard) => {
+        for (;;) {
+          const body = this.buildConverseBody(request, downgrade, overlay);
+          guard(body);
+          try {
+            return await this.doFetch(modelId, body, request.signal, stream);
+          } catch (err) {
+            const tc = body.toolConfig?.toolChoice;
+            const rejected = err instanceof ProviderError && err.statusCode === 400 && !downgrade && !!tc && !tc.auto
+              && forcedToolChoiceRejected(String(err.responseBody ?? err.message));
+            if (!rejected) throw err;
+            downgrade = true;
+          }
+        }
+      },
+    });
   }
 
   private async doFetch(modelId: string, body: Record<string, any>, signal: AbortSignal | undefined, stream: boolean): Promise<Response> {

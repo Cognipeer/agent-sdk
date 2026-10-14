@@ -25,6 +25,7 @@ export class AzureProvider extends OpenAIProvider {
       retry: config.retry,
       fetch: config.fetch,
       timeoutMs: config.timeoutMs,
+      onModelRuleLearned: config.onModelRuleLearned,
       maxTokensParam: config.maxTokensParam,
       api: config.api,
       responsesApi: config.responsesApi,

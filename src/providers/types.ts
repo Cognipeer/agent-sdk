@@ -4,6 +4,8 @@
 
 // ─── Messages ────────────────────────────────────────────────────────────────
 
+import type { ModelRuleLearnedEvent } from "../models/adjust.js";
+
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 export type TextContent = { type: "text"; text: string };
@@ -165,8 +167,9 @@ export type ChatCompletionRequest = {
  * `effort` still means "say nothing about reasoning", which is the different
  * and equally necessary state.
  *
- * `xhigh` / `max` are only accepted by some models; each provider mapper clamps
- * them to the nearest level the model takes (see `clampOpenAIEffort`).
+ * `xhigh` / `max` are only accepted by some models. The SDK takes every ladder
+ * value for every model and maps it to the nearest lower value that model's rule
+ * accepts (see `mapReasoningEffort` and model-rules.json).
  */
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -334,6 +337,13 @@ export type ProviderTransportConfig = {
    * (an established stream is not cut by it). Default: none.
    */
   timeoutMs?: number;
+  /**
+   * Called when a provider 400 taught the SDK something about a model that is
+   * not in (or drifted from) model-rules.json — e.g. "drop temperature",
+   * "max_tokens -> max_completion_tokens". The adjustment is already
+   * remembered in-process; hosts can log or persist it.
+   */
+  onModelRuleLearned?: (event: ModelRuleLearnedEvent) => void;
 };
 
 export type OpenAIProviderConfig = ProviderTransportConfig & {

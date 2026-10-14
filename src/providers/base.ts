@@ -10,6 +10,7 @@ import type {
   EmbeddingResponse,
 } from "./types.js";
 import { ProviderError } from "./types.js";
+import type { ModelRuleLearnedEvent } from "../models/adjust.js";
 import { abortableSleep, abortReason } from "../utils/abort.js";
 
 export type ProviderRetryPolicy = {
@@ -39,10 +40,13 @@ export abstract class BaseProvider {
   protected fetchImpl?: typeof fetch;
   /** Per-request timeout in ms (config.timeoutMs). Undefined = no timeout. */
   protected timeoutMs?: number;
+  /** Called when a 400 taught the provider a per-model adjustment (config.onModelRuleLearned). */
+  protected onModelRuleLearned?: (event: ModelRuleLearnedEvent) => void;
 
   /** Applies the transport options shared by every provider config. */
-  protected configureTransport(config: { fetch?: typeof fetch; timeoutMs?: number }): void {
+  protected configureTransport(config: { fetch?: typeof fetch; timeoutMs?: number; onModelRuleLearned?: (event: ModelRuleLearnedEvent) => void }): void {
     this.fetchImpl = config.fetch;
+    this.onModelRuleLearned = config.onModelRuleLearned;
     this.timeoutMs = typeof config.timeoutMs === "number" && config.timeoutMs > 0 ? config.timeoutMs : undefined;
   }
 
