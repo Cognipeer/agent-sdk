@@ -45,11 +45,21 @@ describe("anthropic thinking form", () => {
     expect(bodies[0].output_config.effort).toBe("high");
   });
 
-  it("effort none sends no thinking", async () => {
-    const { p, bodies } = make("claude-opus-5-5", [{ status: 200, body: OK }]);
-    await p.complete(req({ reasoning: { effort: "none" } }));
-    expect(bodies[0].thinking).toBeUndefined();
-    expect(bodies[0].output_config).toBeUndefined();
+  it("effort none: opus cannot turn thinking off (lowest effort), haiku/sonnet use their off mechanism, legacy sends nothing", async () => {
+    const opus = make("claude-opus-5-5", [{ status: 200, body: OK }]);
+    await opus.p.complete(req({ reasoning: { effort: "none" } }));
+    expect(opus.bodies[0].thinking.type).toBe("adaptive");
+    expect(opus.bodies[0].output_config).toEqual({ effort: "low" });
+    const haiku = make("claude-haiku-5-5", [{ status: 200, body: OK }]);
+    await haiku.p.complete(req({ reasoning: { effort: "none" } }));
+    expect(haiku.bodies[0].thinking).toEqual({ type: "disabled" });
+    const sonnet = make("claude-sonnet-5-5", [{ status: 200, body: OK }]);
+    await sonnet.p.complete(req({ reasoning: { effort: "none" } }));
+    expect(sonnet.bodies[0].thinking).toEqual({ type: "between_tools" });
+    const legacy = make("claude-sonnet-4-20250514", [{ status: 200, body: OK }]);
+    await legacy.p.complete(req({ reasoning: { effort: "none" } }));
+    expect(legacy.bodies[0].thinking).toBeUndefined();
+    expect(legacy.bodies[0].output_config).toBeUndefined();
   });
 
   it("retries once with adaptive on the enabled-not-supported 400", async () => {

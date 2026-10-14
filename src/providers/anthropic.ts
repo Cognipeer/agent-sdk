@@ -4,7 +4,9 @@
 import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
-import { applyAnthropicReasoning, resolveThinkingForm, type ThinkingMode } from "./utils/reasoning.js";
+import { applyAnthropicReasoning, enforceAnthropicSampling, type ThinkingMode } from "./utils/reasoning.js";
+import { resolveModelRule, applyDropParams, type RulePatch } from "../models/rules.js";
+import { runWithModelAdjustments } from "../models/adjust.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -37,15 +39,6 @@ function normalizeExplicitThinking(body: Record<string, any>): void {
     body.max_tokens = budget + 1024;
   }
   for (const k of ["temperature", "top_p", "top_k"]) delete body[k];
-}
-
-/** Detects the upstream 400 for a wrong thinking shape. Plain substring
- * checks only. Returns which form the upstream rejected. */
-function thinkingFormRejected(text: string): "enabled" | "adaptive" | undefined {
-  const t = text.toLowerCase();
-  if (t.indexOf("thinking.type.enabled") >= 0 && t.indexOf("not supported") >= 0) return "enabled";
-  if (t.indexOf("thinking.type.adaptive") >= 0 && t.indexOf("not supported") >= 0 && t.indexOf("thinking.type.enabled") < 0) return "adaptive";
-  return undefined;
 }
 
 export class AnthropicProvider extends BaseProvider {
@@ -228,7 +221,7 @@ export class AnthropicProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, modeOverride?: ThinkingMode, downgradeToolChoice = false): Record<string, any> {
+  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, overlay?: RulePatch, downgradeToolChoice = false): Record<string, any> {
     // Anthropic separates system from messages
     const { system, messages } = this.splitSystemMessages(request.messages);
 
@@ -248,6 +241,8 @@ export class AnthropicProvider extends BaseProvider {
         body.system = system;
       }
     }
+    // Which sampling params and thinking form the model takes comes from its rule.
+    const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay });
     if (request.temperature != null) body.temperature = request.temperature;
     if (request.topP != null) body.top_p = request.topP;
     if (request.stop) body.stop_sequences = request.stop;
@@ -284,9 +279,11 @@ export class AnthropicProvider extends BaseProvider {
       // An explicit `extra.thinking` is the caller's final word: derived reasoning
       // must not overwrite it. Only the hard API rules are enforced around it.
       normalizeExplicitThinking(body);
+      enforceAnthropicSampling(body, rule, body.thinking?.type === "enabled" || body.thinking?.type === "adaptive");
     } else {
-      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: modeOverride ?? this.thinkingMode });
+      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: this.thinkingMode, rule });
     }
+    applyDropParams(body, rule);
 
     // max_tokens is mandatory on the Messages API; `extra` may have nulled it.
     if (typeof body.max_tokens !== "number" || !(body.max_tokens > 0)) {
@@ -449,33 +446,31 @@ export class AnthropicProvider extends BaseProvider {
 
   /** Builds and sends the request; retries once with the other thinking form
    * when the upstream rejects the one we picked. */
-  private async send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
-    let mode: ThinkingMode | undefined;
+  private send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
     let downgrade = false;
-    let flippedThinking = false;
-    for (;;) {
-      const body = this.buildRequestBody(request, stream, mode, downgrade);
-      try {
-        return await this.doFetch(body, request.signal);
-      } catch (err) {
-        if (!(err instanceof ProviderError) || err.statusCode !== 400) throw err;
-        const text = String(err.responseBody ?? err.message);
-        // Model refuses forced tool use: retry once with tool_choice auto.
-        if (!downgrade && body.tool_choice && body.tool_choice.type !== "auto" && forcedToolChoiceRejected(text)) {
-          downgrade = true;
-          continue;
+    return runWithModelAdjustments({
+      provider: this.providerName,
+      model: request.model || this.defaultModel,
+      endpoint: "messages",
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
+      onLearned: this.onModelRuleLearned,
+      run: async (overlay, guard) => {
+        for (;;) {
+          const body = this.buildRequestBody(request, stream, overlay, downgrade);
+          guard(body);
+          try {
+            return await this.doFetch(body, request.signal);
+          } catch (err) {
+            // Model refuses forced tool use: retry once with tool_choice auto.
+            const rejected = err instanceof ProviderError && err.statusCode === 400 && !downgrade
+              && body.tool_choice && body.tool_choice.type !== "auto"
+              && forcedToolChoiceRejected(String(err.responseBody ?? err.message));
+            if (!rejected) throw err;
+            downgrade = true;
+          }
         }
-        const explicit = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
-        if (flippedThinking || explicit || !request.reasoning) throw err;
-        const wrong = thinkingFormRejected(text);
-        if (!wrong) throw err;
-        // The rejected form is the one we sent; flip to the other.
-        const used = resolveThinkingForm(request.model ?? this.defaultModel, this.thinkingMode);
-        if ((wrong === "enabled" && used !== "budget") || (wrong === "adaptive" && used !== "adaptive")) throw err;
-        mode = wrong === "enabled" ? "adaptive" : "budget";
-        flippedThinking = true;
-      }
-    }
+      },
+    });
   }
 
   private async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {

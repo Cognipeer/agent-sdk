@@ -347,13 +347,27 @@ describe("review fixes", () => {
     expect(calls[0].body.additionalModelRequestFields).toBeUndefined();
   });
 
-  it("adaptive Claude with effort none keeps sampling params and adds no empty objects", async () => {
+  it("Claude 5 with effort none uses the model's off mechanism and never sends sampling params", async () => {
     const { applyAnthropicReasoning, applyBedrockReasoning } = await import("../../../src/providers/utils/reasoning.js");
     const a: any = { model: "claude-sonnet-5", temperature: 0.3, top_p: 0.9 };
     applyAnthropicReasoning(a, { effort: "none" });
+    expect(a.thinking).toEqual({ type: "between_tools" });
+    expect(a.output_config).toBeUndefined();
+    expect(a.temperature).toBeUndefined();
+    expect(a.top_p).toBeUndefined();
+    const b: any = { modelId: "anthropic.claude-sonnet-5", inferenceConfig: { temperature: 0.3 } };
+    applyBedrockReasoning(b, { effort: "none" });
+    expect(b.inferenceConfig.temperature).toBeUndefined();
+    expect(b.additionalModelRequestFields).toEqual({ thinking: { type: "between_tools" } });
+  });
+
+  it("older adaptive-free Claude with effort none keeps sampling params and adds no empty objects", async () => {
+    const { applyAnthropicReasoning, applyBedrockReasoning } = await import("../../../src/providers/utils/reasoning.js");
+    const a: any = { model: "claude-sonnet-4-5", temperature: 0.3, top_p: 0.9 };
+    applyAnthropicReasoning(a, { effort: "none" });
     expect(a.temperature).toBe(0.3);
     expect(a.top_p).toBe(0.9);
-    const b: any = { modelId: "anthropic.claude-sonnet-5", inferenceConfig: { temperature: 0.3 } };
+    const b: any = { modelId: "anthropic.claude-sonnet-4-5", inferenceConfig: { temperature: 0.3 } };
     applyBedrockReasoning(b, { effort: "none" });
     expect(b.inferenceConfig.temperature).toBe(0.3);
     expect(b.additionalModelRequestFields).toBeUndefined();

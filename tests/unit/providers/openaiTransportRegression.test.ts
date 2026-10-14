@@ -116,7 +116,7 @@ const REQUESTS: Record<string, ChatCompletionRequest> = {
     reasoning: { effort: "medium", includeThoughts: true },
   },
   gpt5NoReasoning: { model: "gpt-5.6-terra", messages: history, tools, extra: { reasoning_effort: "medium" } },
-  // Not migrated: a gpt-6 name gets the same routing as any other unknown name.
+  // gpt-6 has a rule (reasoning model): a reasoning request routes to /responses, tools on chat send effort none.
   gpt6NoReasoning: { model: "gpt-6.1-sol", messages: history, tools, extra: { reasoning_effort: "medium" } },
   gpt6Reasoning: { model: "gpt-6.1-sol", messages: history, tools, reasoning: { effort: "high" } },
 };

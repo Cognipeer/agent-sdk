@@ -334,18 +334,18 @@ describe("adapter forwarding", () => {
   it("transformRequest sees tools and its result is what is sent", async () => {
     const m = mockFetch(() => chatOk());
     let seenTools: any;
-    const model = fromNativeProvider(new OpenAIProvider({ provider: "openai", apiKey: "k", fetch: m.fn }), {
-      model: "gpt-4o",
+    const model = fromNativeProvider(new OpenAIProvider({ provider: "openai", apiKey: "k", api: "chat", fetch: m.fn }), {
+      model: "o3",
       reasoning: { effort: "high" },
       transformRequest: (req) => {
         seenTools = req.tools?.map((t) => t.name);
-        if (req.tools?.length) req.reasoning = { effort: "none" };
+        if (req.tools?.length) req.reasoning = { effort: "low" };
       },
     });
     const bound = model.bindTools!([{ name: "lookup", description: "d", schema: { type: "object", properties: {} } }]);
     await bound.invoke([{ role: "user", content: "x" }]);
     expect(seenTools).toEqual(["lookup"]);
-    expect(m.calls[0].body.reasoning_effort).toBe("none");
+    expect(m.calls[0].body.reasoning_effort).toBe("low");
   });
 
   it("transformRequest may return a replacement (async)", async () => {

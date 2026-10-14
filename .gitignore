@@ -104,6 +104,9 @@ htmlcov/
 data/
 datasets/
 models/
+# ...except the SDK's own model-rules module and its tests
+!src/models/
+!tests/unit/models/
 checkpoints/
 *.sqlite
 *.sqlite3

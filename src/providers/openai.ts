@@ -4,6 +4,8 @@
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyOpenAIReasoning } from "./utils/reasoning.js";
+import { resolveModelRule, allowsSampling, applyDropParams, type RulePatch } from "../models/rules.js";
+import { runWithModelAdjustments } from "../models/adjust.js";
 import { audioMimeToOpenAIFormat } from "./utils/media.js";
 import { inlineJsonSchemaRefs } from "./utils/jsonSchemaRefs.js";
 import { chunkArray, decodeBase64Vector, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
@@ -105,8 +107,7 @@ export class OpenAIProvider extends BaseProvider {
     if (this.useResponsesApi(request)) {
       return this.completeResponses(request);
     }
-    const body = this.buildRequestBody(request, false);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.fetchChat(request, false);
     const json = await res.json();
     return this.parseResponse(json);
   }
@@ -134,8 +135,7 @@ export class OpenAIProvider extends BaseProvider {
       };
       return;
     }
-    const body = this.buildRequestBody(request, true);
-    const res = await this.doFetch(body, request.signal);
+    const res = await this.fetchChat(request, true);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -263,7 +263,45 @@ export class OpenAIProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  protected buildRequestBody(request: ChatCompletionRequest, stream: boolean): Record<string, any> {
+  /** Chat Completions call that corrects itself from the provider's own 400s (see models/adjust.ts). */
+  private fetchChat(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    const model = request.model || this.defaultModel;
+    return runWithModelAdjustments({
+      provider: this.providerName,
+      model,
+      endpoint: "chat",
+      scope: this.baseURL,
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
+      onLearned: this.onModelRuleLearned,
+      run: (overlay, guard) => {
+        const body = this.buildRequestBody(request, stream, overlay);
+        guard(body);
+        return this.doFetch(body, request.signal);
+      },
+    });
+  }
+
+  /** Same for the Responses API. */
+  private fetchResponses(request: ChatCompletionRequest, adaptExtras: boolean, stream = false): Promise<Response> {
+    const model = request.model || this.defaultModel;
+    return runWithModelAdjustments({
+      provider: this.providerName,
+      model,
+      endpoint: "responses",
+      scope: this.baseURL,
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
+      onLearned: this.onModelRuleLearned,
+      run: (overlay, guard) => {
+        const body = this.buildResponsesBody(request, overlay);
+        if (adaptExtras) adaptChatExtrasForResponses(body, request.extra);
+        if (stream) body.stream = true;
+        guard(body);
+        return this.responsesFetch(body, request.signal);
+      },
+    });
+  }
+
+  protected buildRequestBody(request: ChatCompletionRequest, stream: boolean, overlay?: RulePatch): Record<string, any> {
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
       messages: request.messages.map((m) => this.toOpenAIMessage(m)),
@@ -274,23 +312,22 @@ export class OpenAIProvider extends BaseProvider {
       body.stream_options = { include_usage: true };
     }
     const modelId = String(body.model);
-    // Reasoning models (o-series, gpt-5) reject sampling overrides.
-    const reasoningModel = isReasoningModel(modelId) && !/chat/i.test(modelId);
-    if (request.temperature != null && !reasoningModel) body.temperature = request.temperature;
+    // What the model accepts (sampling, token-limit field, reasoning values)
+    // comes from its rule in model-rules.json, plus anything learned from 400s.
+    const rule = resolveModelRule({ provider: this.providerName, model: modelId, patch: overlay, scope: this.baseURL });
+    if (request.temperature != null && allowsSampling(rule, "temperature", request.temperature)) body.temperature = request.temperature;
     if (request.maxTokens != null) {
-      const useCompletionTokens =
-        this.maxTokensParam === "max_completion_tokens" ||
-        (this.maxTokensParam === "auto" && isReasoningModel(modelId));
-      body[useCompletionTokens ? "max_completion_tokens" : "max_tokens"] = request.maxTokens;
+      const param = this.maxTokensParam === "auto" ? rule.maxTokensParam : this.maxTokensParam;
+      body[param] = request.maxTokens;
     }
-    if (request.topP != null && !reasoningModel) body.top_p = request.topP;
+    if (request.topP != null && allowsSampling(rule, "topP")) body.top_p = request.topP;
     if (request.stop) body.stop = request.stop;
-    if (request.presencePenalty != null) body.presence_penalty = request.presencePenalty;
-    if (request.frequencyPenalty != null) body.frequency_penalty = request.frequencyPenalty;
+    if (request.presencePenalty != null && allowsSampling(rule, "presencePenalty")) body.presence_penalty = request.presencePenalty;
+    if (request.frequencyPenalty != null && allowsSampling(rule, "frequencyPenalty")) body.frequency_penalty = request.frequencyPenalty;
     if (request.seed != null) body.seed = request.seed;
     if (request.n != null) body.n = request.n;
-    if (request.logprobs != null) body.logprobs = request.logprobs;
-    if (request.topLogprobs != null) body.top_logprobs = request.topLogprobs;
+    if (request.logprobs != null && allowsSampling(rule, "logprobs")) body.logprobs = request.logprobs;
+    if (request.topLogprobs != null && allowsSampling(rule, "logprobs")) body.top_logprobs = request.topLogprobs;
 
     if (request.tools?.length) {
       body.tools = request.tools.map((t) => this.toOpenAITool(t));
@@ -324,7 +361,14 @@ export class OpenAIProvider extends BaseProvider {
       Object.assign(body, request.extra);
     }
 
-    applyOpenAIReasoning(body, request.reasoning, "legacy_effort");
+    applyOpenAIReasoning(body, request.reasoning, "legacy_effort", modelId, rule);
+
+    // Function tools + a reasoning effort is a 400 on Chat Completions for these
+    // models (and their default effort is not `none`): say `none` explicitly.
+    if (body.tools?.length && rule.chatTools.reasoning === "force-none" && rule.reasoning.style !== "none") {
+      body.reasoning_effort = "none";
+    }
+    applyDropParams(body, rule);
 
     return body;
   }
@@ -332,9 +376,8 @@ export class OpenAIProvider extends BaseProvider {
   // ─── Responses API (reasoning models) ──────────────────────────────────────
 
   protected async completeResponses(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const body = this.buildResponsesBody(request);
-    if (this.apiResponsesNative || this.isResponsesApiModel(request)) adaptChatExtrasForResponses(body, request.extra);
-    const res = await this.responsesFetch(body, request.signal);
+    const adapt = this.apiResponsesNative || this.isResponsesApiModel(request);
+    const res = await this.fetchResponses(request, adapt);
     const json = await res.json();
     return this.parseResponsesResponse(json, request.model || this.defaultModel);
   }
@@ -348,10 +391,7 @@ export class OpenAIProvider extends BaseProvider {
    * reads it). */
   private async *streamResponses(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const modelId = request.model || this.defaultModel;
-    const body = this.buildResponsesBody(request);
-    adaptChatExtrasForResponses(body, request.extra);
-    body.stream = true;
-    const res = await this.responsesFetch(body, request.signal);
+    const res = await this.fetchResponses(request, true, true);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
@@ -458,14 +498,15 @@ export class OpenAIProvider extends BaseProvider {
     };
   }
 
-  protected buildResponsesBody(request: ChatCompletionRequest): Record<string, any> {
+  protected buildResponsesBody(request: ChatCompletionRequest, overlay?: RulePatch): Record<string, any> {
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
       input: request.messages.map((m) => this.toResponsesInput(m)),
     };
 
     if (request.maxTokens != null) body.max_output_tokens = request.maxTokens;
-    if (request.topP != null) body.top_p = request.topP;
+    const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay, scope: this.baseURL });
+    if (request.topP != null && allowsSampling(rule, "topP")) body.top_p = request.topP;
     // Reasoning models reject `temperature`; omit it intentionally.
 
     if (request.tools?.length) {
@@ -505,7 +546,8 @@ export class OpenAIProvider extends BaseProvider {
     if (request.extra) Object.assign(body, request.extra);
 
     // reasoning.effort + reasoning.summary
-    applyOpenAIReasoning(body, request.reasoning, "responses");
+    applyOpenAIReasoning(body, request.reasoning, "responses", String(body.model), rule);
+    applyDropParams(body, rule);
 
     return body;
   }
@@ -817,12 +859,15 @@ function pickProviderFields(top: any, message: any, choice: any): ProviderRespon
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Detects OpenAI reasoning models (o-series and gpt-5 family). */
+/**
+ * True for OpenAI models whose rule (model-rules.json) is a reasoning model with
+ * restricted sampling: o-series, gpt-5, gpt-5.x, gpt-6 and newer. `-chat`
+ * variants, gpt-oss, older gpt and models the rules do not know are not.
+ */
 export function isReasoningModel(model: string | undefined): boolean {
   if (!model) return false;
-  const m = model.toLowerCase();
-  return /(^|[/_-])o[0-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
-    || m.includes("gpt-5") || m.includes("gpt5");
+  const rule = resolveModelRule({ provider: "openai", model });
+  return !rule.isDefault && rule.reasoning.style === "effort" && rule.sampling.temperature !== "any";
 }
 
 /** Re-spells Chat Completions fields that arrived through `extra` into their

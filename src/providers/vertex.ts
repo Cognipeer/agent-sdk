@@ -4,6 +4,8 @@
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyGeminiReasoning } from "./utils/reasoning.js";
+import { ModelRequestError } from "../models/errors.js";
+import { parseModelError } from "../models/adjust.js";
 import { inferMediaTypeFromUrl } from "./utils/media.js";
 import { chunkArray, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import {
@@ -58,7 +60,7 @@ export class VertexProvider extends BaseProvider {
     const modelId = request.model || this.defaultModel;
     const body = this.buildGeminiBody(request);
     const url = this.buildUrl(modelId, false);
-    const res = await this.doFetch(url, body, request.signal);
+    const res = await this.doFetch(url, body, request.signal, modelId);
     const json = await res.json();
     return this.parseResponse(json, modelId);
   }
@@ -67,7 +69,7 @@ export class VertexProvider extends BaseProvider {
     const modelId = request.model || this.defaultModel;
     const body = this.buildGeminiBody(request);
     const url = this.buildUrl(modelId, true);
-    const res = await this.doFetch(url, body, request.signal);
+    const res = await this.doFetch(url, body, request.signal, modelId);
 
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
     const counter = { next: 0 };
@@ -165,7 +167,7 @@ export class VertexProvider extends BaseProvider {
       };
       if (Object.keys(parameters).length > 0) body.parameters = parameters;
       Object.assign(body, extraRest);
-      const res = await this.doFetch(url, body, request.signal);
+      const res = await this.doFetch(url, body, request.signal, model);
       const json: any = await res.json();
       raw.push(json);
       for (const p of json.predictions ?? []) {
@@ -443,7 +445,7 @@ export class VertexProvider extends BaseProvider {
     return tokenJson.access_token;
   }
 
-  private async doFetch(url: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+  private async doFetch(url: string, body: Record<string, any>, signal?: AbortSignal, model = ""): Promise<Response> {
     const token = await this.getAccessToken();
 
     const bodyStr = JSON.stringify(body);
@@ -466,6 +468,21 @@ export class VertexProvider extends BaseProvider {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      // A 400 about the request is surfaced typed (param/value) rather than opaque.
+      if (res.status === 400) {
+        const parsed = parseModelError(text);
+        throw new ModelRequestError({
+          status: 400,
+          code: parsed?.kind === "unsupported_value" ? "unsupported_value" : parsed?.kind === "unsupported_parameter" ? "unsupported_parameter" : "model_request_invalid",
+          param: parsed?.param,
+          value: parsed?.value,
+          supportedValues: parsed?.supportedValues,
+          provider: this.providerName,
+          model,
+          message: `Vertex AI API error ${res.status}: ${text}`,
+          responseBody: text,
+        });
+      }
       throw new ProviderError(
         `Vertex AI API error ${res.status}: ${text}`,
         this.providerName,
