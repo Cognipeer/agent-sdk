@@ -164,8 +164,11 @@ export type ChatCompletionRequest = {
  * Anthropic (where thinking is opt-in and the absence IS off). Omitting
  * `effort` still means "say nothing about reasoning", which is the different
  * and equally necessary state.
+ *
+ * `xhigh` / `max` are only accepted by some models; each provider mapper clamps
+ * them to the nearest level the model takes (see `clampOpenAIEffort`).
  */
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type ReasoningRequestConfig = {
   /** Qualitative effort hint (mapped per-provider). */

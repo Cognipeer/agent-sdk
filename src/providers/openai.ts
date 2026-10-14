@@ -274,7 +274,7 @@ export class OpenAIProvider extends BaseProvider {
       body.stream_options = { include_usage: true };
     }
     const modelId = String(body.model);
-    // Reasoning models (o-series, gpt-5) reject sampling overrides.
+    // Reasoning models (o-series, gpt-5 and newer) reject sampling overrides.
     const reasoningModel = isReasoningModel(modelId) && !/chat/i.test(modelId);
     if (request.temperature != null && !reasoningModel) body.temperature = request.temperature;
     if (request.maxTokens != null) {
@@ -324,7 +324,7 @@ export class OpenAIProvider extends BaseProvider {
       Object.assign(body, request.extra);
     }
 
-    applyOpenAIReasoning(body, request.reasoning, "legacy_effort");
+    applyOpenAIReasoning(body, request.reasoning, "legacy_effort", modelId);
 
     return body;
   }
@@ -505,7 +505,7 @@ export class OpenAIProvider extends BaseProvider {
     if (request.extra) Object.assign(body, request.extra);
 
     // reasoning.effort + reasoning.summary
-    applyOpenAIReasoning(body, request.reasoning, "responses");
+    applyOpenAIReasoning(body, request.reasoning, "responses", String(body.model));
 
     return body;
   }
@@ -817,12 +817,13 @@ function pickProviderFields(top: any, message: any, choice: any): ProviderRespon
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Detects OpenAI reasoning models (o-series and gpt-5 family). */
+/** Detects OpenAI reasoning models (o-series and the gpt-5 family and newer: gpt-6, gpt-7, ...). */
 export function isReasoningModel(model: string | undefined): boolean {
   if (!model) return false;
   const m = model.toLowerCase();
   return /(^|[/_-])o[0-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
-    || m.includes("gpt-5") || m.includes("gpt5");
+    || m.includes("gpt-5") || m.includes("gpt5")
+    || Number(/(?:^|[/._:-])gpt-?(\d+)/.exec(m)?.[1] ?? 0) >= 5;
 }
 
 /** Re-spells Chat Completions fields that arrived through `extra` into their

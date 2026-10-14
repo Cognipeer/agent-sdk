@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1]
+
+### Added
+- **`xhigh` and `max` reasoning efforts** (`ReasoningEffort`). Each provider mapper clamps to what the model accepts: OpenAI gpt-5.1+/gpt-6+ take `xhigh` (`max` -> `xhigh`, `minimal` -> `low`); gpt-5 / mini / nano / codex, o-series and gpt-oss clamp `xhigh`/`max` to `high`; Claude adaptive models pass `low`..`max` through (`minimal` -> `low`); legacy budget Claude (direct, Bedrock, Vertex) and Gemini scale to larger budgets. New exports `clampOpenAIEffort`, `openAIEffortLine`.
+
+### Fixed
+- `isReasoningModel` now recognises gpt-N for any N >= 5 (gpt-6, gpt-6-luna, namespaced ids), so they get `max_completion_tokens`, no sampling overrides and `reasoning_effort`; with tools they route to the Responses API like gpt-5.
+
 ## [0.12.0]
 
 ### Added

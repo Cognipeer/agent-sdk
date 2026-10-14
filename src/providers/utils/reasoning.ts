@@ -19,6 +19,8 @@ export const ANTHROPIC_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   low: 2048,
   medium: 8192,
   high: 16384,
+  xhigh: 24576,
+  max: 32768,
 };
 
 export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
@@ -30,6 +32,9 @@ export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   low: 1024,
   medium: 4096,
   high: 12000,
+  // Both map to the largest budget the Gemini 2.5 line accepts on Flash.
+  xhigh: 24576,
+  max: 24576,
 };
 
 /** Minimum gap between the thinking budget and `max_tokens` for Anthropic/Bedrock. */
@@ -38,6 +43,45 @@ const THINKING_OUTPUT_RESERVE = 1024;
 const MIN_THINKING_BUDGET = 1024;
 /** Floor for `max_tokens` once thinking is enabled (budget + reserve at least this). */
 const THINKING_MIN_MAX_TOKENS = 4096;
+
+type OpenAIEffortLine = "gpt5x" | "gpt5base" | "oseries" | "other";
+
+/**
+ * Which effort vocabulary an OpenAI-family model id speaks.
+ *  gpt5x    gpt-5.1+ and gpt-N (N>=6): none, low, medium, high, xhigh
+ *  gpt5base gpt-5, -mini, -nano, -codex: minimal, low, medium, high
+ *  oseries  o1/o3/o4 and gpt-oss: low, medium, high
+ * Namespaced ids (`openai/gpt-6`, `global.openai.gpt-6-luna`) count; `-chat`
+ * variants are not reasoning models and fall in `other`.
+ */
+export function openAIEffortLine(modelId: string | undefined): OpenAIEffortLine {
+  if (!modelId) return "other";
+  const m = modelId.toLowerCase();
+  if (/chat/.test(m)) return "other";
+  if (/(^|[/._:-])gpt-?oss/.test(m) || /(^|[/._:-])o[0-9]/.test(m)) return "oseries";
+  const g = /(^|[/._:-])gpt-?(\d+)(?:\.(\d+))?/.exec(m);
+  if (!g) return "other";
+  const major = Number(g[2]);
+  if (major >= 6 || (major === 5 && g[3] !== undefined)) return "gpt5x";
+  if (major === 5) return "gpt5base";
+  return "other";
+}
+
+/** Clamps an effort to a value the model accepts (never sends one it rejects). Unknown models pass through. */
+export function clampOpenAIEffort(modelId: string | undefined, effort: ReasoningEffort): ReasoningEffort {
+  switch (openAIEffortLine(modelId)) {
+    case "gpt5x":
+      if (effort === "max") return "xhigh";
+      return effort === "minimal" ? "low" : effort;
+    case "gpt5base":
+      return effort === "xhigh" || effort === "max" ? "high" : effort;
+    case "oseries":
+      if (effort === "xhigh" || effort === "max") return "high";
+      return effort === "minimal" ? "low" : effort;
+    default:
+      return effort;
+  }
+}
 
 /** Maps a unified reasoning config onto the OpenAI Chat Completions body.
  *
@@ -49,9 +93,11 @@ export function applyOpenAIReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
   mode: OpenAIReasoningMode = "legacy_effort",
+  model?: string,
 ): void {
   if (!reasoning) return;
-  const effort = normalizeEffort(reasoning.effort);
+  const requested = normalizeEffort(reasoning.effort);
+  const effort = requested && clampOpenAIEffort(model ?? body.model, requested);
   if (mode === "responses") {
     const obj: Record<string, any> = {};
     if (effort) obj.effort = effort;
@@ -102,7 +148,7 @@ function applyAdaptiveThinking(
 ): boolean {
   const requested = normalizeEffort(reasoning.effort);
   if (requested === "none") return false;
-  let effort: "low" | "medium" | "high" | undefined;
+  let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
   if (requested) effort = requested === "minimal" ? "low" : requested;
   else if (typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
     effort = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
@@ -227,7 +273,7 @@ function clampBudget(budget: number, maxTokens: number | undefined): number {
 
 function normalizeEffort(effort: ReasoningEffort | undefined): ReasoningEffort | undefined {
   if (!effort) return undefined;
-  const allowed: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high"];
+  const allowed: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
   return allowed.includes(effort) ? effort : undefined;
 }
 
