@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SigV4**: the canonical URI is now URI-encoded a second time per path segment for non-S3 services, as AWS requires. Model ids containing `:` previously produced a path the signer and the service canonicalised differently. Verified against a reference signature from `@smithy/signature-v4`. `signRequest` accepts an optional `now` for reproducible tests.
 - **Vertex embeddings**: `extra.parameters` is merged with `outputDimensionality` instead of replacing it, and a prediction without an `embeddings.values` array now raises a `ProviderError` instead of returning `undefined` vectors.
 
+### Fixed (forced tool choice)
+- **Claude 5.x Sonnet / Opus reject `tool_choice` `any` / `tool`** with a 400 (`tool_choice: type "tool" and "any" are not supported for this model`). Anthropic and Bedrock providers now map `required` and a specific tool to `auto` for those models (new `supportsForcedToolChoice(modelId)` helper; Haiku and older models keep forcing), and retry once with `auto` when any other model answers that exact 400. The tool-based structured output path keeps working: a text answer is parsed by the existing fallback.
+
 ### Fixed
 - **Anthropic / Bedrock-Claude thinking on newer models.** Claude 5.x models reject `thinking: { type: "enabled", budget_tokens }`. The thinking shape is now chosen per model id: newer models get `thinking: { type: "adaptive" }` plus `output_config.effort` (`minimal` maps to `low`, `none` sends no thinking); older models keep the budget form. New `thinkingMode: "auto" | "adaptive" | "budget"` provider option overrides detection (`supportsAdaptiveThinking` is exported). The Anthropic provider also retries once with the other form when the upstream returns that specific 400. An explicit `extra.thinking` is still passed through unchanged.
 

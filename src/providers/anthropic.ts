@@ -1,6 +1,7 @@
 // Anthropic Messages API provider.
 // Direct fetch-based implementation – no SDK dependency.
 
+import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyAnthropicReasoning, resolveThinkingForm, type ThinkingMode } from "./utils/reasoning.js";
@@ -227,7 +228,7 @@ export class AnthropicProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, modeOverride?: ThinkingMode): Record<string, any> {
+  private buildRequestBody(request: ChatCompletionRequest, stream: boolean, modeOverride?: ThinkingMode, downgradeToolChoice = false): Record<string, any> {
     // Anthropic separates system from messages
     const { system, messages } = this.splitSystemMessages(request.messages);
 
@@ -262,14 +263,15 @@ export class AnthropicProvider extends BaseProvider {
     }
 
     if (request.toolChoice != null) {
+      const forceOk = !downgradeToolChoice && supportsForcedToolChoice(body.model);
       if (request.toolChoice === "auto") {
         body.tool_choice = { type: "auto" };
       } else if (request.toolChoice === "required") {
-        body.tool_choice = { type: "any" };
+        body.tool_choice = forceOk ? { type: "any" } : { type: "auto" };
       } else if (request.toolChoice === "none") {
         // Anthropic doesn't have a direct "none" – omit tools
       } else {
-        body.tool_choice = { type: "tool", name: request.toolChoice.name };
+        body.tool_choice = forceOk ? { type: "tool", name: request.toolChoice.name } : { type: "auto" };
       }
     }
 
@@ -448,19 +450,31 @@ export class AnthropicProvider extends BaseProvider {
   /** Builds and sends the request; retries once with the other thinking form
    * when the upstream rejects the one we picked. */
   private async send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
-    const body = this.buildRequestBody(request, stream);
-    try {
-      return await this.doFetch(body, request.signal);
-    } catch (err) {
-      const explicit = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
-      if (explicit || !request.reasoning || !(err instanceof ProviderError) || err.statusCode !== 400) throw err;
-      const wrong = thinkingFormRejected(String(err.responseBody ?? err.message));
-      if (!wrong) throw err;
-      // The rejected form is the one we sent; flip to the other.
-      const used = resolveThinkingForm(request.model ?? this.defaultModel, this.thinkingMode);
-      const next: ThinkingMode = wrong === "enabled" ? "adaptive" : "budget";
-      if ((wrong === "enabled" && used !== "budget") || (wrong === "adaptive" && used !== "adaptive")) throw err;
-      return this.doFetch(this.buildRequestBody(request, stream, next), request.signal);
+    let mode: ThinkingMode | undefined;
+    let downgrade = false;
+    let flippedThinking = false;
+    for (;;) {
+      const body = this.buildRequestBody(request, stream, mode, downgrade);
+      try {
+        return await this.doFetch(body, request.signal);
+      } catch (err) {
+        if (!(err instanceof ProviderError) || err.statusCode !== 400) throw err;
+        const text = String(err.responseBody ?? err.message);
+        // Model refuses forced tool use: retry once with tool_choice auto.
+        if (!downgrade && body.tool_choice && body.tool_choice.type !== "auto" && forcedToolChoiceRejected(text)) {
+          downgrade = true;
+          continue;
+        }
+        const explicit = request.extra && typeof request.extra === "object" && "thinking" in request.extra;
+        if (flippedThinking || explicit || !request.reasoning) throw err;
+        const wrong = thinkingFormRejected(text);
+        if (!wrong) throw err;
+        // The rejected form is the one we sent; flip to the other.
+        const used = resolveThinkingForm(request.model ?? this.defaultModel, this.thinkingMode);
+        if ((wrong === "enabled" && used !== "budget") || (wrong === "adaptive" && used !== "adaptive")) throw err;
+        mode = wrong === "enabled" ? "adaptive" : "budget";
+        flippedThinking = true;
+      }
     }
   }
 

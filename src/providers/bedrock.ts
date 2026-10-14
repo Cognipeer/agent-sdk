@@ -1,6 +1,7 @@
 // AWS Bedrock Converse API provider.
 // Uses AWS SigV4 signing with fetch – no AWS SDK dependency.
 
+import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { signRequest, type SigV4Credentials } from "./utils/sigv4.js";
 import { parseEventStream } from "./utils/eventStream.js";
@@ -61,8 +62,7 @@ export class BedrockProvider extends BaseProvider {
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const modelId = request.model || this.defaultModel;
-    const body = this.buildConverseBody(request);
-    const res = await this.doFetch(modelId, body, request.signal, false);
+    const res = await this.converseFetch(modelId, request, false);
     return this.parseResponse(await res.json(), modelId);
   }
 
@@ -76,8 +76,7 @@ export class BedrockProvider extends BaseProvider {
    */
   async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const modelId = request.model || this.defaultModel;
-    const body = this.buildConverseBody(request);
-    const res = await this.doFetch(modelId, body, request.signal, true);
+    const res = await this.converseFetch(modelId, request, true);
     if (!res.body) throw new ProviderError("No response body for stream", this.providerName);
 
     const id = res.headers.get("x-amzn-requestid") ?? "";
@@ -270,7 +269,7 @@ export class BedrockProvider extends BaseProvider {
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
-  private buildConverseBody(request: ChatCompletionRequest): Record<string, any> {
+  private buildConverseBody(request: ChatCompletionRequest, downgradeToolChoice = false): Record<string, any> {
     const { system, messages } = this.splitSystemMessages(request.messages);
 
     const body: Record<string, any> = {
@@ -302,8 +301,9 @@ export class BedrockProvider extends BaseProvider {
         tools,
       };
 
+      const forceOk = !downgradeToolChoice && supportsForcedToolChoice(request.model || this.defaultModel);
       if (request.toolChoice != null) {
-        if (request.toolChoice === "auto") {
+        if (request.toolChoice === "auto" || (!forceOk && request.toolChoice !== "none")) {
           body.toolConfig.toolChoice = { auto: {} };
         } else if (request.toolChoice === "required") {
           body.toolConfig.toolChoice = { any: {} };
@@ -471,6 +471,20 @@ export class BedrockProvider extends BaseProvider {
         inputSchema: { json: t.parameters },
       },
     };
+  }
+
+  /** Sends the Converse call; retries once with toolChoice auto when the
+   * model rejects forced tool use. */
+  private async converseFetch(modelId: string, request: ChatCompletionRequest, stream: boolean): Promise<Response> {
+    const body = this.buildConverseBody(request);
+    try {
+      return await this.doFetch(modelId, body, request.signal, stream);
+    } catch (err) {
+      const tc = body.toolConfig?.toolChoice;
+      if (!(err instanceof ProviderError) || err.statusCode !== 400 || !tc || tc.auto) throw err;
+      if (!forcedToolChoiceRejected(String(err.responseBody ?? err.message))) throw err;
+      return this.doFetch(modelId, this.buildConverseBody(request, true), request.signal, stream);
+    }
   }
 
   private async doFetch(modelId: string, body: Record<string, any>, signal: AbortSignal | undefined, stream: boolean): Promise<Response> {
