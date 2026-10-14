@@ -67,20 +67,41 @@ async function collect<T>(g: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("upstream API selection", () => {
-  it("defaults to Chat Completions for every provider class, even for gpt-5 + reasoning", async () => {
-    const mk = [
-      (f: typeof fetch) => new OpenAIProvider({ provider: "openai", apiKey: "k", fetch: f }),
-      (f: typeof fetch) => new OpenAICompatibleProvider({ provider: "openai-compatible", apiKey: "k", baseURL: "http://x/v1", fetch: f }),
-      (f: typeof fetch) => new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "http://az", deploymentName: "d", fetch: f }),
+  it("api defaults to 'auto' (the 0.11 behaviour): OpenAI and Azure route gpt-5 + reasoning to Responses, compatible stays on chat", async () => {
+    const mk: Array<[string, (f: typeof fetch) => any, RegExp]> = [
+      ["openai", (f) => new OpenAIProvider({ provider: "openai", apiKey: "k", fetch: f }), /\/responses$/],
+      ["azure", (f) => new AzureProvider({ provider: "azure", apiKey: "k", endpoint: "http://az", deploymentName: "d", fetch: f }), /\/responses/],
+      ["compatible", (f) => new OpenAICompatibleProvider({ provider: "openai-compatible", apiKey: "k", baseURL: "http://x/v1", fetch: f }), /chat\/completions/],
     ];
-    for (const make of mk) {
-      const r = recorder(() => json(CHAT_OK));
+    for (const [, make, want] of mk) {
+      const r = recorder(() => json(want.source.includes("chat") ? CHAT_OK : RESP_OK));
       await make(r.fn).complete({ model: "gpt-5.6-terra", messages: msgs, reasoning: { effort: "high" } });
-      expect(r.calls[0].url).toMatch(/chat\/completions/);
+      expect(r.calls[0].url).toMatch(want);
     }
   });
 
-  it("responsesApi:'auto' keeps the old heuristic only when passed", async () => {
+  it("api:'auto' is the same as unset, and no reasoning or a non-reasoning model stays on chat", async () => {
+    const r = recorder(() => json(CHAT_OK));
+    await new OpenAIProvider({ provider: "openai", apiKey: "k", api: "auto", fetch: r.fn }).complete({ model: "gpt-4o", messages: msgs, reasoning: { effort: "high" } });
+    expect(r.calls[0].url).toMatch(/chat\/completions/);
+    const q = recorder(() => json(RESP_OK));
+    await new OpenAIProvider({ provider: "openai", apiKey: "k", api: "auto", fetch: q.fn }).complete({ model: "gpt-5", messages: msgs, reasoning: { effort: "low" } });
+    expect(q.calls[0].url).toMatch(/\/responses$/);
+  });
+
+  it("api:'chat' forces Chat Completions even for gpt-5 + reasoning", async () => {
+    const r = recorder(() => json(CHAT_OK));
+    await new OpenAIProvider({ provider: "openai", apiKey: "k", api: "chat", fetch: r.fn }).complete({ model: "gpt-5", messages: msgs, reasoning: { effort: "low" } });
+    expect(r.calls[0].url).toMatch(/chat\/completions/);
+  });
+
+  it("responsesApi:'auto' opts a compatible provider into the heuristic", async () => {
+    const r = recorder(() => json(RESP_OK));
+    await new OpenAICompatibleProvider({ provider: "openai-compatible", apiKey: "k", baseURL: "http://x/v1", responsesApi: "auto", fetch: r.fn }).complete({ model: "gpt-5", messages: msgs, reasoning: { effort: "low" } });
+    expect(r.calls[0].url).toMatch(/\/responses$/);
+  });
+
+  it("responsesApi:'auto' keeps the heuristic", async () => {
     const r = recorder(() => json(RESP_OK));
     await new OpenAIProvider({ provider: "openai", apiKey: "k", responsesApi: "auto", fetch: r.fn }).complete({ model: "gpt-5.6-terra", messages: msgs, reasoning: { effort: "low" } });
     expect(r.calls[0].url).toMatch(/\/responses$/);

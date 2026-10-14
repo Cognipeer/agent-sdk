@@ -48,8 +48,9 @@ function routesToResponses(
 }
 
 describe("OpenAIProvider transport selection", () => {
-  it("defaults to chat: a reasoning request on a gpt-5 name stays on Chat Completions", () => {
-    expect(routesToResponses({}, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(false);
+  it("defaults to auto: a reasoning request on a gpt-5 name goes to Responses, api:'chat' pins chat", () => {
+    expect(routesToResponses({}, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(true);
+    expect(routesToResponses({ api: "chat" }, { model: "gpt-5.6-terra", reasoning: { effort: "low" } })).toBe(false);
   });
 
   it("responsesApi:'auto' (explicit) restores the name heuristic", () => {

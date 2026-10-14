@@ -348,13 +348,13 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   defaultHeaders?: Record<string, string>;
   retry?: ProviderRetryConfig;
   /**
-   * @deprecated Use `api: "chat" | "responses"`. Kept as an alias:
-   * `never` = chat, `always` = responses, `auto` = the old name-based heuristic
-   * (only when passed explicitly). Default (unset) is Chat Completions.
+   * @deprecated Use `api: "chat" | "responses" | "auto"`. Kept as an alias:
+   * `never` = chat, `always` = responses, `auto` = the name-based heuristic.
+   * When `api` is also set, `api` wins.
    *
    * WHICH API a reasoning-carrying request is addressed to.
    *
-   *  auto    (opt-in; no longer the default) route to the Responses API when
+   *  auto    (the default for OpenAI and Azure) route to the Responses API when
    *          the request carries `reasoning` AND the model name looks like an
    *          o-series/gpt-5 reasoning model.
    *  never   always Chat Completions. `reasoning` is still mapped, as
@@ -373,19 +373,25 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    * where it matters most: a self-hosted model is named by whoever served it.
    */
   responsesApi?: "auto" | "never" | "always";
+  /** @internal Set by OpenAICompatibleProvider: `auto` then means Chat Completions. */
+  _autoMeansChat?: boolean;
   /**
-   * Which upstream API every request is sent to. Explicit; nothing is guessed
-   * from the model name. Default `"chat"` (Chat Completions). `"responses"`
+   * Which upstream API requests are sent to. `"auto"` (default) keeps the
+   * 0.11 behaviour of each class: OpenAI and Azure use Responses when the
+   * request carries `reasoning` and the model name looks like an o-series /
+   * gpt-5 model, otherwise Chat Completions; OpenAI-compatible always uses
+   * Chat Completions (the model name is the server operator's). `"chat"` always
+   * sends Chat Completions. `"responses"`
    * sends every request to the Responses API (`POST /responses`) and streams it
    * over real SSE (text, tool-call arguments and reasoning-summary deltas;
    * set `responsesStreaming: false` to get one non-streaming call instead).
    * Works on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`.
    * When set, it wins over the deprecated `responsesApi`.
    */
-  api?: "chat" | "responses";
+  api?: "chat" | "responses" | "auto";
   /**
    * Models that go to the Responses API, named explicitly. Opt-in; unset by
-   * default, and nothing here is inferred from a model name.
+   * default.
    *
    * A string matches the request's model (or `defaultModel`) exactly; a RegExp
    * is tested against it. A match routes the request to Responses whether or
@@ -452,8 +458,8 @@ export type AzureProviderConfig = ProviderTransportConfig & {
   deploymentName?: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
-  /** See OpenAIProviderConfig.api. Default "chat". */
-  api?: "chat" | "responses";
+  /** See OpenAIProviderConfig.api. Default "auto". */
+  api?: "chat" | "responses" | "auto";
   /** @deprecated Use `api`. */
   responsesApi?: "auto" | "never" | "always";
   responsesApiModels?: Array<string | RegExp>;
@@ -464,10 +470,10 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   provider: "openai-compatible";
   organization?: string;
   retry?: ProviderRetryConfig;
-  /** @deprecated Use `api`. Default is chat. */
+  /** @deprecated Use `api`. Default: see `api`. */
   responsesApi?: "auto" | "never" | "always";
-  /** See OpenAIProviderConfig.api. Default "chat". */
-  api?: "chat" | "responses";
+  /** See OpenAIProviderConfig.api. Default "auto". */
+  api?: "chat" | "responses" | "auto";
   responsesApiModels?: Array<string | RegExp>;
   responsesStreaming?: boolean;
   /** See OpenAIProviderConfig.maxTokensParam. Compatible servers default to `auto`. */

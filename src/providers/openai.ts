@@ -53,17 +53,17 @@ export class OpenAIProvider extends BaseProvider {
       ...config.defaultHeaders,
       ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
     };
-    // Upstream API selection is explicit: `api` wins, then the deprecated
-    // `responsesApi` alias; with neither set every request is Chat Completions.
-    // Nothing is inferred from a model name unless `responsesApi: "auto"` is
-    // passed on purpose.
+    // Upstream API selection: `api` "chat" / "responses" are explicit choices;
+    // "auto" (the default, and what 0.11 did) keeps the model-name heuristic,
+    // unless the deprecated `responsesApi` alias states otherwise.
     const legacy = config.responsesApi;
-    this.responsesApi = config.api === "responses" ? "always"
-      : config.api === "chat" ? "never"
-      : legacy ?? "never";
-    this.apiExplicitChat = config.api === "chat" || (config.api === undefined && legacy === "never");
+    const explicit = config.api === "chat" || config.api === "responses" ? config.api : undefined;
+    this.responsesApi = explicit === "responses" ? "always"
+      : explicit === "chat" ? "never"
+      : legacy ?? (config._autoMeansChat ? "never" : "auto");
+    this.apiExplicitChat = explicit === "chat" || (explicit === undefined && legacy === "never");
     this.apiExplicitResponses = this.responsesApi === "always";
-    this.apiResponsesNative = config.api === "responses";
+    this.apiResponsesNative = explicit === "responses";
     this.responsesApiModels = [...(config.responsesApiModels ?? [])];
     this.responsesStreaming = config.responsesStreaming ?? this.apiResponsesNative;
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };

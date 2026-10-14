@@ -55,28 +55,29 @@ createProvider({
 
 #### Choosing the upstream API: Chat Completions or Responses
 
-The upstream API is an explicit setting. Nothing is inferred from a model name: every `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider` talks to **Chat Completions** unless you say otherwise.
+`api` selects the upstream API on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`. The default is `"auto"`, which is exactly what 0.11 did, so upgrading changes nothing; `"chat"` and `"responses"` are explicit choices.
 
 ```ts
 createProvider({
   provider: "openai",            // also "azure" and "openai-compatible"
   apiKey: process.env.OPENAI_API_KEY!,
-  api: "responses",              // "chat" (default) | "responses"
+  api: "responses",              // "auto" (default) | "chat" | "responses"
 })
 ```
 
 | `api` | Behaviour |
 |---|---|
-| `"chat"` (default) | Every request goes to `/chat/completions` (Azure: the deployment route). `reasoning` is mapped to `reasoning_effort`. |
+| `"auto"` (default) | Same as 0.11. OpenAI and Azure: Responses when the request carries `reasoning` and the model name looks like an o-series / gpt-5 model, otherwise Chat Completions. OpenAI-compatible: always Chat Completions (the model name is the server operator's, so it is never guessed). |
+| `"chat"` | Every request goes to `/chat/completions` (Azure: the deployment route). `reasoning` is mapped to `reasoning_effort`. |
 | `"responses"` | Every request goes to `/responses` (Azure: `/openai/responses`). `completeStream()` uses real SSE streaming: text, tool-call argument and reasoning-summary deltas arrive as they are produced, then one closing chunk carries usage and finish reason. Set `responsesStreaming: false` to make one non-streaming call emitted as a single chunk. Chat Completions spellings in `extra` that `/responses` rejects are re-spelled (`reasoning_effort` becomes `reasoning.effort`, `max_tokens` becomes `max_output_tokens`, `response_format` becomes `text.format`, `stream_options.include_usage` is dropped). |
 
-Why explicit: Responses is a different request shape (`input` instead of `messages`, `text.format` instead of `response_format`, flat tool objects) and a different response parse. Guessing it from a model name silently changed the transport for self-hosted servers and gateways that serve only one of the two. If your application has a per-model setting, pass it straight through:
+Why offer explicit values: Responses is a different request shape (`input` instead of `messages`, `text.format` instead of `response_format`, flat tool objects) and a different response parse. Guessing it from a model name silently changed the transport for self-hosted servers and gateways that serve only one of the two. If your application has a per-model setting, pass it straight through:
 
 ```ts
-createProvider({ provider: "openai-compatible", baseURL, apiKey, api: model.upstreamApi }) // "chat" | "responses"
+createProvider({ provider: "openai-compatible", baseURL, apiKey, api: model.upstreamApi }) // "auto" | "chat" | "responses"
 ```
 
-**Migrating from 0.11.** Before this change an `OpenAIProvider` (and Azure) routed a request that carried `reasoning` to Responses when the model name looked like an o-series or gpt-5 model. That heuristic is gone from the default. To keep it, pass `responsesApi: "auto"` (deprecated, kept only as an alias); to move those models to Responses on purpose, pass `api: "responses"`. The other `responsesApi` values still work: `"never"` is `api: "chat"`, `"always"` is `api: "responses"`, except that `"always"` keeps its old single-call (non-streaming) behaviour unless you also set `responsesStreaming: true`. When both are given, `api` wins.
+**Compatibility with 0.11.** Nothing to migrate: `api` defaults to `"auto"`, which keeps each class's 0.11 behaviour (OpenAI and Azure: name heuristic; OpenAI-compatible: Chat Completions). The deprecated `responsesApi` option still works: `"never"` is `api: "chat"`, `"always"` is `api: "responses"` (keeping its old single-call behaviour unless you also set `responsesStreaming: true`), `"auto"` is `api: "auto"`. When both are given, `api` wins; `responsesApi: "auto"` on an OpenAI-compatible provider opts it into the name heuristic.
 
 ##### Per-model opt-in (`responsesApiModels`)
 
