@@ -489,6 +489,7 @@ export class BedrockProvider extends BaseProvider {
       provider: this.providerName,
       model: modelId,
       endpoint: "converse",
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
       onLearned: this.onModelRuleLearned,
       run: async (overlay, guard) => {
         for (;;) {

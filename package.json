@@ -13,6 +13,11 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./model-rules": {
+      "types": "./dist/model-rules.d.ts",
+      "import": "./dist/model-rules.mjs",
+      "require": "./dist/model-rules.cjs"
+    },
     "./model-rules.json": "./dist/model-rules.json"
   },
   "files": [

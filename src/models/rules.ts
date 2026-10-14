@@ -143,31 +143,31 @@ export function mergeRulePatch<T extends RulePatch>(base: T, patch: RulePatch | 
 // Bounded, in-process: what provider 400s taught us per (provider, model id).
 
 const LEARNED_MAX = 500;
-const learned = new Map<string, RulePatch>();
+type LearnedEntry = { provider: string; model: string; scope?: string; patch: RulePatch };
+const learned = new Map<string, LearnedEntry>();
 
-function learnedKey(provider: string | undefined, model: string | undefined): string {
-  return `${(provider ?? "").toLowerCase()}::${(model ?? "").trim().toLowerCase()}`;
+// `scope` separates deployments that share a model id but not a backend (an
+// Azure resource or openai-compatible endpoint: the id is a user-chosen name).
+function learnedKey(provider: string | undefined, model: string | undefined, scope?: string): string {
+  return `${(provider ?? "").toLowerCase()}@${scope ?? ""}::${(model ?? "").trim().toLowerCase()}`;
 }
 
 /** Records (merges) a learned patch; the oldest entry is evicted past 500. */
-export function rememberModelRulePatch(provider: string, model: string, patch: RulePatch): void {
-  const key = learnedKey(provider, model);
-  const merged = mergeRulePatch<RulePatch>(learned.get(key) ?? {}, patch);
+export function rememberModelRulePatch(provider: string, model: string, patch: RulePatch, scope?: string): void {
+  const key = learnedKey(provider, model, scope);
+  const merged = mergeRulePatch<RulePatch>(learned.get(key)?.patch ?? {}, patch);
   learned.delete(key);
-  learned.set(key, merged);
+  learned.set(key, { provider: provider.toLowerCase(), model: model.trim().toLowerCase(), scope, patch: merged });
   if (learned.size > LEARNED_MAX) learned.delete(learned.keys().next().value as string);
 }
 
-export function getLearnedModelRulePatch(provider: string, model: string): RulePatch | undefined {
-  return learned.get(learnedKey(provider, model));
+export function getLearnedModelRulePatch(provider: string, model: string, scope?: string): RulePatch | undefined {
+  return learned.get(learnedKey(provider, model, scope))?.patch;
 }
 
 /** Snapshot of everything learned so far (hosts can persist it and re-seed with `rememberModelRulePatch`). */
-export function listLearnedModelRules(): Array<{ provider: string; model: string; patch: RulePatch }> {
-  return [...learned.entries()].map(([key, patch]) => {
-    const at = key.indexOf("::");
-    return { provider: key.slice(0, at), model: key.slice(at + 2), patch };
-  });
+export function listLearnedModelRules(): Array<{ provider: string; model: string; scope?: string; patch: RulePatch }> {
+  return [...learned.values()].map((e) => ({ ...e }));
 }
 
 export function clearLearnedModelRules(): void {
@@ -180,7 +180,7 @@ export function clearLearnedModelRules(): void {
  * default. Learned adjustments for (provider, model) are merged in; `patch`
  * lets a caller layer one more override on top (used by the retry loop).
  */
-export function resolveModelRule(opts: { provider?: string; model?: string; patch?: RulePatch }): ResolvedModelRule {
+export function resolveModelRule(opts: { provider?: string; model?: string; patch?: RulePatch; scope?: string }): ResolvedModelRule {
   const families = familiesFor(opts.provider);
   const ids = modelIdCandidates(opts.model);
   let rule: ModelRule | undefined;
@@ -194,7 +194,7 @@ export function resolveModelRule(opts: { provider?: string; model?: string; patc
     rule = matchRule(families[0], ids, true) ?? MODEL_RULES.rules[MODEL_RULES.rules.length - 1];
   }
   let effective: ModelRule = rule;
-  const known = opts.model ? learned.get(learnedKey(opts.provider, opts.model)) : undefined;
+  const known = opts.model ? learned.get(learnedKey(opts.provider, opts.model, opts.scope))?.patch : undefined;
   if (known) effective = mergeRulePatch(effective, known);
   if (opts.patch) effective = mergeRulePatch(effective, opts.patch);
   return { ...effective, matchedRuleId: rule.id, isDefault, learned: !!known };

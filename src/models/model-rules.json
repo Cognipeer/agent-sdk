@@ -52,7 +52,7 @@
     {
       "id": "openai-gpt-6-plus",
       "family": "openai",
-      "match": "^gpt-?(?:[6-9]|[1-9]\\d+)(?:[.-]|$)",
+      "match": "^gpt-?(?:[6-9]|(?!35(?!\\d))[1-9]\\d+)(?:[.-]|$)",
       "reasoning": {
         "style": "effort",
         "efforts": [
@@ -208,7 +208,7 @@
     {
       "id": "openai-legacy-gpt",
       "family": "openai",
-      "match": "^(?:gpt-?[0-4](?![0-9])|text-|davinci|babbage)",
+      "match": "^(?:gpt-?(?:[0-4]|35)(?![0-9])|text-|davinci|babbage)",
       "reasoning": {
         "style": "none",
         "efforts": [],

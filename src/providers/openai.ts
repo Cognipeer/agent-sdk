@@ -270,6 +270,8 @@ export class OpenAIProvider extends BaseProvider {
       provider: this.providerName,
       model,
       endpoint: "chat",
+      scope: this.baseURL,
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
       onLearned: this.onModelRuleLearned,
       run: (overlay, guard) => {
         const body = this.buildRequestBody(request, stream, overlay);
@@ -286,6 +288,8 @@ export class OpenAIProvider extends BaseProvider {
       provider: this.providerName,
       model,
       endpoint: "responses",
+      scope: this.baseURL,
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
       onLearned: this.onModelRuleLearned,
       run: (overlay, guard) => {
         const body = this.buildResponsesBody(request, overlay);
@@ -310,7 +314,7 @@ export class OpenAIProvider extends BaseProvider {
     const modelId = String(body.model);
     // What the model accepts (sampling, token-limit field, reasoning values)
     // comes from its rule in model-rules.json, plus anything learned from 400s.
-    const rule = resolveModelRule({ provider: this.providerName, model: modelId, patch: overlay });
+    const rule = resolveModelRule({ provider: this.providerName, model: modelId, patch: overlay, scope: this.baseURL });
     if (request.temperature != null && allowsSampling(rule, "temperature", request.temperature)) body.temperature = request.temperature;
     if (request.maxTokens != null) {
       const param = this.maxTokensParam === "auto" ? rule.maxTokensParam : this.maxTokensParam;
@@ -501,7 +505,7 @@ export class OpenAIProvider extends BaseProvider {
     };
 
     if (request.maxTokens != null) body.max_output_tokens = request.maxTokens;
-    const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay });
+    const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay, scope: this.baseURL });
     if (request.topP != null && allowsSampling(rule, "topP")) body.top_p = request.topP;
     // Reasoning models reject `temperature`; omit it intentionally.
 

@@ -172,6 +172,17 @@ describe("legacy helpers read the rules", () => {
   });
 });
 
+describe("Azure gpt-3.5 deployment ids", () => {
+  it.each(["gpt-35-turbo", "gpt-35-turbo-16k", "gpt-35-turbo-instruct"])("%s is a legacy non-reasoning model", (m) => {
+    expect(rule("azure", m).matchedRuleId).toBe("openai-legacy-gpt");
+    expect(rule("azure", m).reasoning.style).toBe("none");
+  });
+  it("gpt-6 and gpt-10 style ids still match gpt-6-plus", () => {
+    expect(rule("openai", "gpt-6-luna").matchedRuleId).toBe("openai-gpt-6-plus");
+    expect(rule("openai", "gpt-10").matchedRuleId).toBe("openai-gpt-6-plus");
+  });
+});
+
 describe("learned adjustments", () => {
   it("are merged into the resolved rule and flagged", () => {
     rememberModelRulePatch("openai", "Acme-Large-1", { sampling: { temperature: "unsupported" }, maxTokensParam: "max_completion_tokens" });

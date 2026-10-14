@@ -112,10 +112,18 @@ describe("learned cache", () => {
     const learned = listLearnedModelRules();
     expect(learned).toHaveLength(1);
     expect(learned[0]).toMatchObject({ provider: "openai-compatible", model: "acme-x1" });
-    expect(resolveModelRule({ provider: "openai-compatible", model: "acme-x1" })).toMatchObject({ learned: true, isDefault: true });
+    expect(resolveModelRule({ provider: "openai-compatible", model: "acme-x1", scope: "http://x/v1" })).toMatchObject({ learned: true, isDefault: true });
+    // a different backend with the same deployment name does not inherit it
+    expect(resolveModelRule({ provider: "openai-compatible", model: "acme-x1", scope: "http://other/v1" }).learned).toBe(false);
     // another model is unaffected
     await p.complete({ model: "acme-x2", messages: msgs, temperature: 0.3 });
     expect(bodies[3].temperature).toBe(0.3);
+  });
+  it("a field the caller set in extra is retried for this call but never learned for the model", async () => {
+    const { p, bodies } = oai([oaiErr("Unsupported parameter: 'foo'.", "foo", "unsupported_parameter"), OAI_OK]);
+    await expect(p.complete({ model: "acme-x1", messages: msgs, extra: { foo: 1 } })).resolves.toMatchObject({ content: "hi" });
+    expect(bodies[1].foo).toBeUndefined();
+    expect(listLearnedModelRules()).toHaveLength(0);
   });
   it("is not committed when the call never succeeds", async () => {
     const { p } = oai([oaiErr("Unsupported parameter: 'temperature'.", "temperature"), oaiErr("bad request, unrelated")]);

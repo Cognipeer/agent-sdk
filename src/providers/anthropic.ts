@@ -452,6 +452,7 @@ export class AnthropicProvider extends BaseProvider {
       provider: this.providerName,
       model: request.model || this.defaultModel,
       endpoint: "messages",
+      callerParams: request.extra ? Object.keys(request.extra) : undefined,
       onLearned: this.onModelRuleLearned,
       run: async (overlay, guard) => {
         for (;;) {

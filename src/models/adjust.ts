@@ -183,12 +183,28 @@ function toModelRequestError(err: ProviderError, parsed: ParsedModelError | unde
 
 class SameRequest extends Error {}
 
+/** Drops caller-set fields from a patch before it is remembered; undefined when nothing generic is left. */
+function withoutCallerParams<S extends { patch: RulePatch }>(step: S, callerParams: string[] | undefined): S | undefined {
+  const drops = step.patch.dropParams;
+  if (!callerParams?.length || !drops) return step;
+  const mine = (p: string) => callerParams.includes(p.split(".")[0]);
+  if (!drops.some(mine)) return step;
+  const { dropParams: _ignored, ...rest } = step.patch;
+  const kept = drops.filter((p) => !mine(p));
+  const patch: RulePatch = kept.length ? { ...rest, dropParams: kept } : rest;
+  return Object.keys(patch).length ? { ...step, patch } : undefined;
+}
+
 export type AdjustmentRun<T> = {
   provider: string;
   model: string;
   /** `chat` (default), `responses`, `messages` or `converse`; selects which effort list a value error teaches. */
   endpoint?: string;
   onLearned?: (event: ModelRuleLearnedEvent) => void;
+  /** Keeps learned patches apart per backend (e.g. the base URL): same model id, different deployment. */
+  scope?: string;
+  /** Request fields the caller set itself (`request.extra` keys): corrected for this call, never learned for the model. */
+  callerParams?: string[];
   /**
    * Performs the call for the given overlay. `guard(body)` must be called with
    * the request body just before sending: a retry whose body is identical to
@@ -214,8 +230,10 @@ export async function runWithModelAdjustments<T>(opts: AdjustmentRun<T>): Promis
     };
     try {
       const result = await opts.run(overlay, guard);
-      for (const s of steps) {
-        rememberModelRulePatch(opts.provider, opts.model, s.patch);
+      for (const step of steps) {
+        const s = withoutCallerParams(step, opts.callerParams);
+        if (!s) continue;
+        rememberModelRulePatch(opts.provider, opts.model, s.patch, opts.scope);
         if (opts.onLearned) {
           try { opts.onLearned({ provider: opts.provider, model: opts.model, adjustment: s.adjustment, patch: s.patch, reason: s.reason }); } catch { /* host callback must not break the call */ }
         }
