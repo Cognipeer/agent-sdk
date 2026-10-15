@@ -13,6 +13,7 @@ import type {
 import { nanoid } from "nanoid";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
+import { recordApprovalRequested, recordClientToolRequested } from "../utils/traceDecisions.js";
 import { extractToolItems, summarizeToolOutput } from "../utils/traceSections.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolResponses.js";
@@ -553,6 +554,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           };
           pendingApprovals.push(approvalEntry);
           pendingByCallId.set(toolCallId, approvalEntry);
+          recordApprovalRequested(traceSession, approvalEntry);
           onEvent?.({ type: "tool_approval", status: "pending", id: approvalEntry.id, toolName: approvalEntry.toolName, toolCallId: approvalEntry.toolCallId, args });
           if (host?.has("notification")) {
             await host.runObservers("notification", {
@@ -879,6 +881,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             throw new Error(`Tool ${toolName} requested approval but no pending approval entry was recorded.`);
           }
 
+          recordApprovalRequested(traceSession, pendingApproval);
           awaitingApproval = true;
           return {
             status: "awaiting_approval",
@@ -899,6 +902,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             throw new Error(`Tool ${toolName} requested a user question but no pending question entry was recorded.`);
           }
 
+          // ask_user_question records its own pending step; a host-run tool
+          // parks on the same ledger and records nothing unless told here.
+          recordClientToolRequested(traceSession, pendingQuestion);
           awaitingUserQuestion = true;
           if (host?.has("notification")) {
             await host.runObservers("notification", {

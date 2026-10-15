@@ -846,6 +846,19 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         lastResult = { ...lastResult, state: { ...lastResult.state, memoryFacts: state.memoryFacts, plan: state.plan, planVersion: state.planVersion, messages: rawMessages } };
       }
 
+      // A leg that bounced for summarization leaves a trace continuation for
+      // the next leg. If the turn ended without one (no summarizer, iteration
+      // cap), only a run waiting on a human may carry it out — otherwise the
+      // caller's NEXT message would be recorded into this turn's session.
+      if (lastResult.state) {
+        const endCtx = (lastResult.state as any).ctx as Record<string, any> | undefined;
+        if (endCtx?.__traceContinuation && !(endCtx.__awaitingApproval || endCtx.__awaitingUserQuestion || endCtx.__paused)) {
+          const strippedCtx = { ...endCtx };
+          delete strippedCtx.__traceContinuation;
+          lastResult = { ...lastResult, state: { ...lastResult.state, ctx: strippedCtx } as SmartState };
+        }
+      }
+
       // Persist opened/bound skills so a resumed run can rehydrate them.
       if (skillsEnabled && lastResult.state) {
         const persisted = skillStateFromRegistry(toolSet.skillRegistryRef);

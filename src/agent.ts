@@ -9,7 +9,8 @@ import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
 import { createReflectionNode, shouldRunReflection } from "./nodes/reflect.js";
 import { resolveReasoning } from "./smart/reasoning.js";
 import { createTool } from "./tool.js";
-import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent } from "./utils/tracing.js";
+import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent, readTraceContinuation, traceContinuationOf } from "./utils/tracing.js";
+import { recordHumanDecisions } from "./utils/traceDecisions.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
 import { resolveToolApprovalState } from "./utils/toolApprovals.js";
@@ -479,9 +480,12 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       // Open an iteration span as parent for all ai_call / tool_call events in this turn
       const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
       if (traceSession) {
+        // Numbered across the whole session, not this invoke: a run resumed
+        // after a pause continues "Iteration 3", it does not restart at 1.
+        const iterationNumber = (traceSession.summary.eventCounts.agent_iteration ?? 0) + 1;
         const iterEvent = recordTraceEvent(traceSession, {
           type: "agent_iteration",
-          label: `Iteration ${iterations}`,
+          label: `Iteration ${iterationNumber}`,
           actor: { scope: "agent", name: opts.name || "agent", role: "orchestrator" },
           parentSpanId: traceSession.rootSpanId,
         });
@@ -489,6 +493,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         if (iterEvent) {
           traceSession.currentIterationSpanId = iterEvent.spanId;
         }
+        // A resumed run: the approvals and answers that unblocked it, before
+        // the tools they released run.
+        recordHumanDecisions(traceSession, state);
       }
 
       if (cancelIfRequested("loop")) break;
@@ -890,7 +897,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       try { onProgress?.(progress); } catch (err) { console.warn('[agent-sdk] onProgress callback error:', err); }
       emit({ type: "progress", ...progress });
     };
-    const traceSession = createTraceSession(opts);
+    // A run that paused (approval, question) or a smart-agent leg left a
+    // continuation on its state: keep recording into that session.
+    const traceSession = createTraceSession(opts, readTraceContinuation(input.ctx?.__traceContinuation));
 
     const ctx: Record<string, any> = {
       ...(input.ctx || {}),
@@ -899,6 +908,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       __onStream: onStream,
       __streaming: streamEnabled,
     };
+    // Consumed: it is set again on the way out only if this run stops mid-turn.
+    delete ctx.__traceContinuation;
     if (traceSession) ctx.__traceSession = traceSession;
 
     // A session is never recovered from the incoming ctx. `invoke(previousState)`
@@ -1114,10 +1125,20 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       }
     }
 
+    // A run that stops mid-turn — paused for an approval or an answer, or a
+    // summarization bounce the smart driver resumes right away — hands its
+    // trace on, so the invoke that continues it records into this session.
+    const pausedForHuman = statusFor(res) === "paused";
+    const midTurn = pausedForHuman || Boolean((res as any).ctx?.__needsSummarization);
     await finalizeTraceSession(traceSession, {
       agentRuntime: res.agent || runtime,
-      status: "success",
+      status: pausedForHuman ? "paused" : midTurn ? "in_progress" : "success",
     });
+    if (traceSession && midTurn) {
+      res.ctx = { ...(res.ctx || {}), __traceContinuation: traceContinuationOf(traceSession) };
+    } else if (res.ctx && "__traceContinuation" in res.ctx) {
+      delete (res.ctx as any).__traceContinuation;
+    }
 
     // The base loop can exit purely to signal SmartAgent that the conversation
     // needs summarization before the model can be invoked again. In that case the

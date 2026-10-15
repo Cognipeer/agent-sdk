@@ -147,18 +147,24 @@ export function createAskUserQuestionTool(
         allowFreeText,
       });
 
+      // `pending`: the run pauses here. The answer is recorded as its own
+      // event (same questionId) when the run resumes — see traceDecisions.
       recordTraceEvent(ctx.__traceSession, {
         type: "user_question",
-        label: "Ask User",
+        label: "Question to user",
+        timestamp: entry.requestedAt,
         actor: { scope: "agent", name: "ask_user_question", role: "user_interaction" },
-        status: "success",
+        status: "pending",
         sections: [
           {
             kind: "metadata",
             label: "Pending Question",
             data: {
               id: entry.id,
+              questionId: entry.id,
               toolCallId: entry.toolCallId,
+              status: "pending",
+              requestedAt: entry.requestedAt,
               questions: entry.questions,
               allowFreeText,
             },

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0]
+
+### Fixed
+- **A turn that pauses is one trace session, not two.** A run paused for a tool approval, an ask-user question or a client tool used to be finished by a second invoke that opened a new trace session, so the model call that asked for the tool sat in one session and the tool itself (with an "Iteration 1" that had no model call) in another. The same happened to the smart agent's summarization legs. The paused run now leaves `ctx.__traceContinuation` (`TraceContinuation`: session/trace/root-span ids, start time, next sequence, part number, cumulative summary) in its state, and the invoke that resumes it continues the same session: ids, start time and totals are carried over, sequences and iteration numbers keep counting. Hosts that persist the paused state must keep this key with it; a new user message (no continuation) still opens a new session.
+- Sinks receive `continuation: { part, firstSequence }` on every part after the first and should append that part's events rather than replace the session's. The file sink merges with the `trace.session.json` already on disk; the HTTP and OTLP sinks send it as-is (Cognipeer Console ≥ the matching release appends).
+
+### Added
+- **Human steps in the trace.** `tool_approval` events: "Approval requested · <tool>" (`status: "pending"`, the arguments to approve) when the run pauses, and "Approved · <tool>" / "Rejected · <tool>" when it resumes, stamped at the decision with the wait as `durationMs`, `actor: { scope: "human", name: decidedBy }`, a `Decision` section (`approvalId`, `decision`, `decidedBy`, `comment`, `requestedAt`, `decidedAt`, `waitedMs`, `argumentsEdited`) and the requested / approved arguments. Ask-user questions: "Question to user" (`pending`) and "Answer from user" / "Question cancelled" with each question and its answer. Client tools: a pending "Tool Execution - <tool> (client)" and, on resume, the same step with the client's result. Request and outcome share `approvalId` / `questionId` so a viewer can fold them.
+- `TraceSessionStatus` adds `"paused"` (the run is waiting on a person); `TraceEventRecord.status` adds `"pending"`. New exports: `TraceContinuation`, `readTraceContinuation`, `traceContinuationOf`.
+
 ## [0.13.0]
 
 ### Added
