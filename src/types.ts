@@ -1007,7 +1007,12 @@ export type TraceEventRecord = {
   spanId?: string;
   parentSpanId?: string;
   actor?: { scope?: string; name?: string; role?: string; version?: string };
-  status: "success" | "error" | "skipped" | "retry";
+  /**
+   * `pending`: a step that is waiting on someone outside the run — a tool
+   * approval or a question to the user that was asked when the run paused.
+   * The answer is recorded as a separate event when the run resumes.
+   */
+  status: "success" | "error" | "skipped" | "retry" | "pending";
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -1058,7 +1063,37 @@ export type TraceSessionSummary = {
   eventCounts: Record<string, number>;
 };
 
-export type TraceSessionStatus = "in_progress" | "success" | "error" | "partial";
+/**
+ * `paused`: the run stopped to wait for a tool approval or an answer from the
+ * user. Its trace continues — same session id, the next sequence numbers — in
+ * the invoke that resumes it (see `TraceContinuation`).
+ * `in_progress` on a finalized session: an internal leg of a longer turn
+ * (the smart agent's summarization bounce) whose next leg continues it.
+ */
+export type TraceSessionStatus = "in_progress" | "success" | "error" | "partial" | "paused";
+
+/**
+ * Where a paused (or mid-turn) trace session left off, carried on the
+ * returned state as `ctx.__traceContinuation` so the invoke that resumes the
+ * run records into the SAME session instead of opening a new one. Plain JSON:
+ * it survives snapshots and a caller's own persistence of the paused state.
+ */
+export type TraceContinuation = {
+  v: 1;
+  sessionId: string;
+  traceId?: string;
+  rootSpanId?: string;
+  threadId?: string;
+  /** Epoch ms of the session's first part. */
+  startedAt: number;
+  /** Sequence number the next event takes. */
+  nextSequence: number;
+  /** 1-based number of the part that just ended. */
+  part: number;
+  /** Totals so far — a continued session reports cumulative totals. */
+  summary: TraceSessionSummary;
+  errors: TraceErrorRecord[];
+};
 
 export type TraceSinkSnapshot =
   | { type: "file"; path: string }
@@ -1089,6 +1124,14 @@ export type TraceSessionFile = {
   events: TraceEventRecord[];
   status: TraceSessionStatus;
   errors: TraceErrorRecord[];
+  /**
+   * Present when this payload continues a session an earlier invoke started
+   * (a run resumed after a pause): `events` holds only this part's events,
+   * numbered from `firstSequence`, while `summary`, `startedAt` and `errors`
+   * cover the whole session. A sink should APPEND these events to the ones it
+   * already has for `sessionId`, not replace them.
+   */
+  continuation?: { part: number; firstSequence: number };
 };
 
 export type ResolvedTraceSink =
@@ -1123,6 +1166,10 @@ export type TraceSessionRuntime = {
   summary: TraceSessionSummary;
   status: TraceSessionStatus;
   errors: TraceErrorRecord[];
+  /** Events recorded by earlier parts of this session (see `TraceContinuation`). */
+  sequenceOffset?: number;
+  /** 1-based part number; 1 for a session that starts with this invoke. */
+  part?: number;
   fileBaseDir?: string;
   fileSessionDir?: string;
 };

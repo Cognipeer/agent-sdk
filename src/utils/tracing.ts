@@ -9,7 +9,9 @@ import type {
   ResolvedTraceSink,
   SmartAgentOptions,
   SmartAgentTracingConfig,
+  TraceContinuation,
   TraceDataSection,
+  TraceErrorRecord,
   TraceEventRecord,
   TraceMessagePart,
   TraceSessionConfigSnapshot,
@@ -1155,32 +1157,95 @@ function convertMessageListToSections(messageList?: any[]): TraceDataSection[] |
   return sections.length > 0 ? sections : undefined;
 }
 
-export function createTraceSession(opts: SmartAgentOptions): TraceSessionRuntime | undefined {
+/**
+ * Reads a `ctx.__traceContinuation` value back, or undefined when it is not
+ * one. It arrives from caller-persisted state, so every field is checked.
+ */
+export function readTraceContinuation(value: unknown): TraceContinuation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.v !== 1 || typeof raw.sessionId !== "string" || raw.sessionId.length === 0) return undefined;
+  const nextSequence = Number(raw.nextSequence);
+  const startedAt = Number(raw.startedAt);
+  const part = Number(raw.part);
+  if (!Number.isInteger(nextSequence) || nextSequence < 1) return undefined;
+  if (!Number.isFinite(startedAt) || !Number.isInteger(part) || part < 1) return undefined;
+  const summary = raw.summary && typeof raw.summary === "object"
+    ? { ...createEmptySummary(), ...(raw.summary as Partial<TraceSessionSummary>) }
+    : createEmptySummary();
+  summary.eventCounts = { ...((raw.summary as TraceSessionSummary | undefined)?.eventCounts ?? {}) };
+  return {
+    v: 1,
+    sessionId: raw.sessionId,
+    traceId: typeof raw.traceId === "string" ? raw.traceId : undefined,
+    rootSpanId: typeof raw.rootSpanId === "string" ? raw.rootSpanId : undefined,
+    threadId: typeof raw.threadId === "string" ? raw.threadId : undefined,
+    startedAt,
+    nextSequence,
+    part,
+    summary,
+    errors: Array.isArray(raw.errors) ? (raw.errors as TraceErrorRecord[]) : [],
+  };
+}
+
+/** Where `session` leaves off, for the invoke that will continue it. */
+export function traceContinuationOf(session: TraceSessionRuntime): TraceContinuation {
+  return {
+    v: 1,
+    sessionId: session.sessionId,
+    traceId: session.traceId,
+    rootSpanId: session.rootSpanId,
+    threadId: session.threadId,
+    startedAt: session.startedAt,
+    nextSequence: (session.sequenceOffset ?? 0) + session.events.length + 1,
+    part: session.part ?? 1,
+    summary: JSON.parse(JSON.stringify(session.summary)),
+    // Sink failures belong to the part that hit them; carrying them on would
+    // mark every later part `partial`.
+    errors: session.errors.filter((error) => error.type !== "sink"),
+  };
+}
+
+/**
+ * Opens the trace session for one invoke. With `continuation`, the invoke
+ * resumes a run that paused (tool approval, question to the user) or a turn
+ * the smart agent split into legs: it records into the same session — same
+ * ids, the next sequence numbers, totals carried forward — so one turn reads
+ * as one session however many invokes it took.
+ */
+export function createTraceSession(
+  opts: SmartAgentOptions,
+  continuation?: TraceContinuation,
+): TraceSessionRuntime | undefined {
   const cfg = withDefaults(opts.tracing);
   if (!cfg.enabled) return undefined;
 
   // Prefer a caller-supplied session id (e.g. a task-run/chat id) so emitted
   // traces correlate with the caller's own identifiers; fall back to a random id.
   const providedSessionId = opts.tracing?.sessionId?.trim();
-  const sessionId = providedSessionId || generateSessionId();
-  const traceId = generateTraceId();
-  const rootSpanId = generateSpanId();
+  const sessionId = continuation?.sessionId || providedSessionId || generateSessionId();
+  const traceId = continuation?.traceId || generateTraceId();
+  const rootSpanId = continuation?.rootSpanId || generateSpanId();
   const runtime: TraceSessionRuntime = {
     sessionId,
     traceId,
     rootSpanId,
-    threadId: opts.tracing?.threadId,
+    threadId: continuation?.threadId ?? opts.tracing?.threadId,
     configAgentName: opts.tracing?.agentName?.trim() || undefined,
     configMetadata: opts.tracing?.metadata && Object.keys(opts.tracing.metadata).length > 0
       ? opts.tracing.metadata
       : undefined,
-    startedAt: Date.now(),
+    startedAt: continuation?.startedAt ?? Date.now(),
     resolvedConfig: cfg,
     events: [],
-    summary: createEmptySummary(),
+    summary: continuation ? continuation.summary : createEmptySummary(),
     status: "in_progress",
-    errors: [],
-    sessionStarted: false,
+    errors: continuation ? [...continuation.errors] : [],
+    // A continued session was announced by its first part; announcing it
+    // again would reset a streaming receiver's copy.
+    sessionStarted: Boolean(continuation),
+    sequenceOffset: continuation ? continuation.nextSequence - 1 : 0,
+    part: continuation ? continuation.part + 1 : 1,
   };
 
   if (cfg.sink.type === "file") {
@@ -1316,7 +1381,7 @@ export function recordTraceEvent(
   if (!session) return undefined;
 
 
-  const sequence = session.events.length + 1;
+  const sequence = (session.sequenceOffset ?? 0) + session.events.length + 1;
   const id = generateEventId(sequence);
   const timestampIso = event.timestamp || new Date().toISOString();
   const status = event.status ?? "success";
@@ -1555,6 +1620,9 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
     events: session.events,
     status,
     errors: session.errors,
+    ...((session.part ?? 1) > 1
+      ? { continuation: { part: session.part!, firstSequence: (session.sequenceOffset ?? 0) + 1 } }
+      : {}),
   });
 
   const payloadForSink = buildPayload(initialStatus);
@@ -1623,7 +1691,19 @@ export async function finalizeTraceSession(session: TraceSessionRuntime | undefi
   if (sink.type === "file" && session.fileSessionDir) {
     try {
       const filePath = path.join(session.fileSessionDir, "trace.session.json");
-      await fs.promises.writeFile(filePath, JSON.stringify(finalPayload, null, 2), "utf8");
+      // A continued session's file already holds the earlier parts' events.
+      let filePayload: TraceSessionFile = finalPayload;
+      if (finalPayload.continuation) {
+        try {
+          const previous = JSON.parse(await fs.promises.readFile(filePath, "utf8")) as TraceSessionFile;
+          const earlier = (previous.events ?? []).filter((event) => event.sequence < finalPayload.continuation!.firstSequence);
+          filePayload = { ...finalPayload, events: [...earlier, ...finalPayload.events] };
+          delete filePayload.continuation;
+        } catch {
+          // No earlier file (removed, or another machine): write this part alone.
+        }
+      }
+      await fs.promises.writeFile(filePath, JSON.stringify(filePayload, null, 2), "utf8");
     } catch (err) {
       sinkFailed = true;
       const message = err instanceof Error ? err.message : String(err);
