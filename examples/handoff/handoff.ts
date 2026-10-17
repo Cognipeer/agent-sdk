@@ -26,7 +26,10 @@ async function main() {
     name: "Root",
     model,
     tools: [],
-    handoffs: [ codingAgent.asHandoff({ toolName: "delegate_code", description: "Delegate if code implementation is needed" }) ]
+    handoffs: [ codingAgent.asHandoff({
+      toolName: "handoff_to_coder",
+      description: "Transfer the conversation to the Coder agent, which will write the code and answer the user. Call only when the user needs code written; Root stops responding after this call.",
+    }) ]
   });
 
   const events: any[] = [];

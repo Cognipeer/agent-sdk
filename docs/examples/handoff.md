@@ -39,8 +39,10 @@ const rootAgent = createAgent({
 	tools: [],
 	handoffs: [
 		codingAgent.asHandoff({
-			toolName: "delegate_code",
-			description: "Delegate if code implementation is needed",
+			toolName: "handoff_to_coder",
+			description:
+				"Transfer the conversation to the Coder agent, which will write the code and answer the user. " +
+				"Call only when the user needs code written; Root stops responding after this call.",
 		}),
 	],
 });
@@ -49,10 +51,19 @@ const rootAgent = createAgent({
 ## End-to-end flow
 
 1. The root agent receives a request.
-2. The runtime detects that code work should be delegated.
-3. The configured handoff target is selected.
-4. Ownership moves to the downstream agent.
-5. Handoff events are emitted and the downstream agent completes the work.
+2. The model calls the handoff tool (`handoff_to_coder({ reason })`).
+3. The tool result says `Handoff complete: control transferred to Coder. Reason: <reason>. Coder now answers the user.`
+4. The runtime swaps the active agent: from the next model call the target's model, tools and system prompt are in effect, and the system prompt gets a short preamble naming who handed the conversation over and the `reason`.
+5. A `handoff` event (`{ from, to, toolName }`) is emitted and the downstream agent answers the user.
+
+## What the handoff tells each side
+
+- **The source** gets a tool description that says control transfers and it must stop. Without a `description`, `asHandoff(...)` and the `handoffs` option use the same default: "Transfer this conversation to <target> and STOP. After this call you do not answer again this turn; ...". Write your own when the routing rule is specific, and keep the "control transfers, stop" part.
+- **The target** is told on the wire only (the transcript you get back is not changed; it needs a leading system message, which every smart agent and every agent with a `systemPrompt` has) that the conversation was handed to it, by whom and why, and to answer the user directly. The `reason` is whatever the model put in the tool's `reason` argument, so the default schema asks for the goal and the facts the next agent needs. A custom `schema` without a `reason` field simply drops that sentence.
+
+## Scope: one `invoke()`
+
+A handoff lasts for the `invoke()` it happened in. The next `invoke()` starts again at the originating agent, with its own tools and system prompt (the handoff markers `ctx.__handoffActive` / `ctx.__handoffInfo` are cleared), even when you continue with the returned messages. If the specialist should keep the conversation across turns, route to it yourself on the next call; a handoff does not persist ownership. The originating agent's skill and sub-agent catalog does not follow the conversation to the target.
 
 ## Why it matters
 
@@ -71,7 +82,13 @@ Use handoff when role transition matters operationally, not just when you need a
 - the final content is produced after the downstream agent takes over
 - collected events include one or more `handoff` entries
 
+## Handoff or sub-agent?
+
+A handoff **gives the conversation away**: the target answers the user and the source does not speak again in that invoke. A [sub-agent](/sub-agents/) (`delegate_to`) is a subroutine: it returns a result to the orchestrator, which writes the final answer. Name handoff tools `handoff_to_<agent>` so neither the model nor the reader mistakes one for a delegation, and never reuse `delegate_to` / `spawn_subagent` for them.
+
 ## Common failure modes
 
 - the target agent is added as a tool instead of a handoff, so ownership never shifts
+- the handoff tool is described like a delegation ("delegate if ...") and the source keeps talking, or the target answers "handoff done" instead of the user's request
+- expecting the specialist to still own the conversation on the next `invoke()`; the handoff is scoped to one invoke
 - provider credentials are missing because this example uses `ChatOpenAI` directly

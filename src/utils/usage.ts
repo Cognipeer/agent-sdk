@@ -9,6 +9,8 @@
 //   raw?: any; // original provider usage
 // }
 
+import type { AgentState } from "../types.js";
+
 export type NormalizedUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -138,3 +140,54 @@ function num(...vals: any[]): number | undefined {
   return undefined;
 }
 function safe(v: any): number { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0; }
+
+type LedgerEntry = NonNullable<AgentState["usage"]>["perRequest"][number];
+type Ledger = NonNullable<AgentState["usage"]>;
+
+/** Roll a list of ledger entries up into per-model totals. */
+export function totalUsage(entries: LedgerEntry[]): Ledger["totals"] {
+  const totals: Ledger["totals"] = {};
+  for (const entry of entries) {
+    const previous = totals[entry.modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+    totals[entry.modelName] = {
+      input: previous.input + (Number(entry.usage?.prompt_tokens) || 0),
+      output: previous.output + (Number(entry.usage?.completion_tokens) || 0),
+      total: previous.total + (Number(entry.usage?.total_tokens) || 0),
+      cachedInput: previous.cachedInput + (Number(entry.cachedInput) || 0),
+    };
+  }
+  return totals;
+}
+
+/**
+ * Append another run's ledger entries to a state's usage (a sub-agent's model
+ * calls into its parent's), re-numbering `turn` and tagging each copy so a host
+ * can tell whose call it was. Goes through the same totals arithmetic as
+ * `recordUsage`, so a budget that reads `perRequest` or `totals` sees them.
+ */
+export function appendUsageEntries(
+  state: any,
+  entries: LedgerEntry[],
+  tag?: LedgerEntry["subagent"],
+): void {
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  const usageState: Ledger = state.usage || { perRequest: [], totals: {} };
+  for (const entry of entries) {
+    usageState.perRequest.push({
+      ...entry,
+      turn: usageState.perRequest.length + 1,
+      ...(tag ? { subagent: tag } : {}),
+    });
+  }
+  const added = totalUsage(entries);
+  for (const [modelName, add] of Object.entries(added)) {
+    const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+    usageState.totals[modelName] = {
+      input: previous.input + add.input,
+      output: previous.output + add.output,
+      total: previous.total + add.total,
+      cachedInput: previous.cachedInput + add.cachedInput,
+    };
+  }
+  state.usage = usageState;
+}

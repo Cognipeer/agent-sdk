@@ -20,6 +20,7 @@ import { applyToolResponseHardCap, validateToolArgs } from "../smart/toolRespons
 import { compressToolOutput, extractLatestUserQuery } from "../smart/contextPilot/index.js";
 import type { ContextPilotCompressionStats, ContextPilotRuntime } from "../smart/contextPilot/index.js";
 import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
+import { appendUsageEntries } from "../utils/usage.js";
 import type { PluginRunHost } from "../plugins/host.js";
 
 /**
@@ -281,6 +282,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         anyTool._stateRef.__onEvent = onEvent;
         // Expose parent runtime to delegation-aware tools (asTool sub-agents).
         anyTool._stateRef.parentRuntime = runtime;
+        // A delegating tool folds its child's model calls into THIS run's usage
+        // ledger, so the budget checks and the host's bill see them mid-turn.
+        anyTool._stateRef.__appendUsage = (entries: any[], tag?: any) => appendUsageEntries(state, entries, tag);
       }
     }
 
@@ -781,7 +785,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         onEvent?.({ type: "tool_call", phase: "start", name: toolName, id: tc.id, args });
         onProgress?.({ stage: "tools", message: `Running tool ${tc.name}` });
         const anyTool = tool as any;
-        const callOptions = { cancellationToken, signal: abortSignal };
+        // `toolCallId` is per call: a tool object (and its `_stateRef`) is shared by
+        // every sibling call in the turn, so identity cannot ride on it.
+        const callOptions = { cancellationToken, signal: abortSignal, toolCallId };
         const invokeOnce = async (): Promise<any> => {
           if (typeof anyTool.func === "function") return anyTool.func(args, callOptions);
           if (typeof anyTool.invoke === "function") return anyTool.invoke(args, callOptions);
@@ -844,8 +850,18 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           // checkpointed, and a `checkpointing` plugin with failureMode "open"
           // swallowed that throw and silently wrote nothing.
           toolHistory.push({ executionId, toolName, args, output: "handoff:ok", rawOutput: { __handoff: { to: (output.__handoff.runtime as any)?.name } }, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "handoff" });
-          push({ role: "tool", content: "ok", tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
           const handoffRuntime = output.__handoff.runtime as AgentRuntimeConfig;
+          // The target sees this as the tool result: it has to say that control
+          // moved, to whom and why, or the next model call reads a bare "ok" and
+          // may answer as if nothing happened.
+          const handoffTarget = handoffRuntime?.name || "the target agent";
+          const handoffReason = typeof args?.reason === "string" && args.reason.trim() ? args.reason.trim() : undefined;
+          push({
+            role: "tool",
+            content: `Handoff complete: control transferred to ${handoffTarget}.${handoffReason ? ` Reason: ${handoffReason}.` : ""} ${handoffTarget} now answers the user.`,
+            tool_call_id: tc.id || `${tc.name}_${toolCount}`,
+            name: tc.name,
+          });
           state.agent = handoffRuntime;
           // The menu follows the runtime and the persona has to follow it too,
           // but ONLY on the wire: the agent node rebuilds the leading system
@@ -855,7 +871,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           // returned messages, and the next turn — which seeds no new system
           // message because one is already present — would run the ORIGINATING
           // agent's tools under the target's instructions, permanently.
-          (state.ctx = state.ctx || {}).__handoffActive = true;
+          const handoffCtx = (state.ctx = state.ctx || {});
+          handoffCtx.__handoffActive = true;
+          handoffCtx.__handoffInfo = { from: runtime.name, reason: handoffReason };
           onEvent?.({ type: "handoff", from: runtime.name, to: state.agent?.name, toolName });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: "handoff", durationMs });
           if (needsApproval && approvalEntry) {
@@ -973,6 +991,15 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const responsePolicy = applyToolResponseHardCap(toolName, compressedOutput, executionId, resolved);
         const timestamp = new Date().toISOString();
 
+        // A tool can report that what it RETURNED is a failure (a delegating tool
+        // whose child errored hands back a result, not a throw). The model still
+        // gets the output; the event, history and trace say it failed.
+        let reportedFailure: string | undefined;
+        if (typeof anyTool.__failureOf === "function") {
+          try { reportedFailure = anyTool.__failureOf(output) || undefined; } catch { /* a broken probe is not a failed tool */ }
+        }
+        const outcomeStatus = reportedFailure ? "error" : "success";
+
         toolHistory.push({
           executionId,
           toolName,
@@ -987,12 +1014,16 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           retentionPolicy: "keep_full",
           summary: undefined,
           archiveId: undefined,
-          status: "success",
+          status: outcomeStatus,
           contextPilot: contextPilotStats,
         });
 
         push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
-        onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
+        if (reportedFailure) {
+          onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, result: output, error: { message: reportedFailure }, durationMs });
+        } else {
+          onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: output, durationMs });
+        }
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} completed`, detail: { durationMs } });
 
         if (needsApproval && approvalEntry) {
@@ -1008,6 +1039,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           type: "tool_call",
           label: `Tool Execution - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
+          ...(reportedFailure ? { status: "error" as const, error: { message: reportedFailure } } : {}),
           durationMs,
           requestBytes: inputBytes,
           responseBytes: outputBytes,
@@ -1020,7 +1052,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             executionId,
             output: sanitizedOutput,
             retentionPolicy: "keep_full",
-            status: "success",
+            status: outcomeStatus,
             summary: responsePolicy.content,
             toolDetails,
             toolName,
@@ -1286,6 +1318,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       agent: state.agent,
       pendingApprovals,
       pendingUserQuestions,
+      // A delegating tool appends its children's calls; hand the ledger back so
+      // a caller that merges `{ ...state, ...delta }` keeps it.
+      ...(state.usage ? { usage: state.usage } : {}),
     };
   };
 }

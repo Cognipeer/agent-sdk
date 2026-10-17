@@ -37,7 +37,10 @@ describe("subagents/registry", () => {
     const msgs = seedChildMessages("scoped", parent, "task");
     expect(msgs.map((m: any) => m.role)).toEqual(["user", "user"]);
     expect((msgs[0] as any).content).toBe("latest user");
-    expect((msgs[1] as any).content).toBe("task");
+    // The task is framed as the job; the user's message above it is background.
+    expect((msgs[1] as any).content).toContain("background only");
+    expect((msgs[1] as any).content).toContain("YOUR TASK");
+    expect((msgs[1] as any).content.endsWith("task")).toBe(true);
   });
 
   it("seedChildMessages: full keeps the transcript (minus system) + input", () => {
@@ -47,7 +50,8 @@ describe("subagents/registry", () => {
     ] as any;
     const msgs = seedChildMessages("full", parent, "task");
     expect(msgs.map((m: any) => m.role)).toEqual(["user", "user"]);
-    expect((msgs[1] as any).content).toBe("task");
+    expect((msgs[1] as any).content).toContain("YOUR TASK");
+    expect((msgs[1] as any).content.endsWith("task")).toBe(true);
   });
 
   it("canSpawn enforces the per-run child-call budget", () => {

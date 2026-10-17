@@ -2,7 +2,19 @@ import type { ZodSchema } from "zod";
 
 import type { ToolApprovalPredicate, ToolInterface, ToolRetentionSpec } from "./types.js";
 
-export type SmartToolFn = (args: any) => Promise<any> | any;
+/**
+ * Per-call context the tools node hands to a tool's `func` as its second
+ * argument. Anything that must be true of THIS call (rather than of the tool
+ * object, which sibling calls in the same turn share) belongs here.
+ */
+export type ToolCallContext = {
+  /** The model's tool_call id for this exact call. */
+  toolCallId?: string;
+  cancellationToken?: any;
+  signal?: AbortSignal;
+};
+
+export type SmartToolFn = (args: any, context?: ToolCallContext) => Promise<any> | any;
 
 export type ToolCachePolicy = {
   /** Cache scope. "run" persists for the current invoke only. */
@@ -66,7 +78,7 @@ export function createTool({
      */
     retention?: ToolRetentionSpec;
 }): ToolInterface {
-    const execute: SmartToolFn = async (input: any) => func(input);
+    const execute: SmartToolFn = async (input: any, context?: ToolCallContext) => func(input, context);
 
     const toolRecord: ToolInterface = {
         name,
