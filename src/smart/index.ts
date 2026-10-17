@@ -23,7 +23,7 @@ import { createSkillTools } from "./skills/skillTools.js";
 import { preopenSkills } from "./skills/preopen.js";
 import { appendBoundTools, buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
 import { createSubagentRegistryRef, DEFAULT_SUBAGENT_POLICY, type SubagentDef, type SubagentPolicy } from "./subagents/types.js";
-import { buildSubagentCatalogBlock, resolveAvailableSubagents } from "./subagents/registry.js";
+import { buildSubagentCatalogBlock, resolveAvailableSubagents, SUBAGENT_CHILD_PREAMBLE } from "./subagents/registry.js";
 import { createSubagentTools, type BuildChildConfig, type SubagentToolDeps } from "./subagents/subagentTools.js";
 import type { PromptHooks, ToolInterface } from "../types.js";
 
@@ -96,7 +96,8 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     name: cfg.name,
     model: cfg.model,
     tools: cfg.tools,
-    systemPrompt: cfg.systemPrompt,
+    systemPrompt: [SUBAGENT_CHILD_PREAMBLE, cfg.systemPrompt].filter(Boolean).join("\n\n"),
+    __subagentChild: true,
     outputSchema: cfg.outputSchema,
     limits: cfg.limits,
     runtimeProfile: resolved.runtimeProfile,
@@ -169,6 +170,11 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     skillRegistryRef?: any;
     subagentRegistryRef?: any;
   };
+  // The tools an ad-hoc child may borrow by name, as the model is told them.
+  // Static ones only: skill-bound tools arrive later and are still accepted at
+  // call time (checked against the live runtime), they just are not advertised.
+  const parentToolNames = (): string[] =>
+    [...new Set([...userTools, ...pluginContributedTools].map((tool: any) => tool?.name).filter((name: any) => typeof name === "string" && name))].slice(0, 40);
   const buildInvokeToolSet = (): InvokeToolSet => {
     const ref: any = { toolHistory: undefined, toolHistoryArchived: undefined, todoList: undefined, planVersion: 0, adherenceScore: 0 };
     const ctxTools = createContextTools(ref, { planningEnabled, includeGetToolResponse: false });
@@ -195,6 +201,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         subagents,
         policy: subagentPolicy,
         buildChild,
+        parentToolNames: parentToolNames(),
         // NOTE: promptHooks.toolDescriptions overrides for the sub-agent tools are
         // applied uniformly (and only) by decorateToolDescriptions below, so the
         // function form of an override receives the real DEFAULT_* string. Baking
@@ -299,13 +306,23 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     ? soManager.buildSystemPromptHint()
     : '';
 
+  // The delegation line has one source of truth per kind of agent: a child
+  // cannot delegate, an agent wired with sub-agents is described by its
+  // `subagentPolicy`, and only an agent without either falls back to the runtime
+  // profile's `asTool` policy (which says nothing about `delegate_to`).
+  const childSees = { minimal: "only the task", scoped: "the user's latest message plus the task", full: "the whole conversation plus the task" } as const;
+  const delegationLine = (opts as any).__subagentChild
+    ? "Delegation: not available (you are a sub-agent)."
+    : subagentsEnabled
+      ? `Delegation: ${subagentPolicy.mode === "registry_and_adhoc" ? "named and ad-hoc" : "named"} sub-agents, up to ${subagentPolicy.maxChildCalls} per run; a sub-agent sees ${childSees[subagentPolicy.childContextPolicy] ?? childSees.scoped} by default.`
+      : `Delegation mode: ${resolved.delegation.mode}. Child context policy: ${resolved.delegation.childContextPolicy}.`;
   const runtimeHint = [
     resolved.runtimeProfile === resolved.baseProfile
       ? `Runtime profile: ${resolved.runtimeProfile}.`
       : `Runtime profile: ${resolved.runtimeProfile} (base: ${resolved.baseProfile}).`,
     `Context policy: ${resolved.context.policy}.`,
     `Planning mode: ${resolved.planning.mode}. Replan policy: ${resolved.planning.replanPolicy}.`,
-    `Delegation mode: ${resolved.delegation.mode}. Child context policy: ${resolved.delegation.childContextPolicy}.`,
+    delegationLine,
     `Tool response policy: ${resolved.context.toolResponsePolicy}.`,
   ].join('\n');
 
@@ -682,7 +699,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           delegate: "delegate_to",
           spawn: "spawn_subagent",
           parallel: "spawn_subagents_parallel",
-        });
+        }, { parentToolNames: parentToolNames() });
         if (promptHooks?.subagentCatalog) {
           try { block = promptHooks.subagentCatalog(block, availableSubagents); }
           catch (err) { console.warn('[agent-sdk] promptHooks.subagentCatalog error:', err); }
@@ -746,6 +763,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       if (carriedCtx && carriedCtx.__handoffActive) {
         freshCtx = { ...carriedCtx };
         delete freshCtx.__handoffActive;
+        delete freshCtx.__handoffInfo;
       }
       let state: SmartState = syncRuntimeTools(await syncMemory({ ...input, ctx: freshCtx, agent: base.__runtime, messages: seedMessages, toolHistory: seedToolHistory } as SmartState), seedMessages, toolSet);
       let lastResult: AgentInvokeResult<TOutput> | null = null;
@@ -916,6 +934,12 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           // returning `output` while `content` says "blocked" would hand the
           // caller the very payload the policy refused.
           lastResult = { ...lastResult, content: reason, output: undefined, outputError: undefined };
+          // Say so on the state too: a host (or a delegating parent) reading a
+          // run that ended in a refusal cannot tell it from an answer otherwise.
+          if (lastResult.state) {
+            const blockedCtx = { ...((lastResult.state as any).ctx || {}), __guardrailBlocked: { phase: "response", incident: { reason, deniedBy: "preFinalAnswer" } } };
+            lastResult = { ...lastResult, state: { ...lastResult.state, ctx: blockedCtx } as SmartState };
+          }
         } else if (finalGate.input.content !== lastResult.content) {
           if (lastResult.output !== undefined) {
             emitSessionEvent({

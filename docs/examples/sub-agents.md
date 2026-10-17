@@ -65,9 +65,12 @@ console.log(res.content);
 - the parent's final answer reflects the aggregated sub-agent results
 
 ## Common failure modes
-- `child-call budget exhausted` → raise `subagentPolicy.maxChildCalls`
+- `child-call budget exhausted` → raise `subagentPolicy.maxChildCalls` (a delegation refused by a `subagentStart` plugin does not use it up)
 - `delegation depth limit reached` → raise `subagentPolicy.maxDepth`
-- ad-hoc sub-agent can't find a tool → ensure the name is in the parent's tools and `allowAdhocTools` is `true`
+- `Unknown tool name(s) for the sub-agent` → ad-hoc `tools` must be exact names of the parent's tools, and `allowAdhocTools` must be `true`
+- the parent presents a child's partial work as complete → read `status` (`incomplete`, `blocked`, `needs_input`, `cancelled`, `error`) on the result; the model is told to treat anything but `ok` as not done
+- child text shows up in your UI as the parent's answer → it does not by default; with `subagentPolicy.streamChildren: true` filter chunks that carry `subagentName`
+- the parent stops mid-turn on `maxCostUsd` after a child spent a lot → the child's calls are in the parent's `state.usage` (entries tagged `subagent`); give the child its own `limits` to bound it separately
 
 ## See also
 - [Sub-Agents guide](/guide/sub-agents)

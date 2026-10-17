@@ -13,6 +13,7 @@ export {
   createDelegateTool,
   createSpawnTool,
   createParallelTool,
+  toModelResult,
   type SubagentToolDeps,
   type BuildChildConfig,
 } from "./subagentTools.js";

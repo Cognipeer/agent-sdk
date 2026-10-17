@@ -32,6 +32,18 @@ import type { AgentPlugin } from "./plugins/types.js";
 import { openPluginSession } from "./plugins/session.js";
 import { createPluginTraceRecorder } from "./plugins/trace.js";
 
+/** A handoff gives the conversation away: say so, or it reads like a delegation that comes back. */
+function defaultHandoffDescription(targetName?: string): string {
+  const target = targetName || "the target agent";
+  return `Transfer this conversation to ${target} and STOP. After this call you do not answer again this turn; ${target} takes over and answers the user. ` +
+    `Use it only when ${target}'s specialty fits the request better than yours. Put everything it needs to continue in \`reason\`. ` +
+    "To get a result back instead, use a delegation tool.";
+}
+
+function handoffReasonSchema() {
+  return z.object({ reason: z.string().describe("Why you are handing off, plus the goal and facts the next agent needs to continue.") });
+}
+
 /**
  * Turn handoff descriptors into the tools that expose them to the model.
  *
@@ -40,10 +52,10 @@ import { createPluginTraceRecorder } from "./plugins/trace.js";
  */
 export function buildHandoffTools(handoffs: HandoffDescriptor[]): any[] {
   return handoffs.map((descriptor) => {
-    const schema = descriptor.schema || z.object({ reason: z.string().describe("Reason for handoff") });
+    const schema = descriptor.schema || handoffReasonSchema();
     return createTool({
       name: descriptor.toolName,
-      description: descriptor.description || `Handoff to ${descriptor.target.__runtime.name || "agent"}`,
+      description: descriptor.description || defaultHandoffDescription(descriptor.target.__runtime.name),
       schema,
       func: async () => ({ __handoff: { runtime: descriptor.target.__runtime } }),
     });
@@ -1214,6 +1226,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         // the very payload the policy refused.
         const deniedCtx = (res.ctx = res.ctx || {});
         delete (deniedCtx as any).__structuredOutputParsed;
+        (deniedCtx as any).__guardrailBlocked = { phase: "response", incident: { reason: content, deniedBy: "preFinalAnswer" } };
       }
     }
 
@@ -1370,14 +1383,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     },
     asHandoff: ({ toolName, description, schema }: { toolName?: string; description?: string; schema?: ZodSchema<any>; }): HandoffDescriptor => {
       const finalName = toolName || `handoff_to_${runtime.name || 'agent'}`;
-      const zschema = schema || z.object({ reason: z.string().describe('Reason for handoff') });
-      createTool({
-        name: finalName,
-        description: description || `Handoff control to agent ${runtime.name || 'Agent'}`,
-        schema: zschema,
-        func: async (_args: any) => ({ __handoff: { runtime } })
-      });
-      return { type: 'handoff', toolName: finalName, description: description || '', schema: zschema, target: instance } as any;
+      const zschema = schema || handoffReasonSchema();
+      return { type: 'handoff', toolName: finalName, description: description || defaultHandoffDescription(runtime.name), schema: zschema, target: instance } as any;
     },
     __runtime: runtime,
   };

@@ -111,16 +111,18 @@ describe("subagents × resilience", () => {
 
   it("isolates a failing task in a parallel fan-out", async () => {
     const ok: SubagentDef = { name: "ok", header: "ok", model: leafModel("OK") };
+    const boom: SubagentDef = { name: "boom", header: "throws", model: { modelName: "boom", bindTools() { return this; }, async invoke() { throw new Error("provider down"); } } as any };
     const agent = createSmartAgent({
       name: "parent",
-      model: callsToolThenDone("spawn_subagents_parallel", { tasks: [{ subagent: "ok", input: "1" }, { subagent: "missing", input: "2" }] }),
-      subagents: [ok],
+      model: callsToolThenDone("spawn_subagents_parallel", { tasks: [{ subagent: "ok", input: "1" }, { subagent: "boom", input: "2" }] }),
+      subagents: [ok, boom],
       summarization: false,
     });
     const res = await agent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
     const parsed = JSON.parse((res.messages.find((m: any) => m.role === "tool") as any).content);
     expect(parsed.results).toHaveLength(2);
-    expect(parsed.results[0].content).toBe("OK");
-    expect(parsed.results[1].error).toContain("Unknown sub-agent");
+    expect(parsed.results[0]).toMatchObject({ status: "ok", content: "OK" });
+    expect(parsed.results[1]).toMatchObject({ status: "error" });
+    expect(parsed.results[1].error).toContain("provider down");
   });
 });

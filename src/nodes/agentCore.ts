@@ -323,6 +323,12 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         runtime.name || "Agent",
         (runtime as any).todoListPrompt,
       );
+      // Say that the conversation was handed over, by whom and why, so the
+      // target takes the user's request instead of reacting to a bare tool call.
+      const handoffInfo = (state.ctx as any)?.__handoffInfo as { from?: string; reason?: string } | undefined;
+      persona = `${persona}\n\nThis conversation was handed to you${handoffInfo?.from ? ` by ${handoffInfo.from}` : ""}.` +
+        `${handoffInfo?.reason ? ` Their stated reason: ${handoffInfo.reason}.` : ""}` +
+        " Take over from the last user message and answer the user directly; do not mention the handoff unless asked.";
       const contribute = (state.ctx as any)?.__applySystemPromptContribution;
       if (typeof contribute === "function") persona = contribute(persona);
       const append = (state.ctx as any)?.__pluginSystemPromptAppend;

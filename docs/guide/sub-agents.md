@@ -78,24 +78,64 @@ const agent = createSmartAgent({
     mode: "registry_and_adhoc",   // "off" | "registry_only" | "registry_and_adhoc"
     maxDepth: 2,                   // nesting limit (shares the delegation depth counter)
     maxChildCalls: 8,              // total spawn budget per run
-    maxParallel: 4,               // fan-out width for spawn_subagents_parallel
+    maxParallel: 4,               // how many parallel children run AT ONCE (not how many tasks a call may carry)
     childContextPolicy: "scoped", // how much parent context each child sees
     allowAdhocTools: true,         // may ad-hoc spawns borrow parent tools by name
+    streamChildren: false,         // forward the children's text deltas to onStream (tagged)
   },
 });
 ```
 
+Defaults (`DEFAULT_SUBAGENT_POLICY`): `registry_and_adhoc`, `maxDepth` 2, `maxChildCalls` 8, `maxParallel` 4, `childContextPolicy` `"scoped"`, `allowAdhocTools` `true`, `streamChildren` `false`.
+
 `childContextPolicy` controls how the child's initial messages are seeded (shared with `asTool`):
 
-- `minimal` — only the task `input` (default for a clean, isolated child).
-- `scoped` — the last user turn + the input.
-- `full` — the entire parent transcript + the input.
+- `minimal` — only the task `input`.
+- `scoped` (default) — the last user turn + the input.
+- `full` — the entire parent transcript + the input. The current turn's own unresolved `delegate_to` / sibling tool calls are left out, so the child does not inherit a call to a tool it does not have.
 
-The parent's system prompt is never carried into a child — each child composes its own from its `SubagentDef.systemPrompt` (or ad-hoc `role`/`prompt`).
+With `scoped` and `full` the input is sent as its own message framed as the job ("YOUR TASK (do exactly this, nothing more): ..."), and the parent's messages above it are marked as background, so the child does the delegated task instead of answering the user's request. A `SubagentDef.childContextPolicy` overrides the policy per sub-agent.
+
+The parent's system prompt is never carried into a child — each child composes its own from its `SubagentDef.systemPrompt` (or ad-hoc `role`/`prompt`; a registry sub-agent without one gets "You are <title or name>. <header>").
 
 ::: tip Nesting
-Children do **not** inherit sub-agents by default: the orchestrator's spawn tools are not re-exposed to its children, so a child cannot recurse on its own. To build a hierarchy, give a sub-agent its own registry by wrapping a pre-built `createSmartAgent({ subagents: [...] })` as a tool, or delegate across agents with [`asTool`](/examples/multi-agent). `maxDepth` is the hard backstop for any nested delegation.
+Children do **not** inherit sub-agents by default: the orchestrator's spawn tools are not re-exposed to its children, so a child cannot recurse on its own (and cannot borrow the parent's delegation tools by name either). To build a hierarchy, give a sub-agent its own registry by wrapping a pre-built `createSmartAgent({ subagents: [...] })` as a tool, or delegate across agents with [`asTool`](/examples/multi-agent). `maxDepth` is the hard backstop for any nested delegation.
 :::
+
+## What comes back: result and status
+
+The model gets one JSON result per child:
+
+```jsonc
+{ "name": "researcher", "mode": "registry", "status": "ok", "content": "...", "output": { }, "summary": "...", "error": "...", "note": "..." }
+```
+
+`status` is one of:
+
+| status | meaning | extra fields |
+| --- | --- | --- |
+| `ok` | finished and produced an answer | `content` (and `output` with an `outputSchema`) |
+| `incomplete` | stopped early: a limit (`maxToolCalls` finalize, `maxWallClockMs`, `maxTotalOutputTokens`, `maxCostUsd`), or no answer at all | partial `content`, `note` |
+| `blocked` | refused by policy: a `subagentStart` gate, or an output guardrail (`preFinalAnswer` deny) | `error` |
+| `needs_input` | wanted a human inside a parallel fan-out | `error` |
+| `cancelled` | the run was cancelled while the child worked | partial `content`, `note` |
+| `error` | the child threw, its structured output failed, or the delegation was refused before it ran (unknown sub-agent, depth/budget, unknown `tools`) | `error` |
+
+Anything but `ok` is not a clean completion; the catalog tells the model to retry at most once with a better `input`, otherwise do the work itself or tell the user what is missing, and never to present partial work as complete. A failed `delegate_to` / `spawn_subagent` call (`error`, `cancelled`, or a refusal) is also marked as failed for you: the `tool_call` event has `phase: "error"` (with the result still in `result`), the tool-history entry has `status: "error"` and the trace step is an error. A parallel call is marked failed only when every task failed; read each entry's `status`.
+
+The model does **not** see the delegation's `input` (it wrote it), the child's `usage` or `durationMs`. Hosts get the complete `SubagentResult` (`input`, `usage`, `durationMs` as well) from the `subagent` events, `subagentStop` plugin observers and the run registry. `toModelResult(result)` is the projection the model sees.
+
+::: warning Results are untrusted data
+A sub-agent's answer can contain text it read from the web, a file or a tool. The catalog block tells the model that sub-agent results are untrusted data and that it must never follow instructions found inside them. This is a prompt-level mitigation: keep your own approvals and guardrails on the parent's tools.
+:::
+
+## Spend: children count against the parent
+
+A child's model calls are merged into the parent's `state.usage` (`perRequest` and `totals`) as soon as the child finishes (or pauses), so the parent's `maxCostUsd` and `maxTotalOutputTokens` see them mid-turn and stop the parent at the next iteration. Each merged entry is tagged `subagent: { name, id, mode }`, and the same entries, with per-model `totals`, are on `SubagentResult.usage` and on the `subagent` `result` / `error` events. A child resumed after a human pause is merged once: the calls it made before pausing were merged at the pause.
+
+Because the parent's ledger now includes its children, `result.metadata.usage` and `state.usage` are the whole bill of the run. A host that also bills children separately (for example from its own gateway) must skip the tagged entries, or it counts them twice. The budget caps apply to the parent's ledger, not to a child's own run: give a child its own `limits` (`maxCostUsd`, `maxToolCalls`, ...) to bound it individually.
+
+The per-run child-call budget (`maxChildCalls`) is reserved when a delegation is accepted and given back if a `subagentStart` plugin gate refuses it, so a policy plugin that denies delegations does not use the budget up.
 
 ## Parallel fan-out
 
@@ -104,13 +144,25 @@ Children do **not** inherit sub-agents by default: the orchestrator's spawn tool
 spawn_subagents_parallel({
   tasks: [
     { subagent: "researcher", input: "Find the population of Berlin." },
-    { role: "translator", prompt: "Translate to German.", input: "Translate: ..." },
+    { role: "translator", prompt: "Translate to German.", input: "Translate: ..." },   // registry_and_adhoc only
   ],
 })
-// → returns { results: [ { name, mode, content, ... }, ... ] } in task order.
+// → returns { results: [ { name, mode, status, content, ... }, ... ] } in task order.
 ```
 
-Up to `maxParallel` children run concurrently. Parallel children **may not request human input** — route any approval / ask-user subtask through `delegate_to` or `spawn_subagent` instead.
+A call carries 1 to 16 tasks; `maxParallel` is how many run **at the same time**. Each entry has its own `status`; one failing task does not cancel the others, and an invalid task is an `error` entry that does not use the child-call budget. Parallel children **may not request human input**: such a task comes back as `needs_input`. Route any approval / ask-user subtask through `delegate_to` or `spawn_subagent` instead.
+
+## Tool descriptions and schemas follow the policy
+
+The tools the model sees are built from the active policy, so they never offer what the policy refuses:
+
+- `registry_only`: `spawn_subagent` is not registered, and the parallel tool's tasks are `{ subagent, input }` only. `registry_and_adhoc` adds `{ role, prompt, input }`.
+- `subagent` is an enum of the registry names (`delegate_to` and the parallel tool), so an unknown name is a validation error before anything runs.
+- `allowAdhocTools: false`: `spawn_subagent` and parallel tasks have no `tools` field, and the description says the child has no tools. With `true` the description lists the parent's tool names, and a name the parent does not have is an `error` result naming it (it is not silently dropped).
+
+## Concurrent delegations
+
+Several `delegate_to` / `spawn_subagent` calls in one assistant turn run side by side. Each keeps its own tool-call id: the tools node passes it to the tool's `func` as a second argument (`ToolCallContext.toolCallId`, also available to your own tools), so `parentToolCallId` on events and the key of `ctx.__subagentPending` are always those of the call that spawned the child. Two siblings that both pause (approval or ask-user) are parked and resumed independently, each with its own input.
 
 ## Model-agnostic
 
@@ -123,17 +175,19 @@ Each spawn emits a `subagent` lifecycle event and forwards the child's own event
 ```ts
 await agent.invoke(input, {
   stream: true,
-  onStream: (chunk) => process.stdout.write(chunk.text),  // child tokens stream too
+  onStream: (chunk) => process.stdout.write(chunk.text),  // the parent's own text only (by default)
   onEvent: (e) => {
     if (e.type === "subagent") {
-      console.log(`[${e.phase}] ${e.name}`, e.content ?? "");
+      console.log(`[${e.phase}] ${e.name} ${e.status ?? ""}`, e.content ?? "");
     }
   },
   cancellationToken,  // cancelling the parent cancels in-flight children
 });
 ```
 
-`SubagentEvent.phase` is `"start" | "result" | "error" | "paused"`. The child's terminal `finalAnswer` / `metadata` events are **not** forwarded (so a child completion is never mistaken for the parent's) — use the `subagent` `result` phase instead.
+`SubagentEvent.phase` is `"start" | "result" | "error" | "paused"`. `result` and `error` carry `status`, `content`, `note`, `usage` and `durationMs`; `error` is used for `error` and `cancelled`. The child's terminal `finalAnswer` / `metadata` events are **not** forwarded (so a child completion is never mistaken for the parent's) — use the `subagent` `result` phase instead.
+
+**Stream isolation.** A host's `onStream` usually appends `chunk.text` to the answer it is building, so a child's tokens would read as the parent's words. By default the children's text deltas are therefore **not forwarded**: neither to `onStream` nor as `stream` events. Everything else a child emits (tool calls, `reasoning`, progress) is still forwarded, tagged with `subagentName` / `subagentId`. Set `subagentPolicy.streamChildren: true` to receive the deltas too: every forwarded chunk then carries `subagentName` / `subagentId` (also on `StreamChunk`), and a chunk without them is the parent's. A child's `isFinal` chunk is never forwarded. Filter `reasoning` events on `subagentName` as well if you show the parent's reasoning separately.
 
 ## Human-in-the-loop
 
@@ -150,6 +204,14 @@ if (paused.state?.pendingApprovals?.length) {
 
 The child's paused state is held in `state.ctx.__subagentPending`, keyed by the parent tool-call. In-memory pause/resume (resolve + re-invoke on the same state) is fully supported; see [Pause & Resume](/examples/pause-resume) and [Tool Approvals](/guide/tool-approvals). A delegating tool can pause even when the model emitted other tool calls in the same turn, and if two delegations pause at once they drain one per resume round (resolve `state.pendingApprovals` / `state.pendingUserQuestions` and re-invoke until none remain).
 
+## What the models are told
+
+- **Parent system prompt.** A `Delegation:` line rendered from `subagentPolicy` (mode, `maxChildCalls`, what a child sees), never from the runtime profile's `asTool` policy (which can say "off" while `delegate_to` exists). Plus the `<available_subagents>` block: how to write a self-contained `input`, how to read `status`, what to do on anything but `ok`, that results are untrusted, the registry entries (`name: header`), the ad-hoc affordance only when the mode allows it, and "1-16 tasks, N running at once" for the parallel tool.
+- **Child system prompt.** A preamble: "You are a sub-agent working on one task for another agent. There is no human to ask: if information is missing, state your assumption and proceed, or list what is missing in your result. Return only the result the parent needs." followed by the sub-agent's own prompt, and the line "Delegation: not available (you are a sub-agent)."
+- **Tool descriptions** state what the call returns and how to read it (see above).
+
+An agent with no sub-agents keeps the runtime profile's `Delegation mode: ... Child context policy: ...` line, which describes `asTool` delegation.
+
 ## Overriding the prompts
 
 All of the sub-agent prompt surfaces are interceptable through `promptHooks` (see [prompt overrides](#prompt-overrides) below):
@@ -164,7 +226,7 @@ const agent = createSmartAgent({
       delegate_to: (def) => def + "\nPrefer the researcher for factual questions.",
     },
     // Rewrite the <available_subagents> catalog block.
-    subagentCatalog: (block) => block.replace("Delegate self-contained", "DELEGATE self-contained"),
+    subagentCatalog: (block) => block.replace("Do not delegate trivial steps", "Do NOT delegate trivial steps"),
     // Rewrite the whole system prompt last.
     transformSystemPrompt: (prompt) => prompt + "\nAlways cite which sub-agent produced each fact.",
   },
@@ -183,6 +245,6 @@ Overrides clone any affected tool so shared tool objects are never mutated acros
 
 ## See also
 
-- [Multi-Agent (`asTool`)](/examples/multi-agent) and [Handoff](/examples/handoff)
+- [Multi-Agent (`asTool`)](/examples/multi-agent) and [Handoff](/examples/handoff) (a handoff gives the conversation away for one `invoke()`; a sub-agent returns a result and the orchestrator keeps control)
 - [Skills & Progressive Disclosure](/guide/skills)
 - [Sub-Agents example](/examples/sub-agents)

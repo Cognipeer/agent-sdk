@@ -1246,6 +1246,8 @@ export type AgentState = {
       timestamp: string;     // ISO time of capture
       turn: number;          // 1-based index of agent turn producing this response
       cachedInput?: number;  // cached / reused prompt tokens (provider specific)
+      /** Present when a sub-agent made this call; it was merged in from the child's run. */
+      subagent?: { name: string; id: string; mode: "registry" | "adhoc" };
     }>;
     totals: Record<string, { input: number; output: number; total: number; cachedInput: number }>;
   };
@@ -1641,8 +1643,14 @@ export type SubagentEvent = {
   parallel?: boolean;
   /** Task input (on `start`). */
   input?: string;
-  /** Final content (on `result`). */
+  /** Final content (on `result` / `error`; partial unless `status` is `ok`). */
   content?: string;
+  /** How the child ended (on `result` and `error`). */
+  status?: import("./smart/subagents/types.js").SubagentStatus;
+  /** Why the outcome is partial or cancelled. */
+  note?: string;
+  /** The child's model calls (on `result` and `error`); already merged into the parent's usage. */
+  usage?: import("./smart/subagents/types.js").SubagentUsage;
   error?: { message: string };
   durationMs?: number;
 };
@@ -1717,6 +1725,12 @@ export type ProgressUpdate = {
 export type StreamChunk = {
   text: string;
   isFinal?: boolean;
+  /**
+   * Set only on a sub-agent's chunk, and only when `subagentPolicy.streamChildren`
+   * is on. A chunk without it is the top-level agent's own text.
+   */
+  subagentName?: string;
+  subagentId?: string;
 };
 
 export type InvokeConfig = RunnableConfig & {

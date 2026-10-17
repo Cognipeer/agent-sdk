@@ -1,17 +1,19 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 
-import { createTool } from "../../tool.js";
+import { createTool, type ToolCallContext } from "../../tool.js";
 import type {
   AgentInvokeResult,
   InvokeConfig,
   SmartAgentEvent,
   SmartAgentInstance,
   SmartState,
+  StreamChunk,
   ToolInterface,
 } from "../../types.js";
 import { resolveToolApprovalState } from "../../utils/toolApprovals.js";
 import { resolveUserQuestionState } from "../../utils/userQuestions.js";
+import { totalUsage } from "../../utils/usage.js";
 import {
   canSpawn,
   findSubagent,
@@ -25,6 +27,8 @@ import type {
   SubagentPolicy,
   SubagentRegistryRef,
   SubagentResult,
+  SubagentStatus,
+  SubagentUsage,
 } from "./types.js";
 
 /**
@@ -35,6 +39,10 @@ import type {
  * with createSmartAgent), and forward events/streaming/cancellation into each
  * child. Human-in-the-loop pauses inside a sequential child are surfaced to the
  * parent and resumed via `state.ctx.__subagentPending`.
+ *
+ * The `_stateRef` is shared by every call of a tool in a turn, so a call's own
+ * identity (its tool_call id) comes from the per-call context the tools node
+ * passes to `func`, never from the ref.
  */
 
 /** Config a child agent is built from. The factory lives in createSmartAgent. */
@@ -55,22 +63,33 @@ export type SubagentToolDeps = {
   buildChild: (cfg: BuildChildConfig) => SmartAgentInstance;
   /** Optional prompt-override descriptions for the three tools. */
   descriptions?: { delegate?: string; spawn?: string; parallel?: string };
+  /** Names of the parent's tools an ad-hoc child may borrow, listed to the model. */
+  parentToolNames?: string[];
 };
 
-const DEFAULT_DELEGATE_DESCRIPTION =
-  "Delegate a self-contained subtask to a predefined sub-agent. Pass the sub-agent " +
-  "name (from <available_subagents>) and a complete, standalone `input` describing " +
-  "the task and the expected result. The sub-agent runs in isolation and returns a concise result.";
+const DELEGATE_DESCRIPTION =
+  "Delegate one self-contained subtask to a named sub-agent and get its result back; you keep control and write the final answer. " +
+  "`subagent` is a name from <available_subagents>. `input` is the only thing the sub-agent reliably sees: include the goal, " +
+  "every needed fact/ID/constraint, the output format you want and the language to answer in. " +
+  "Returns JSON { status, content, output?, error?, note? }: rely on `output`/`content` only when status is \"ok\".";
 
-const DEFAULT_SPAWN_DESCRIPTION =
-  "Create a sub-agent on the fly. Provide a short `role`, a `prompt` defining how it " +
-  "should behave, and a complete `input` task. Optionally pass `tools` (names of the " +
-  "parent's tools the sub-agent may use). Use for one-off specialist subtasks.";
+function spawnDescription(deps: SubagentToolDeps): string {
+  const names = deps.parentToolNames ?? [];
+  const tools = deps.policy.allowAdhocTools
+    ? ` \`tools\` may only contain exact names of your tools${names.length > 0 ? ` (${names.join(", ")})` : ""}; unknown names are an error.`
+    : " The sub-agent has no tools; do not request any.";
+  return "Create a throwaway specialist for a one-off subtask that no registered sub-agent covers, run it and get its result back. " +
+    "Give a short `role`, a `prompt` stating how it should behave and what to return, and a complete standalone `input`." + tools +
+    " It cannot ask the user questions, so tell it to state assumptions and proceed. Returns the same JSON as delegate_to.";
+}
 
-const DEFAULT_PARALLEL_DESCRIPTION =
-  "Run several independent subtasks concurrently. Each task is either a registry " +
-  "`subagent` + `input`, or an ad-hoc `role` + `prompt` + `input`. Returns one result " +
-  "per task in order. Do NOT use for tasks that require human input (approval / questions).";
+function parallelDescription(deps: SubagentToolDeps): string {
+  const adhoc = deps.policy.mode === "registry_and_adhoc";
+  return `Run several INDEPENDENT subtasks at the same time (1-16 tasks, at most ${deps.policy.maxParallel} running concurrently). ` +
+    `Each task is { subagent, input } using a name from <available_subagents>${adhoc ? ", or { role, prompt, input } for an ad-hoc one" : ""}. ` +
+    "Returns { results: [...] } in task order; check each entry's `status` separately, one failing task does not cancel the others. " +
+    "Do not use it when a task needs another task's output or needs human input (approval, questions); use delegate_to for those.";
+}
 
 const CTX_CALLBACK_KEYS = new Set([
   "__onEvent",
@@ -106,17 +125,56 @@ function cleanChildState(state: SmartState): any {
   return { ...rest, ctx: cleanCtx };
 }
 
+/**
+ * What the model is shown of a result: no `input` (it wrote it), no `usage` or
+ * `durationMs` (bookkeeping for the host, tokens for the model to spend).
+ */
+export function toModelResult(result: SubagentResult): Omit<SubagentResult, "input" | "usage" | "durationMs"> {
+  const { input: _input, usage: _usage, durationMs: _durationMs, ...rest } = result;
+  return rest;
+}
+
+const FAILED_STATUSES = new Set<SubagentStatus>(["error", "cancelled"]);
+
+/**
+ * The tools node asks a tool whether what it returned is a failure. A delegation
+ * that came back `error` / `cancelled`, or that was refused before it started,
+ * is a failed tool call even though it did not throw.
+ */
+function failureOf(output: any): string | undefined {
+  if (!output || typeof output !== "object") return undefined;
+  if (Array.isArray(output.results)) {
+    const results = output.results as any[];
+    if (results.length > 0 && results.every((r) => r && (FAILED_STATUSES.has(r.status) || (r.status === undefined && r.error)))) {
+      return `All ${results.length} sub-agent tasks failed: ${results[0].error || results[0].note || results[0].status}`;
+    }
+    return undefined;
+  }
+  if (FAILED_STATUSES.has(output.status)) return output.error || output.note || `Sub-agent ${output.name ?? ""} ${output.status}`.trim();
+  if (output.status === undefined && typeof output.error === "string") return output.error;
+  return undefined;
+}
+
+/** A refusal before any child ran (unknown name, budget, depth, bad arguments). */
+function refusal(message: string): { status: "error"; error: string } {
+  return { status: "error", error: message };
+}
+
 /** Forward a child event to the parent host, stamped with sub-agent origin. */
 function makeChildEventForwarder(
   parentOnEvent: ((e: SmartAgentEvent) => void) | undefined,
   spawnId: string,
   name: string,
+  streamChildren: boolean,
 ) {
   return (event: SmartAgentEvent) => {
     if (!parentOnEvent) return;
     // Do not leak the child's terminal signals as the parent's own. The parent
     // emits dedicated `subagent` lifecycle events instead.
     if (event?.type === "finalAnswer" || event?.type === "metadata") return;
+    // The child's text deltas are not the parent's text. Opt in to see them,
+    // stamped like every other forwarded event.
+    if (event?.type === "stream" && !streamChildren) return;
     try {
       parentOnEvent({ ...(event as any), subagentId: spawnId, subagentName: name });
     } catch {
@@ -126,15 +184,19 @@ function makeChildEventForwarder(
 }
 
 /** Build the child InvokeConfig that forwards events/streaming/cancellation. */
-function buildChildConfig(parentCtx: Record<string, any>, spawnId: string, name: string): InvokeConfig {
+function buildChildConfig(parentCtx: Record<string, any>, spawnId: string, name: string, streamChildren: boolean): InvokeConfig {
   const streaming = Boolean(parentCtx.__streaming);
-  const parentOnStream = parentCtx.__onStream as ((c: { text: string; isFinal?: boolean }) => void) | undefined;
+  const parentOnStream = parentCtx.__onStream as ((c: StreamChunk) => void) | undefined;
   return {
-    onEvent: makeChildEventForwarder(parentCtx.__onEvent, spawnId, name),
+    onEvent: makeChildEventForwarder(parentCtx.__onEvent, spawnId, name, streamChildren),
     onProgress: parentCtx.__onProgress,
-    // Forward streaming deltas but swallow the child's `isFinal` chunk so the
-    // host does not mistake a child completion for the parent's final answer.
-    onStream: streaming && parentOnStream ? (chunk) => { if (!chunk.isFinal) parentOnStream(chunk); } : undefined,
+    // A host's onStream appends `chunk.text` to the answer it is building, so a
+    // child's tokens would read as the parent's. They are forwarded only on
+    // request, tagged, and never the child's `isFinal` chunk (the host would
+    // mistake a child completion for the parent's final answer).
+    onStream: streaming && streamChildren && parentOnStream
+      ? (chunk) => { if (!chunk.isFinal) parentOnStream({ ...chunk, subagentName: name, subagentId: spawnId }); }
+      : undefined,
     stream: streaming,
     cancellationToken: parentCtx.__cancellationToken ?? parentCtx.__abortSignal,
   };
@@ -159,23 +221,75 @@ function summaryOf(state: SmartState | undefined): string | undefined {
   return Array.isArray(summaries) && summaries.length > 0 ? summaries[summaries.length - 1] : undefined;
 }
 
+/** How a child that ran to the end of its invoke actually ended. */
+function outcomeOf(
+  res: AgentInvokeResult<any>,
+  childState: SmartState | undefined,
+): { status: SubagentStatus; error?: string; note?: string } {
+  const ctx: any = childState?.ctx || {};
+  if (ctx.__cancelled) {
+    return { status: "cancelled", note: `Cancelled before the sub-agent finished (${ctx.__cancelled.reason ?? "cancelled"}); the content is partial.` };
+  }
+  if (ctx.__guardrailBlocked) {
+    const reason = ctx.__guardrailBlocked.incident?.reason || res.content || "blocked by a guardrail";
+    return { status: "blocked", error: `The sub-agent's answer was blocked by policy: ${reason}` };
+  }
+  if (ctx.__limitBreached) {
+    return { status: "incomplete", note: `The sub-agent stopped early: ${ctx.__limitBreached}. The content is partial.` };
+  }
+  if (res.outputError) {
+    return { status: "error", error: `The sub-agent's structured output failed (${res.outputError.type}): ${res.outputError.message}` };
+  }
+  if (ctx.__finalizedDueToToolLimit) {
+    return { status: "incomplete", note: "The sub-agent hit its tool-call limit and answered with what it had; the content may be incomplete." };
+  }
+  if (ctx.__paused) {
+    return { status: "incomplete", note: "The sub-agent was paused before it finished; the content is partial." };
+  }
+  if (!(res.content || "").trim() && res.output === undefined) {
+    return { status: "incomplete", note: "The sub-agent returned no answer." };
+  }
+  return { status: "ok" };
+}
+
+/**
+ * Fold the model calls this run made into the parent's ledger, once. The
+ * baseline is how many the child already had before the run: a resumed child
+ * carries its earlier calls, which were merged when it paused.
+ */
+function mergeChildUsage(
+  ref: any,
+  childState: SmartState | undefined,
+  baseline: number,
+  tag: { name: string; id: string; mode: "registry" | "adhoc" },
+): SubagentUsage | undefined {
+  const entries = (childState?.usage?.perRequest ?? []).slice(baseline);
+  if (entries.length === 0) return undefined;
+  if (typeof ref.__appendUsage === "function") ref.__appendUsage(entries, tag);
+  return { perRequest: entries, totals: totalUsage(entries) };
+}
+
 /**
  * Run one sub-agent task. Handles a fresh run AND a resume-after-human-input
  * (when a pending record exists for this parent tool-call). Sequential callers
  * (delegate_to / spawn_subagent) pass `allowHITL=true`; parallel children pass
- * `false` and surface a human-input requirement as an error result.
+ * `false` and surface a human-input requirement as a `needs_input` result.
+ *
+ * `reserved` says the caller already counted this spawn against the child-call
+ * budget; a `subagentStart` denial gives it back.
  */
 async function runChild(
   spec: ResolvedSpec,
   input: string,
   deps: SubagentToolDeps,
   ref: any /* tool _stateRef */,
-  opts: { allowHITL: boolean; parentToolCallId: string; parallel?: boolean; isResume?: boolean; record?: SubagentPendingRecord },
+  opts: { allowHITL: boolean; parentToolCallId: string; parallel?: boolean; isResume?: boolean; record?: SubagentPendingRecord; reserved?: boolean },
 ): Promise<{ kind: "result"; result: SubagentResult } | { kind: "approval"; toolCallId: string; approvalId: string } | { kind: "user_question"; toolCallId: string; id: string }> {
   const parentCtx: Record<string, any> = ref.ctx || {};
   const parentOnEvent = parentCtx.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
   const spawnId = `sa_${nanoid(6)}`;
   const start = Date.now();
+  const usageTag = { name: spec.name, id: spawnId, mode: spec.mode };
 
   // The parent's run host, reached the same way every node reaches it. Children
   // build their own host from the inherited plugin list; this gate belongs to
@@ -195,8 +309,12 @@ async function runChild(
       depth: childDepth,
     });
     if (gate.decision === "deny") {
+      // A refused delegation never ran, so it must not eat the child-call budget.
+      if (opts.reserved) deps.registryRef.spawnedCount = Math.max(0, deps.registryRef.spawnedCount - 1);
       const reason = gate.reason || `Delegation to "${spec.name}" was blocked by policy.`;
-      return { kind: "result", result: { name: spec.name, mode: spec.mode, input, error: reason } };
+      const result: SubagentResult = { name: spec.name, mode: spec.mode, status: "blocked", input, error: reason };
+      deps.registryRef.results.push(result);
+      return { kind: "result", result };
     }
     if (gate.input.task !== input) input = gate.input.task as string;
   }
@@ -210,7 +328,7 @@ async function runChild(
     limits: spec.limits,
   });
 
-  const childConfig = buildChildConfig(parentCtx, spawnId, spec.name);
+  const childConfig = buildChildConfig(parentCtx, spawnId, spec.name, deps.policy.streamChildren === true);
 
   let childInput: SmartState;
   if (opts.isResume && opts.record) {
@@ -220,7 +338,7 @@ async function runChild(
     if (opts.record.pendingKind === "approval") {
       const entry = (ref.pendingApprovals || []).find((e: any) => e.id === opts.record!.pendingId);
       if (!entry) {
-        return { kind: "result", result: { name: spec.name, mode: spec.mode, input, error: "Pending approval resolution missing on resume." } };
+        return { kind: "result", result: { name: spec.name, mode: spec.mode, status: "error", input, error: "Pending approval resolution missing on resume." } };
       }
       // Still unanswered: this is a second concurrent pause the host has not
       // resolved yet (two delegating tool_calls both paused in one turn, and the
@@ -243,7 +361,7 @@ async function runChild(
     } else {
       const entry = (ref.pendingUserQuestions || []).find((e: any) => e.id === opts.record!.pendingId);
       if (!entry) {
-        return { kind: "result", result: { name: spec.name, mode: spec.mode, input, error: "Pending question resolution missing on resume." } };
+        return { kind: "result", result: { name: spec.name, mode: spec.mode, status: "error", input, error: "Pending question resolution missing on resume." } };
       }
       if (entry.status === "pending") {
         if (!parentCtx.__awaitingUserQuestion) {
@@ -268,14 +386,17 @@ async function runChild(
       ctx: { __delegationDepth: currentDepth + 1 },
     } as SmartState;
   }
+  // Counted before the run: a resumed child already holds the calls it made
+  // before it paused, and those were merged into the parent back then.
+  const usageBaseline = childInput.usage?.perRequest?.length ?? 0;
 
   let res: AgentInvokeResult<any>;
   try {
     res = await child.invoke(childInput, childConfig);
   } catch (err: any) {
-    const result: SubagentResult = { name: spec.name, mode: spec.mode, input, error: err?.message || String(err), durationMs: Date.now() - start };
+    const result: SubagentResult = { name: spec.name, mode: spec.mode, status: "error", input, error: err?.message || String(err), durationMs: Date.now() - start };
     deps.registryRef.results.push(result);
-    parentOnEvent?.({ type: "subagent", phase: "error", name: spec.name, id: spawnId, mode: spec.mode, error: { message: result.error! }, parentToolCallId: opts.parentToolCallId } as any);
+    parentOnEvent?.({ type: "subagent", phase: "error", name: spec.name, id: spawnId, mode: spec.mode, status: "error", error: { message: result.error! }, parentToolCallId: opts.parentToolCallId } as any);
     return { kind: "result", result };
   }
 
@@ -283,12 +404,17 @@ async function runChild(
   const awaitingApproval = childState?.ctx?.__awaitingApproval;
   const awaitingQuestion = childState?.ctx?.__awaitingUserQuestion;
 
+  // The calls the child made count against the parent whatever way it ended —
+  // including the ones it made before pausing for a human.
+  const usage = mergeChildUsage(ref, childState, usageBaseline, usageTag);
+
   // ── Child paused for human input ────────────────────────────────────────────
   if (childState && (awaitingApproval || awaitingQuestion)) {
     if (!opts.allowHITL) {
       const result: SubagentResult = {
-        name: spec.name, mode: spec.mode, input,
+        name: spec.name, mode: spec.mode, status: "needs_input", input,
         error: "Sub-agent requested human input, which is not supported inside parallel fan-out. Run it via delegate_to / spawn_subagent instead.",
+        usage,
         durationMs: Date.now() - start,
       };
       deps.registryRef.results.push(result);
@@ -348,17 +474,26 @@ async function runChild(
   if (parentCtx.__subagentPending?.[opts.parentToolCallId]) {
     delete parentCtx.__subagentPending[opts.parentToolCallId];
   }
+  const outcome = outcomeOf(res, childState);
   const result: SubagentResult = {
     name: spec.name,
     mode: spec.mode,
+    status: outcome.status,
     input,
     content: res.content,
     output: res.output,
     summary: summaryOf(childState),
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.note ? { note: outcome.note } : {}),
+    usage,
     durationMs: Date.now() - start,
   };
   deps.registryRef.results.push(result);
-  parentOnEvent?.({ type: "subagent", phase: "result", name: spec.name, id: spawnId, mode: spec.mode, content: res.content, durationMs: result.durationMs, parentToolCallId: opts.parentToolCallId } as any);
+  if (FAILED_STATUSES.has(outcome.status)) {
+    parentOnEvent?.({ type: "subagent", phase: "error", name: spec.name, id: spawnId, mode: spec.mode, status: outcome.status, error: { message: outcome.error || outcome.note || outcome.status }, content: res.content, note: outcome.note, usage, durationMs: result.durationMs, parentToolCallId: opts.parentToolCallId } as any);
+  } else {
+    parentOnEvent?.({ type: "subagent", phase: "result", name: spec.name, id: spawnId, mode: spec.mode, status: outcome.status, content: res.content, note: outcome.note, usage, durationMs: result.durationMs, parentToolCallId: opts.parentToolCallId } as any);
+  }
   if (parentHost?.has("subagentStop")) {
     await parentHost.runObservers("subagentStop", {
       name: spec.name,
@@ -376,7 +511,8 @@ async function specFromRegistry(def: SubagentDef, deps: SubagentToolDeps, parent
   return {
     name: def.name,
     mode: "registry",
-    systemPrompt: def.systemPrompt,
+    // Without a prompt of its own the child still has to know what it is for.
+    systemPrompt: def.systemPrompt || `You are ${def.title || def.name}. ${def.header}`,
     model: def.model ?? parentRuntime?.model,
     tools,
     outputSchema: def.outputSchema,
@@ -384,6 +520,25 @@ async function specFromRegistry(def: SubagentDef, deps: SubagentToolDeps, parent
     childContextPolicy: def.childContextPolicy ?? deps.policy.childContextPolicy,
     metadata: def.metadata,
   };
+}
+
+/** The names of the parent's live tools a child may borrow (no delegation tools). */
+function borrowableToolNames(parentRuntime: any): string[] {
+  return ((parentRuntime?.tools as any[]) || [])
+    .filter((tool) => tool?.name && tool?.__source !== "smart-subagents")
+    .map((tool) => tool.name as string);
+}
+
+/** Names the model asked to borrow that the parent does not have. */
+function unknownToolNames(requested: string[] | undefined, parentRuntime: any): string[] {
+  if (!requested || requested.length === 0) return [];
+  const known = new Set(borrowableToolNames(parentRuntime));
+  return requested.filter((name) => !known.has(name));
+}
+
+function unknownToolsMessage(unknown: string[], parentRuntime: any): string {
+  const available = borrowableToolNames(parentRuntime);
+  return `Unknown tool name(s) for the sub-agent: ${unknown.join(", ")}.${available.length > 0 ? ` Your tools: ${available.join(", ")}.` : " You have no tools it could borrow."}`;
 }
 
 /** Resolve an ad-hoc {role, prompt, tools} spec. */
@@ -401,7 +556,7 @@ async function specFromAdhoc(
   return {
     name: args.role,
     mode: "adhoc",
-    systemPrompt: systemPrompt || undefined,
+    systemPrompt: systemPrompt || `You are ${args.role}.`,
     model: parentRuntime?.model,
     tools,
     childContextPolicy: deps.policy.childContextPolicy,
@@ -417,145 +572,174 @@ function toToolReturn(outcome: Awaited<ReturnType<typeof runChild>>): any {
   if (outcome.kind === "user_question") {
     return { __awaitingUserQuestion: true, toolCallId: outcome.toolCallId, id: outcome.id };
   }
-  return outcome.result;
+  return toModelResult(outcome.result);
+}
+
+/**
+ * This call's id. The tools node passes it per call; the shared `_stateRef` field
+ * is only read for a caller that invokes `func` directly, and is overwritten by
+ * every sibling call in the turn.
+ */
+function callIdOf(context: ToolCallContext | undefined, ref: any, fallbackPrefix: string): string {
+  return context?.toolCallId || ref.__currentToolCallId || `${fallbackPrefix}_${nanoid(6)}`;
 }
 
 export function createDelegateTool(deps: SubagentToolDeps): ToolInterface {
   const names = deps.subagents.map((s) => s.name);
   const tool = createTool({
     name: "delegate_to",
-    description: deps.descriptions?.delegate ?? DEFAULT_DELEGATE_DESCRIPTION,
+    description: deps.descriptions?.delegate ?? DELEGATE_DESCRIPTION,
     schema: z
       .object({
         subagent: (names.length > 0 ? z.enum(names as [string, ...string[]]) : z.string().min(1)).describe("Name of a sub-agent from <available_subagents>."),
-        input: z.string().min(1).describe("Complete, standalone task for the sub-agent."),
+        input: z.string().min(1).describe("Complete standalone brief: goal, needed facts and constraints, desired output format, answer language."),
       })
       .strict(),
-    func: async ({ subagent, input }: { subagent: string; input: string }) => {
+    func: async ({ subagent, input }: { subagent: string; input: string }, context?: ToolCallContext) => {
       const ref: any = (tool as any)._stateRef || {};
       const d = (tool as any)._deps as SubagentToolDeps;
       const parentRuntime = ref.parentRuntime;
-      const parentToolCallId: string = ref.__currentToolCallId || `delegate_${nanoid(6)}`;
+      const parentToolCallId = callIdOf(context, ref, "delegate");
       const parentCtx: Record<string, any> = ref.ctx || (ref.ctx = {});
 
       const def = findSubagent(d.subagents, subagent);
-      if (!def) return { error: `Unknown sub-agent: ${subagent}. Choose one from <available_subagents>.` };
-      if (def.isAvailable && !(await def.isAvailable())) return { error: `Sub-agent ${subagent} is not available right now.` };
+      if (!def) return refusal(`Unknown sub-agent: ${subagent}. Choose one from <available_subagents>.`);
+      if (def.isAvailable && !(await def.isAvailable())) return refusal(`Sub-agent ${subagent} is not available right now.`);
 
       const record = parentCtx.__subagentPending?.[parentToolCallId] as SubagentPendingRecord | undefined;
       const spec = await specFromRegistry(def, d, parentRuntime);
       if (!record) {
         const depth = withinDepth(Number(parentCtx.__delegationDepth) || 0, d.policy);
-        if (!depth.ok) return { error: depth.reason };
+        if (!depth.ok) return refusal(depth.reason);
         const budget = canSpawn(d.registryRef, d.policy, 1);
-        if (!budget.ok) return { error: budget.reason };
+        if (!budget.ok) return refusal(budget.reason);
+        // Reserved now so concurrent siblings cannot overspend; runChild gives it
+        // back if a `subagentStart` gate refuses the delegation.
         d.registryRef.spawnedCount += 1;
       }
-      return toToolReturn(await runChild(spec, record?.input ?? input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record }));
+      return toToolReturn(await runChild(spec, record?.input ?? input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record }));
     },
   });
   (tool as any)._deps = deps;
   (tool as any)._stateRef = {};
   (tool as any).__source = "smart-subagents";
+  (tool as any).__failureOf = failureOf;
   return tool;
 }
 
 export function createSpawnTool(deps: SubagentToolDeps): ToolInterface {
+  const shape: Record<string, z.ZodTypeAny> = {
+    role: z.string().min(1).describe("Short role name, e.g. 'db-analyst'."),
+    prompt: z.string().optional().describe("System prompt defining how the sub-agent behaves and what it returns."),
+    input: z.string().min(1).describe("Complete standalone brief: goal, needed facts and constraints, desired output format, answer language."),
+    outputContract: z.string().optional().describe("Optional description of the expected output shape."),
+  };
+  // The field only exists when the policy honours it; otherwise the model would
+  // ask for tools the child then silently does not get.
+  if (deps.policy.allowAdhocTools) {
+    shape.tools = z.array(z.string().min(1)).optional().describe("Exact names of YOUR tools the sub-agent may use. Omit if none are needed.");
+  }
   const tool = createTool({
     name: "spawn_subagent",
-    description: deps.descriptions?.spawn ?? DEFAULT_SPAWN_DESCRIPTION,
-    schema: z
-      .object({
-        role: z.string().min(1).describe("Short role name, e.g. 'db-analyst'."),
-        prompt: z.string().optional().describe("System prompt defining how the sub-agent behaves."),
-        input: z.string().min(1).describe("Complete, standalone task for the sub-agent."),
-        tools: z.array(z.string().min(1)).optional().describe("Names of the parent's tools the sub-agent may use."),
-        outputContract: z.string().optional().describe("Optional description of the expected output shape."),
-      })
-      .strict(),
-    func: async (args: { role: string; prompt?: string; input: string; tools?: string[]; outputContract?: string }) => {
+    description: deps.descriptions?.spawn ?? spawnDescription(deps),
+    schema: z.object(shape).strict(),
+    func: async (args: { role: string; prompt?: string; input: string; tools?: string[]; outputContract?: string }, context?: ToolCallContext) => {
       const ref: any = (tool as any)._stateRef || {};
       const d = (tool as any)._deps as SubagentToolDeps;
       if (d.policy.mode !== "registry_and_adhoc") {
-        return { error: "Ad-hoc sub-agents are disabled (subagentPolicy.mode is not 'registry_and_adhoc'). Use delegate_to." };
+        return refusal("Ad-hoc sub-agents are disabled (subagentPolicy.mode is not 'registry_and_adhoc'). Use delegate_to.");
       }
       const parentRuntime = ref.parentRuntime;
-      const parentToolCallId: string = ref.__currentToolCallId || `spawn_${nanoid(6)}`;
+      const parentToolCallId = callIdOf(context, ref, "spawn");
       const parentCtx: Record<string, any> = ref.ctx || (ref.ctx = {});
 
       const record = parentCtx.__subagentPending?.[parentToolCallId] as SubagentPendingRecord | undefined;
+      if (!record && d.policy.allowAdhocTools) {
+        const unknown = unknownToolNames(args.tools, parentRuntime);
+        if (unknown.length > 0) return refusal(unknownToolsMessage(unknown, parentRuntime));
+      }
       const spec = record?.adhoc
         ? await specFromAdhoc(record.adhoc, d, parentRuntime)
         : await specFromAdhoc(args, d, parentRuntime);
       if (!record) {
         const depth = withinDepth(Number(parentCtx.__delegationDepth) || 0, d.policy);
-        if (!depth.ok) return { error: depth.reason };
+        if (!depth.ok) return refusal(depth.reason);
         const budget = canSpawn(d.registryRef, d.policy, 1);
-        if (!budget.ok) return { error: budget.reason };
+        if (!budget.ok) return refusal(budget.reason);
         d.registryRef.spawnedCount += 1;
       }
-      return toToolReturn(await runChild(spec, record?.input ?? args.input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record }));
+      return toToolReturn(await runChild(spec, record?.input ?? args.input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record }));
     },
   });
   (tool as any)._deps = deps;
   (tool as any)._stateRef = {};
   (tool as any).__source = "smart-subagents";
+  (tool as any).__failureOf = failureOf;
   return tool;
 }
 
 export function createParallelTool(deps: SubagentToolDeps): ToolInterface {
+  const adhoc = deps.policy.mode === "registry_and_adhoc";
+  const names = deps.subagents.map((s) => s.name);
+  const taskShape: Record<string, z.ZodTypeAny> = {};
+  // Only what the active policy accepts is in the schema, so the model cannot
+  // describe an ad-hoc task in a mode that refuses it.
+  if (names.length > 0) {
+    const named = z.enum(names as [string, ...string[]]).describe("Name from <available_subagents>.");
+    taskShape.subagent = adhoc ? named.optional() : named;
+  } else if (!adhoc) {
+    taskShape.subagent = z.string().min(1).describe("Registry sub-agent name.");
+  }
+  if (adhoc) {
+    taskShape.role = z.string().optional().describe("Ad-hoc role (when not using `subagent`).");
+    taskShape.prompt = z.string().optional();
+    if (deps.policy.allowAdhocTools) taskShape.tools = z.array(z.string().min(1)).optional();
+  }
+  taskShape.input = z.string().min(1).describe("Complete standalone brief for this task.");
   const tool = createTool({
     name: "spawn_subagents_parallel",
-    description: deps.descriptions?.parallel ?? DEFAULT_PARALLEL_DESCRIPTION,
+    description: deps.descriptions?.parallel ?? parallelDescription(deps),
     schema: z
       .object({
         tasks: z
-          .array(
-            z
-              .object({
-                subagent: z.string().optional().describe("Registry sub-agent name."),
-                role: z.string().optional().describe("Ad-hoc role (when not using `subagent`)."),
-                prompt: z.string().optional(),
-                tools: z.array(z.string().min(1)).optional(),
-                input: z.string().min(1),
-              })
-              .strict(),
-          )
+          .array(z.object(taskShape).strict())
           .min(1)
           .max(16)
-          .describe("Independent subtasks to run concurrently."),
+          .describe(`Independent subtasks to run concurrently (${deps.policy.maxParallel} at a time).`),
       })
       .strict(),
-    func: async ({ tasks }: { tasks: Array<{ subagent?: string; role?: string; prompt?: string; tools?: string[]; input: string }> }) => {
+    func: async ({ tasks }: { tasks: Array<{ subagent?: string; role?: string; prompt?: string; tools?: string[]; input: string }> }, context?: ToolCallContext) => {
       const ref: any = (tool as any)._stateRef || {};
       const d = (tool as any)._deps as SubagentToolDeps;
       const parentRuntime = ref.parentRuntime;
-      const parentToolCallId: string = ref.__currentToolCallId || `parallel_${nanoid(6)}`;
+      const parentToolCallId = callIdOf(context, ref, "parallel");
       const parentCtx: Record<string, any> = ref.ctx || (ref.ctx = {});
 
       const depth = withinDepth(Number(parentCtx.__delegationDepth) || 0, d.policy);
-      if (!depth.ok) return { error: depth.reason };
+      if (!depth.ok) return refusal(depth.reason);
 
       // Resolve specs first (validation), then charge the spawn budget only for
       // the tasks that will actually spawn a child (invalid tasks short-circuit
       // to an error result and must not consume the per-run child-call budget).
-      const specs: Array<{ spec: ResolvedSpec; input: string } | { error: string; input: string }> = [];
+      const specs: Array<{ spec: ResolvedSpec; input: string } | { error: string; input: string; name: string }> = [];
       for (const task of tasks) {
         if (task.subagent) {
           const def = findSubagent(d.subagents, task.subagent);
-          if (!def) { specs.push({ error: `Unknown sub-agent: ${task.subagent}`, input: task.input }); continue; }
+          if (!def) { specs.push({ error: `Unknown sub-agent: ${task.subagent}`, input: task.input, name: task.subagent }); continue; }
           specs.push({ spec: await specFromRegistry(def, d, parentRuntime), input: task.input });
         } else if (task.role) {
-          if (d.policy.mode !== "registry_and_adhoc") { specs.push({ error: "Ad-hoc sub-agents are disabled.", input: task.input }); continue; }
+          if (d.policy.mode !== "registry_and_adhoc") { specs.push({ error: "Ad-hoc sub-agents are disabled.", input: task.input, name: task.role }); continue; }
+          const unknown = d.policy.allowAdhocTools ? unknownToolNames(task.tools, parentRuntime) : [];
+          if (unknown.length > 0) { specs.push({ error: unknownToolsMessage(unknown, parentRuntime), input: task.input, name: task.role }); continue; }
           specs.push({ spec: await specFromAdhoc({ role: task.role, prompt: task.prompt, tools: task.tools }, d, parentRuntime), input: task.input });
         } else {
-          specs.push({ error: "Each task needs either `subagent` or `role`.", input: task.input });
+          specs.push({ error: "Each task needs either `subagent` or `role`.", input: task.input, name: "?" });
         }
       }
 
       const spawnCount = specs.filter((entry) => !("error" in entry)).length;
       const budget = canSpawn(d.registryRef, d.policy, spawnCount);
-      if (!budget.ok) return { error: budget.reason };
+      if (!budget.ok) return refusal(budget.reason);
       d.registryRef.spawnedCount += spawnCount;
 
       const results: SubagentResult[] = new Array(specs.length);
@@ -567,26 +751,28 @@ export function createParallelTool(deps: SubagentToolDeps): ToolInterface {
           if (i >= specs.length) return;
           const entry = specs[i];
           if ("error" in entry) {
-            results[i] = { name: "?", mode: "adhoc", input: entry.input, error: entry.error };
+            results[i] = { name: entry.name, mode: "adhoc", status: "error", input: entry.input, error: entry.error };
             continue;
           }
           const outcome = await runChild(entry.spec, entry.input, d, ref, {
             allowHITL: false,
             parentToolCallId: `${parentToolCallId}#${i}`,
             parallel: true,
+            reserved: true,
           });
           results[i] = outcome.kind === "result"
             ? outcome.result
-            : { name: entry.spec.name, mode: entry.spec.mode, input: entry.input, error: "Unexpected pause in parallel child." };
+            : { name: entry.spec.name, mode: entry.spec.mode, status: "error", input: entry.input, error: "Unexpected pause in parallel child." };
         }
       };
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
-      return { results };
+      return { results: results.map(toModelResult) };
     },
   });
   (tool as any)._deps = deps;
   (tool as any)._stateRef = {};
   (tool as any).__source = "smart-subagents";
+  (tool as any).__failureOf = failureOf;
   return tool;
 }
 

@@ -1,5 +1,5 @@
 import type { ZodSchema } from "zod";
-import type { AgentLimits, ChildContextPolicy, Message, ToolInterface } from "../../types.js";
+import type { AgentLimits, AgentState, ChildContextPolicy, Message, ToolInterface } from "../../types.js";
 
 /**
  * Sub-agent primitive — dynamic problem-solving by delegating self-contained
@@ -68,6 +68,13 @@ export type SubagentPolicy = {
   childContextPolicy: ChildContextPolicy;
   /** Whether ad-hoc spawns may reference the parent's tools by name. */
   allowAdhocTools: boolean;
+  /**
+   * Forward the children's streamed text to the parent's `onStream` / `stream`
+   * events. Off by default: a host that appends `chunk.text` would print every
+   * child's words as if they were the parent's answer. When on, each forwarded
+   * chunk carries `subagentName` / `subagentId`.
+   */
+  streamChildren?: boolean;
 };
 
 export const DEFAULT_SUBAGENT_POLICY: SubagentPolicy = {
@@ -79,21 +86,50 @@ export const DEFAULT_SUBAGENT_POLICY: SubagentPolicy = {
   allowAdhocTools: true,
 };
 
-/** Result of a single sub-agent run (returned to the model as the tool result). */
+/**
+ * How a child run ended.
+ *  - `ok`           — finished and produced an answer.
+ *  - `incomplete`   — stopped early (a limit, the tool-call cap, no answer): `content` is partial.
+ *  - `blocked`      — refused by policy (a `subagentStart` gate or an output guardrail).
+ *  - `needs_input`  — wanted a human (parallel fan-out cannot ask).
+ *  - `cancelled`    — the run was cancelled while the child was working.
+ *  - `error`        — threw, or its structured output failed.
+ */
+export type SubagentStatus = "ok" | "incomplete" | "blocked" | "needs_input" | "cancelled" | "error";
+
+/** Model calls a child made, in the parent's `state.usage` shape. */
+export type SubagentUsage = {
+  perRequest: NonNullable<AgentState["usage"]>["perRequest"];
+  totals: NonNullable<AgentState["usage"]>["totals"];
+};
+
+/**
+ * Result of a single sub-agent run. The model sees a projection of it
+ * (`toModelResult`: no `input`, `usage` or `durationMs`); hosts get the whole
+ * thing on `subagent` events, `subagentStop` observers and the registry.
+ */
 export type SubagentResult = {
   /** Sub-agent name (registry) or role (ad-hoc). */
   name: string;
   mode: "registry" | "adhoc";
-  /** The input the sub-agent was tasked with. */
-  input: string;
-  /** Final assistant content from the child. */
+  status: SubagentStatus;
+  /** The input the sub-agent was tasked with. Not echoed to the model. */
+  input?: string;
+  /** Final assistant content from the child (partial unless `status` is `ok`). */
   content?: string;
   /** Parsed structured output, when the child had an `outputSchema`. */
   output?: any;
   /** Latest child summary, when summarization fired. */
   summary?: string;
-  /** Populated when the child failed or was refused by a guard. */
+  /** Set when the child produced no usable result (`error`, `blocked`, `needs_input`). */
   error?: string;
+  /** Why a result is partial or cancelled. */
+  note?: string;
+  /**
+   * The model calls this run made. Already merged into the parent's
+   * `state.usage` (each entry tagged `subagent`), so a parent budget sees them.
+   */
+  usage?: SubagentUsage;
   durationMs?: number;
 };
 
