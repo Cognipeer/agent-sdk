@@ -191,3 +191,38 @@ export function appendUsageEntries(
   }
   state.usage = usageState;
 }
+
+/**
+ * Split a usage ledger into the run's own calls and the ones a sub-agent made
+ * (tagged `subagent`, merged in by the delegation tools). A child opens its own
+ * session with its own record, so anything that reports per run and is later
+ * summed has to keep the two apart or every child token is counted twice.
+ */
+export function splitUsage(usage: AgentState["usage"]): {
+  own: Ledger["totals"];
+  subagent: Ledger["totals"];
+  ownCalls: number;
+  subagentCalls: number;
+  ownEntries: LedgerEntry[];
+  subagentEntries: LedgerEntry[];
+} {
+  const entries = usage?.perRequest ?? [];
+  const subagentEntries = entries.filter((entry) => entry.subagent);
+  const ownEntries = entries.filter((entry) => !entry.subagent);
+  const subagent = totalUsage(subagentEntries);
+  // Totals minus the children's share, not a re-sum of `perRequest`: the totals
+  // stay authoritative if the per-call list was ever trimmed.
+  const own: Ledger["totals"] = {};
+  for (const [modelName, total] of Object.entries(usage?.totals ?? {})) {
+    const child = subagent[modelName];
+    own[modelName] = child
+      ? {
+          input: Math.max(0, total.input - child.input),
+          output: Math.max(0, total.output - child.output),
+          total: Math.max(0, total.total - child.total),
+          cachedInput: Math.max(0, total.cachedInput - child.cachedInput),
+        }
+      : total;
+  }
+  return { own, subagent, ownCalls: ownEntries.length, subagentCalls: subagentEntries.length, ownEntries, subagentEntries };
+}

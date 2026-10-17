@@ -23,7 +23,7 @@ import { createSkillTools } from "./skills/skillTools.js";
 import { preopenSkills } from "./skills/preopen.js";
 import { appendBoundTools, buildSkillHeaderBlock, composeToolSets, resolveAvailableSkills } from "./skills/registry.js";
 import { createSubagentRegistryRef, DEFAULT_SUBAGENT_POLICY, type SubagentDef, type SubagentPolicy } from "./subagents/types.js";
-import { buildSubagentCatalogBlock, resolveAvailableSubagents, SUBAGENT_CHILD_PREAMBLE } from "./subagents/registry.js";
+import { buildSubagentCatalogBlock, resolveAvailableSubagents, subagentChildPreamble } from "./subagents/registry.js";
 import { createSubagentTools, type BuildChildConfig, type SubagentToolDeps } from "./subagents/subagentTools.js";
 import type { PromptHooks, ToolInterface } from "../types.js";
 
@@ -96,7 +96,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     name: cfg.name,
     model: cfg.model,
     tools: cfg.tools,
-    systemPrompt: [SUBAGENT_CHILD_PREAMBLE, cfg.systemPrompt].filter(Boolean).join("\n\n"),
+    systemPrompt: [subagentChildPreamble(Boolean(askUserConfig) && cfg.interactive), cfg.systemPrompt].filter(Boolean).join("\n\n"),
     __subagentChild: true,
     outputSchema: cfg.outputSchema,
     limits: cfg.limits,
@@ -202,6 +202,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         policy: subagentPolicy,
         buildChild,
         parentToolNames: parentToolNames(),
+        canAskUser: Boolean(askUserConfig),
         // NOTE: promptHooks.toolDescriptions overrides for the sub-agent tools are
         // applied uniformly (and only) by decorateToolDescriptions below, so the
         // function form of an override receives the real DEFAULT_* string. Baking
@@ -699,7 +700,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           delegate: "delegate_to",
           spawn: "spawn_subagent",
           parallel: "spawn_subagents_parallel",
-        }, { parentToolNames: parentToolNames() });
+        }, { parentToolNames: parentToolNames(), askUser: Boolean(askUserConfig) });
         if (promptHooks?.subagentCatalog) {
           try { block = promptHooks.subagentCatalog(block, availableSubagents); }
           catch (err) { console.warn('[agent-sdk] promptHooks.subagentCatalog error:', err); }

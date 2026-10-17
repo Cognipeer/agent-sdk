@@ -10,6 +10,8 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { createSmartAgent, createTool } from "../../src/index.js";
 import { createSubagentTools, toModelResult } from "../../src/smart/subagents/index.js";
+import { buildSubagentCatalogBlock } from "../../src/smart/subagents/registry.js";
+import { sessionMetrics, type SessionMetrics } from "../../src/plugins/index.js";
 import { createSubagentRegistryRef, DEFAULT_SUBAGENT_POLICY } from "../../src/smart/subagents/types.js";
 import type { Message, SubagentDef } from "../../src/types.js";
 
@@ -581,6 +583,9 @@ describe("SDK-5 stream isolation", () => {
     expect(childChunks.every((c) => typeof c.subagentId === "string")).toBe(true);
     expect(chunks.filter((c) => !c.subagentName && !c.isFinal).map((c) => c.text).join("")).toBe("parent-answer");
     expect(events.filter((e) => e.type === "stream" && e.subagentName === "kid").length).toBeGreaterThan(0);
+    // The child's isFinal carries its whole answer: neither channel forwards it.
+    expect(events.filter((e) => e.type === "stream" && e.isFinal && e.subagentName)).toEqual([]);
+    expect(chunks.filter((c) => c.isFinal && c.subagentName)).toEqual([]);
   });
 
   it("keeps the child's reasoning events, tagged", async () => {
@@ -593,5 +598,248 @@ describe("SDK-5 stream isolation", () => {
     const events: any[] = [];
     await parent.invoke(userTurn, { stream: true, onStream: () => {}, onEvent: (e) => events.push(e) });
     expect(events.find((e) => e.type === "reasoning" && e.subagentName === "kid")).toBeTruthy();
+  });
+});
+
+describe("review follow-ups", () => {
+  const usage = (input: number, output: number) => ({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output });
+
+  /** Delegates once to `c`, then answers; every model call reports the same usage. */
+  function usageParent(toolName = "delegate_to", args: any = { subagent: "c", input: "work" }) {
+    return {
+      modelName: "parent", bindTools() { return this; },
+      async invoke(msgs: Message[]) {
+        if (msgs.some((m) => m.role === "tool")) return { role: "assistant", content: "parent-done", usage: usage(10, 5) };
+        return { role: "assistant", content: "", usage: usage(10, 5), tool_calls: [toolCall("d1", toolName, args)] };
+      },
+    } as any;
+  }
+
+  function promptCapturingModel(prompts: Record<string, string>, label: string, reply: any) {
+    return {
+      modelName: label, bindTools() { return this; },
+      async invoke(msgs: Message[]) {
+        prompts[label] = String((msgs.find((m) => m.role === "system") as any)?.content ?? "");
+        return typeof reply === "function" ? reply(msgs) : reply;
+      },
+    } as any;
+  }
+
+  describe("usage plugins with a delegating parent", () => {
+    it("sessionMetrics keeps a child's tokens out of the parent's figures and reports them apart", async () => {
+      const records: SessionMetrics[] = [];
+      const child = { modelName: "kid", bindTools() { return this; }, async invoke() { return { role: "assistant", content: "ok", usage: usage(60, 40) }; } } as any;
+      const parent = createSmartAgent({
+        name: "parent",
+        model: usageParent(),
+        subagents: [{ name: "c", header: "h", model: child }],
+        plugins: [sessionMetrics({ sink: (m) => void records.push(m) })],
+        summarization: false,
+      } as any);
+      const res: any = await parent.invoke(userTurn);
+
+      const own = records.find((r) => r.agentName === "parent")!;
+      const kid = records.find((r) => r.agentName === "c")!;
+      expect(own).toMatchObject({ modelCalls: 2, inputTokens: 20, outputTokens: 10, totalTokens: 30 });
+      expect(own).toMatchObject({ subagentCalls: 1, subagentInputTokens: 60, subagentOutputTokens: 40, subagentTotalTokens: 100 });
+      expect(kid).toMatchObject({ modelCalls: 1, inputTokens: 60, outputTokens: 40 });
+      expect(kid).not.toHaveProperty("subagentCalls");
+      // Summing the run records gives the real bill once.
+      expect(records.reduce((sum, r) => sum + r.inputTokens, 0)).toBe(80);
+      // The ledger the host bills from still holds everything.
+      expect(Object.values(res.state.usage.totals).reduce((n: number, t: any) => n + t.input, 0)).toBe(80);
+    });
+  });
+
+  describe("terminal subagent events", () => {
+    it("a parallel child that wants a human ends with a result event (needs_input) and reaches subagentStop", async () => {
+      const stops: string[] = [];
+      const parent = createSmartAgent({
+        name: "parent",
+        model: callsToolThenDone("spawn_subagents_parallel", { tasks: [{ subagent: "asker", input: "task-a" }] }),
+        subagents: [{ name: "asker", header: "asks", model: askerChild("asker") }],
+        humanInTheLoop: { askUser: true },
+        plugins: [{ name: "stops", hooks: { subagentStop: (input: any) => { stops.push(`${input.name}:${input.result.status}`); } } } as any],
+        summarization: false,
+      });
+      const events: any[] = [];
+      await parent.invoke(userTurn, { onEvent: (e) => events.push(e) });
+      const sub = events.filter((e) => e.type === "subagent" && e.name === "asker");
+      expect(sub.map((e) => e.phase)).toEqual(["start", "result"]);
+      expect(sub[1]).toMatchObject({ status: "needs_input", parentToolCallId: "c_0#0" });
+      expect(sub[1].error.message).toContain("human input");
+      expect(sub[1].durationMs).toBeGreaterThanOrEqual(0);
+      expect(stops).toEqual(["asker:needs_input"]);
+    });
+
+    it("a subagentStart denial emits a start and a blocked result, and reaches subagentStop", async () => {
+      const stops: string[] = [];
+      const plugin = {
+        name: "gate",
+        hooks: {
+          subagentStart: () => ({ decision: "deny", reason: "not allowed" }),
+          subagentStop: (input: any) => { stops.push(input.result.status); },
+        },
+      };
+      const parent = createSmartAgent({
+        name: "parent",
+        model: callsToolThenDone("delegate_to", { subagent: "c", input: "x" }),
+        subagents: [{ name: "c", header: "h", model: leaf("never") }],
+        plugins: [plugin as any],
+        summarization: false,
+      });
+      const events: any[] = [];
+      await parent.invoke(userTurn, { onEvent: (e) => events.push(e) });
+      const sub = events.filter((e) => e.type === "subagent");
+      expect(sub.map((e) => [e.phase, e.status])).toEqual([["start", undefined], ["result", "blocked"]]);
+      expect(sub[1].error.message).toContain("not allowed");
+      expect(stops).toEqual(["blocked"]);
+    });
+
+    it("a thrown child also reaches subagentStop", async () => {
+      const stops: string[] = [];
+      const boom = { modelName: "b", bindTools() { return this; }, async invoke() { throw new Error("provider down"); } } as any;
+      const parent = createSmartAgent({
+        name: "parent",
+        model: callsToolThenDone("delegate_to", { subagent: "c", input: "x" }),
+        subagents: [{ name: "c", header: "h", model: boom }],
+        plugins: [{ name: "stops", hooks: { subagentStop: (input: any) => { stops.push(input.result.status); } } } as any],
+        summarization: false,
+      });
+      await parent.invoke(userTurn);
+      expect(stops).toEqual(["error"]);
+    });
+  });
+
+  describe("what the child and the parent are told about asking", () => {
+    async function run(askUser: boolean, tool: "delegate_to" | "spawn_subagents_parallel") {
+      const prompts: Record<string, string> = {};
+      const args = tool === "delegate_to" ? { subagent: "c", input: "x" } : { tasks: [{ subagent: "c", input: "x" }] };
+      const parent = createSmartAgent({
+        name: "parent",
+        model: { ...promptCapturingModel(prompts, "parent", (msgs: Message[]) => (msgs.some((m) => m.role === "tool")
+          ? { role: "assistant", content: "done" }
+          : { role: "assistant", content: "", tool_calls: [toolCall("d1", tool, args)] })) },
+        subagents: [{ name: "c", header: "h", model: promptCapturingModel(prompts, "child", { role: "assistant", content: "ok" }) }],
+        subagentPolicy: { ...DEFAULT_SUBAGENT_POLICY, mode: "registry_and_adhoc" },
+        ...(askUser ? { humanInTheLoop: { askUser: true } } : {}),
+        summarization: false,
+      } as any);
+      await parent.invoke(userTurn);
+      const spawn = createSubagentTools({
+        registryRef: createSubagentRegistryRef(), subagents: [], policy: { ...DEFAULT_SUBAGENT_POLICY, mode: "registry_and_adhoc" },
+        buildChild: () => { throw new Error("n/a"); }, canAskUser: askUser,
+      }).find((t: any) => t.name === "spawn_subagent") as any;
+      return { ...prompts, spawn: spawn.description as string };
+    }
+
+    it("without askUser: no human, and it overrides the base 'ask a question' rule", async () => {
+      const seen = await run(false, "delegate_to");
+      expect(seen.child).toContain("There is no human to ask, which overrides any instruction to ask clarifying questions");
+      expect(seen.parent).toContain("cannot ask the user");
+      expect(seen.spawn).toContain("It cannot ask the user questions");
+    });
+
+    it("with askUser, a sequential child may ask when it truly cannot proceed, and the parent is told so", async () => {
+      const seen = await run(true, "delegate_to");
+      expect(seen.child).toContain("You may ask the user (ask_user_question) only when you cannot proceed even with a stated assumption");
+      expect(seen.child).not.toContain("There is no human to ask");
+      expect(seen.parent).not.toContain("cannot ask the user");
+      expect(seen.parent).toContain("may pause to ask the user");
+      expect(seen.parent).toContain("one in spawn_subagents_parallel cannot ask");
+      expect(seen.spawn).not.toContain("cannot ask the user");
+      expect(seen.spawn).toContain("may pause to ask the user");
+    });
+
+    it("a parallel child is told there is no human even when askUser is on", async () => {
+      const seen = await run(true, "spawn_subagents_parallel");
+      expect(seen.child).toContain("There is no human to ask");
+    });
+  });
+
+  describe("catalog and tool text", () => {
+    const names = { delegate: "delegate_to", spawn: "spawn_subagent", parallel: "spawn_subagents_parallel" };
+
+    it("tells the parent not to retry a blocked or cancelled child, and where a needs_input task goes", () => {
+      const block = buildSubagentCatalogBlock([{ name: "r", header: "h" }], DEFAULT_SUBAGENT_POLICY, names);
+      expect(block).toContain('status "incomplete" or "error"');
+      expect(block).toContain("Retry at most once");
+      expect(block).toContain('status "blocked": refused by policy. Do not retry, rephrase or do the work yourself');
+      expect(block).toContain('status "cancelled": the run was cancelled. Do not retry.');
+      expect(block).toContain('status "needs_input" (spawn_subagents_parallel only): that task wanted a human. Rerun that subtask with delegate_to.');
+      // The retry advice is not attached to blocked / cancelled.
+      expect(block).not.toContain("blocked, needs_input, cancelled, error");
+    });
+
+    it("names no roster that does not exist in an ad-hoc-only setup", () => {
+      const policy = { ...DEFAULT_SUBAGENT_POLICY, mode: "registry_and_adhoc" as const, allowAdhocTools: true };
+      const block = buildSubagentCatalogBlock([], policy, names);
+      expect(block).not.toContain("none of the above");
+      expect(block).toContain("to create a one-off specialist");
+      const tools = createSubagentTools({ registryRef: createSubagentRegistryRef(), subagents: [], policy, buildChild: () => { throw new Error("n/a"); } });
+      const parallel = tools.find((t: any) => t.name === "spawn_subagents_parallel") as any;
+      expect(parallel.description).toContain("Each task is { role, prompt, input }.");
+      expect(parallel.description).not.toContain("<available_subagents>");
+      const task = (parallel.schema as any).shape.tasks.element.shape;
+      expect(task).not.toHaveProperty("subagent");
+      expect(task.prompt.description).toBeTruthy();
+      expect(task.tools.description).toBeTruthy();
+      expect(parallel.schema.safeParse({ tasks: [{ role: "r", prompt: "p", input: "x" }] }).success).toBe(true);
+    });
+
+    it("with a roster and ad-hoc both, the catalog shows both parallel forms", () => {
+      const block = buildSubagentCatalogBlock([{ name: "r", header: "h" }], { ...DEFAULT_SUBAGENT_POLICY, mode: "registry_and_adhoc" }, names);
+      expect(block).toContain("none of the above covers");
+      expect(block).toContain("{ role, prompt, input } per task for an ad-hoc one");
+    });
+  });
+
+  describe("trace step", () => {
+    async function traceOf(childModel: any) {
+      const traceEvents: any[] = [];
+      const parent = createSmartAgent({
+        name: "parent",
+        model: callsToolThenDone("delegate_to", { subagent: "c", input: "x" }),
+        subagents: [{ name: "c", header: "h", model: childModel }],
+        tracing: { enabled: true, sink: { type: "custom", onEvent: (event: any) => traceEvents.push(event) } },
+        summarization: false,
+      } as any);
+      await parent.invoke(userTurn);
+      return traceEvents.find((e) => e.type === "tool_call" && String(e.label).includes("Tool Execution - delegate_to"));
+    }
+
+    it("marks the delegate_to step as an error, with the message, when the child fails", async () => {
+      const step = await traceOf({ modelName: "b", bindTools() { return this; }, async invoke() { throw new Error("provider down"); } });
+      expect(step).toMatchObject({ status: "error", error: { message: "provider down" } });
+    });
+
+    it("does not mark it when the child succeeds", async () => {
+      const step = await traceOf(leaf("fine"));
+      expect(step).toBeTruthy();
+      expect(step.status).not.toBe("error");
+      expect(step.error).toBeUndefined();
+    });
+  });
+
+  describe("asTool is not the sub-agent primitive", () => {
+    it("seeds its child with the framed task, and does not merge the child's usage into the parent's ledger", async () => {
+      const seen: any[][] = [];
+      const kid = createSmartAgent({
+        name: "kid",
+        model: { modelName: "kid", bindTools() { return this; }, async invoke(msgs: Message[]) { seen.push(msgs); return { role: "assistant", content: "kid-answer", usage: usage(60, 40) }; } } as any,
+        summarization: false,
+      });
+      const parent = createSmartAgent({
+        name: "parent",
+        model: usageParent("ask_kid", { input: "the delegated task" }),
+        tools: [kid.asTool({ toolName: "ask_kid", description: "d" })],
+        summarization: false,
+      });
+      const res: any = await parent.invoke(userTurn);
+      const last: any = seen[0][seen[0].length - 1];
+      expect(last.content).toContain("YOUR TASK (do exactly this, nothing more):\nthe delegated task");
+      expect(res.state.usage.perRequest.some((r: any) => r.subagent)).toBe(false);
+      expect(Object.values(res.state.usage.totals).reduce((n: number, t: any) => n + t.input, 0)).toBe(20);
+    });
   });
 });

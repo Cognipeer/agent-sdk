@@ -9,6 +9,7 @@
 
 import type { AgentPlugin, CostEstimator, HookContext } from "../types.js";
 import type { SmartState } from "../../types.js";
+import { splitUsage } from "../../utils/usage.js";
 
 export type BudgetGuardConfig = {
   /** Hard ceiling in USD. Requires `costEstimator`. */
@@ -41,7 +42,10 @@ function measure(state: SmartState, estimator?: CostEstimator): Spend {
     spend.outputTokens += Number(totals?.output) || 0;
   }
   const requests = usage.perRequest ?? [];
-  spend.modelCalls = requests.length;
+  // Money and output tokens include what sub-agents spent for this run. The call
+  // count does not: a child enforces its own copy of this guard on its own
+  // calls, and the number of children is already bounded by `maxChildCalls`.
+  spend.modelCalls = splitUsage(usage).ownCalls;
 
   if (estimator) {
     for (const request of requests) {

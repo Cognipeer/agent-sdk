@@ -34,6 +34,7 @@
 
 import type { AgentPlugin, HookContext, PluginLogger } from "../types.js";
 import type { AIMessage, SmartState } from "../../types.js";
+import { splitUsage } from "../../utils/usage.js";
 
 const DEFAULT_BASE_URL = "https://cloud.langfuse.com";
 const INGESTION_PATH = "/api/public/ingestion";
@@ -241,7 +242,9 @@ function resolveModelName(state: SmartState, message: AIMessage | undefined): st
 
 function tokenTotals(state: SmartState): { input: number; output: number; total: number } {
   const totals = { input: 0, output: 0, total: 0 };
-  for (const entry of Object.values(state.usage?.totals ?? {})) {
+  // Sub-agent calls are in `state.usage` too, but each child reports its own
+  // trace; counting them here as well would double the figure.
+  for (const entry of Object.values(splitUsage(state.usage).own)) {
     totals.input += Number(entry?.input) || 0;
     totals.output += Number(entry?.output) || 0;
     totals.total += Number(entry?.total) || 0;

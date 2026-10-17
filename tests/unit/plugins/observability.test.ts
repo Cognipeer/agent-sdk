@@ -291,6 +291,24 @@ describe("langfuseTracing", () => {
     await host.dispose();
   });
 
+  it("leaves sub-agent calls out of the trace's token total: each child reports its own trace", async () => {
+    const fetchMock = stubFetch(async () => okResponse());
+    const entry = (id: string, subagent?: object) => ({
+      id, modelName: "gpt-4o", usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 }, timestamp: "t", turn: 1, ...(subagent ? { subagent } : {}),
+    });
+    const { host, run } = harness([langfuseTracing({ ...langfuseKeys, flushAt: 100, flushIntervalMs: 0 })], {
+      usage: {
+        perRequest: [entry("own"), entry("child", { name: "c", id: "sa_1", mode: "registry" })],
+        totals: { "gpt-4o": { input: 20, output: 8, total: 28, cachedInput: 0 } },
+      } as never,
+    });
+    await host.setup({ model: null });
+    await run.runGate("sessionStart", { messages: [], resumed: false });
+    await run.runObservers("sessionEnd", sessionEndInput());
+    expect(batchItems(fetchMock).at(-1)!.body.metadata.tokens).toEqual({ input: 10, output: 4, total: 14 });
+    await host.dispose();
+  });
+
   it("swallows a failing POST instead of failing the run", async () => {
     const fetchMock = stubFetch(async () => {
       throw new Error("langfuse is down");

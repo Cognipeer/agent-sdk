@@ -594,6 +594,29 @@ describe("budgetGuard", () => {
     expect(metadataEvents(events).filter((event) => event.budget)).toHaveLength(2);
   });
 
+  it("counts what sub-agents spent toward money and output tokens, but not toward the model-call ceiling", async () => {
+    const entry = (id: string, completion: number, subagent?: object) => ({
+      id, modelName: "gpt-test", usage: { prompt_tokens: 100, completion_tokens: completion }, timestamp: new Date(0).toISOString(), turn: 1, ...(subagent ? { subagent } : {}),
+    });
+    const child = { name: "c", id: "sa_1", mode: "registry" };
+    const state = {
+      usage: {
+        perRequest: [entry("own", 10), entry("k1", 100, child), entry("k2", 100, child)],
+        totals: { "gpt-test": { input: 300, output: 210, total: 510, cachedInput: 0 } },
+      },
+    } as Partial<SmartState>;
+
+    const tokens = harness([budgetGuard({ maxOutputTokens: 150 })], state);
+    expect((await tokens.run.runGate("preModelCall", modelInput())).decision).toBe("deny");
+
+    const usd = harness([budgetGuard({ maxUsd: 0.2, costEstimator: ({ outputTokens }) => outputTokens * 0.001 })], state);
+    expect((await usd.run.runGate("preModelCall", modelInput())).decision).toBe("deny");
+
+    // One call of the parent's own: the children enforce their own copy of the guard.
+    const calls = harness([budgetGuard({ maxModelCalls: 2 })], state);
+    expect((await calls.run.runGate("preModelCall", modelInput())).decision).toBe("allow");
+  });
+
   it("summarises spend on sessionEnd without failing the run", async () => {
     const { run, events } = harness([budgetGuard({ maxOutputTokens: 10 })], usageState(50, 2));
     await run.runObservers("sessionEnd", { status: "success", durationMs: 12 });

@@ -53,13 +53,13 @@ const rootAgent = createAgent({
 1. The root agent receives a request.
 2. The model calls the handoff tool (`handoff_to_coder({ reason })`).
 3. The tool result says `Handoff complete: control transferred to Coder. Reason: <reason>. Coder now answers the user.`
-4. The runtime swaps the active agent: from the next model call the target's model, tools and system prompt are in effect, and the system prompt gets a short preamble naming who handed the conversation over and the `reason`.
+4. The runtime swaps the active agent: from the next model call the target's model, tools and system prompt are in effect, and the system prompt gets a short preamble naming who handed the conversation over (not the `reason`; see below).
 5. A `handoff` event (`{ from, to, toolName }`) is emitted and the downstream agent answers the user.
 
 ## What the handoff tells each side
 
 - **The source** gets a tool description that says control transfers and it must stop. Without a `description`, `asHandoff(...)` and the `handoffs` option use the same default: "Transfer this conversation to <target> and STOP. After this call you do not answer again this turn; ...". Write your own when the routing rule is specific, and keep the "control transfers, stop" part.
-- **The target** is told on the wire only (the transcript you get back is not changed; it needs a leading system message, which every smart agent and every agent with a `systemPrompt` has) that the conversation was handed to it, by whom and why, and to answer the user directly. The `reason` is whatever the model put in the tool's `reason` argument, so the default schema asks for the goal and the facts the next agent needs. A custom `schema` without a `reason` field simply drops that sentence.
+- **The target** is told on the wire only (the transcript you get back is not changed; it needs a leading system message, which every smart agent and every agent with a `systemPrompt` has) that the conversation was handed to it, by whom, and to answer the user directly. The `reason` is whatever the model put in the tool's `reason` argument, so the default schema asks for the goal and the facts the next agent needs. It reaches the target as part of the handoff tool result (capped at 500 characters, on one line), never in the system prompt: it is model-written text and must not carry the weight of an instruction. A custom `schema` without a `reason` field simply drops that sentence.
 
 ## Scope: one `invoke()`
 
