@@ -855,7 +855,11 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           // moved, to whom and why, or the next model call reads a bare "ok" and
           // may answer as if nothing happened.
           const handoffTarget = handoffRuntime?.name || "the target agent";
-          const handoffReason = typeof args?.reason === "string" && args.reason.trim() ? args.reason.trim() : undefined;
+          // Model-written, so capped, on one line and without a trailing period
+          // (the sentence adds its own).
+          const handoffReason = typeof args?.reason === "string"
+            ? args.reason.replace(/\s+/g, " ").trim().slice(0, 500).replace(/[.\s]+$/, "") || undefined
+            : undefined;
           push({
             role: "tool",
             content: `Handoff complete: control transferred to ${handoffTarget}.${handoffReason ? ` Reason: ${handoffReason}.` : ""} ${handoffTarget} now answers the user.`,
@@ -873,7 +877,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           // agent's tools under the target's instructions, permanently.
           const handoffCtx = (state.ctx = state.ctx || {});
           handoffCtx.__handoffActive = true;
-          handoffCtx.__handoffInfo = { from: runtime.name, reason: handoffReason };
+          handoffCtx.__handoffInfo = { from: runtime.name };
           onEvent?.({ type: "handoff", from: runtime.name, to: state.agent?.name, toolName });
           onEvent?.({ type: "tool_call", phase: "success", name: toolName, id: tc.id, args, result: "handoff", durationMs });
           if (needsApproval && approvalEntry) {

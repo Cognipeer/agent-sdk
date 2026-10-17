@@ -3,12 +3,12 @@
 This example shows a control handoff between two smart agents (Root -> Coder).
 
 ## Scenario
-The user asks for a financial calculation and then a small TypeScript function. The Root agent handles the finance part; when it detects coding is required it calls the `delegate_code` tool to hand off control to the Coder agent. The same state is preserved; only the active agent runtime switches.
+The user asks for a financial calculation and then a small TypeScript function. The Root agent handles the finance part; when it detects coding is required it calls the `handoff_to_coder` tool to hand off control to the Coder agent. The same state is preserved; only the active agent runtime switches.
 
 ## Highlights
 - Provide other agent handoffs via the `handoffs` array when constructing the root agent.
 - When a handoff occurs the tools node emits a `handoff` event: `{ type: 'handoff', from, to, toolName }`.
-- The handoff tool returns `ok`, and from the next turn onward the new agent proceeds.
+- The handoff tool result says control moved to the Coder, and from the next model call the Coder proceeds.
 
 ## Run
 

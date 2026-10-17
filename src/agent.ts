@@ -36,8 +36,7 @@ import { createPluginTraceRecorder } from "./plugins/trace.js";
 function defaultHandoffDescription(targetName?: string): string {
   const target = targetName || "the target agent";
   return `Transfer this conversation to ${target} and STOP. After this call you do not answer again this turn; ${target} takes over and answers the user. ` +
-    `Use it only when ${target}'s specialty fits the request better than yours. Put everything it needs to continue in \`reason\`. ` +
-    "To get a result back instead, use a delegation tool.";
+    `Use it only when ${target}'s specialty fits the request better than yours. Put everything it needs to continue in \`reason\`.`;
 }
 
 function handoffReasonSchema() {

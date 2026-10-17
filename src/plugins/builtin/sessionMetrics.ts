@@ -18,6 +18,7 @@
 
 import type { AgentPlugin, CostEstimator, MaybePromise } from "../types.js";
 import type { SmartState } from "../../types.js";
+import { splitUsage } from "../../utils/usage.js";
 
 export type SessionMetrics = {
   runId: string;
@@ -36,6 +37,18 @@ export type SessionMetrics = {
   totalTokens: number;
   /** Present only when a `costEstimator` was configured. */
   estimatedCostUsd?: number;
+  /**
+   * What sub-agents spent during this run, kept apart from the figures above:
+   * each child opens its own session and reports its own record, so folding
+   * them in would count every child token twice in a pipeline that sums runs.
+   * Present only when the run delegated.
+   */
+  subagentCalls?: number;
+  subagentInputTokens?: number;
+  subagentOutputTokens?: number;
+  subagentTotalTokens?: number;
+  /** Present only with a `costEstimator` and sub-agent calls. */
+  subagentEstimatedCostUsd?: number;
   /** Executions per tool name. Opt-in — a wide tool menu makes this unbounded. */
   toolBreakdown?: Record<string, number>;
 };
@@ -61,9 +74,9 @@ function counters(store: Record<string, unknown>): Counters {
   return (store.__metrics ??= { modelCalls: 0, toolNames: {} }) as Counters;
 }
 
-function tokenTotals(state: SmartState) {
+function sumTotals(byModel: Record<string, { input: number; output: number; total: number; cachedInput: number }>) {
   const totals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
-  for (const entry of Object.values(state.usage?.totals ?? {})) {
+  for (const entry of Object.values(byModel)) {
     totals.inputTokens += Number(entry?.input) || 0;
     totals.outputTokens += Number(entry?.output) || 0;
     totals.cachedInputTokens += Number(entry?.cachedInput) || 0;
@@ -72,9 +85,9 @@ function tokenTotals(state: SmartState) {
   return totals;
 }
 
-function estimateCost(state: SmartState, estimator: CostEstimator): number {
+function estimateCost(requests: NonNullable<SmartState["usage"]>["perRequest"], estimator: CostEstimator): number {
   let usd = 0;
-  for (const request of state.usage?.perRequest ?? []) {
+  for (const request of requests) {
     const raw = (request.usage ?? {}) as Record<string, unknown>;
     const promptDetails = (raw.prompt_tokens_details ?? {}) as Record<string, unknown>;
     const completionDetails = (raw.completion_tokens_details ?? {}) as Record<string, unknown>;
@@ -141,6 +154,7 @@ export function sessionMetrics(config: SessionMetricsConfig = {}): AgentPlugin {
       sessionEnd: async ({ status, durationMs }, ctx) => {
         const state = ctx.state as SmartState;
         const counted = counters(ctx.store);
+        const usage = splitUsage(state.usage);
         const metrics: SessionMetrics = {
           runId: ctx.runId,
           agentName: ctx.agentName,
@@ -150,10 +164,20 @@ export function sessionMetrics(config: SessionMetricsConfig = {}): AgentPlugin {
           durationMs: durationMs ?? (counted.startedAt ? Date.now() - counted.startedAt : 0),
           modelCalls: counted.modelCalls,
           ...toolOutcomes(state),
-          ...tokenTotals(state),
+          ...sumTotals(usage.own),
         };
         if (config.costEstimator) {
-          metrics.estimatedCostUsd = estimateCost(state, config.costEstimator);
+          metrics.estimatedCostUsd = estimateCost(usage.ownEntries, config.costEstimator);
+        }
+        if (usage.subagentCalls > 0) {
+          const children = sumTotals(usage.subagent);
+          metrics.subagentCalls = usage.subagentCalls;
+          metrics.subagentInputTokens = children.inputTokens;
+          metrics.subagentOutputTokens = children.outputTokens;
+          metrics.subagentTotalTokens = children.totalTokens;
+          if (config.costEstimator) {
+            metrics.subagentEstimatedCostUsd = estimateCost(usage.subagentEntries, config.costEstimator);
+          }
         }
         if (config.includeToolBreakdown) metrics.toolBreakdown = { ...counted.toolNames };
 
