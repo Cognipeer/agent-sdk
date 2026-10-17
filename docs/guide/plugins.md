@@ -47,7 +47,7 @@ const agent = createSmartAgent({
 | `postModelCall` | After the assistant turn comes back | Rewrite the message, deny, retry |
 | `preToolUse` | After argument validation, before the approval gate — and again on reviewer-edited `approvedArgs` | Rewrite args, deny, escalate to approval, short-circuit with a result |
 | `postToolUse` | On the raw tool output, before compression — also on a `preToolUse` short-circuit and on a cache hit (`input.source` says which) | Rewrite the output, deny |
-| `preCompact` / `postCompact` | Around summarization | Pin messages, skip a pass, observe |
+| `preCompact` / `postCompact` | Around summarization — `postCompact` also gets the summarizer's model call (`call: { model, usage, durationMs, messagesCompressed, fallback }`), which never passes `pre/postModelCall` | Pin messages, skip a pass, observe |
 | `preFinalAnswer` | Before the answer returns to the caller | Rewrite, deny |
 | `subagentStart` / `subagentStop` | Around a sub-agent task | Rewrite the task, deny, observe |
 | `notification` | Approval, question or limit | Observe |

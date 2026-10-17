@@ -512,6 +512,13 @@ export type StructuredSummary = {
    * the user explicitly revoked it (listed in `discarded_obsolete`).
    */
   user_directives?: string[];
+  /**
+   * Directive → the user's own words it came from, quoted verbatim from a user
+   * message. A directive is only kept when it can be traced to something the
+   * user said (see `summarization.groundDirectives`); the quote is what a later
+   * pass checks again, and what an operator reads to see where it came from.
+   */
+  user_directive_sources?: Record<string, string>;
   stable_facts: SummaryFactItem[];
   active_goals: string[];
   open_questions: string[];
@@ -547,6 +554,14 @@ export type SmartAgentSummarizationConfig = {
   promptTemplate?: string;
   toolFreeCall?: boolean;
   integrityCheck?: boolean;
+  /**
+   * Keep a `user_directives` entry only when it traces back to a USER message
+   * (its quoted source is found there, or — for a summary that gave no quote —
+   * most of its words are). Default true. A directive the summarizer made up,
+   * or lifted from a tool output or from its own prompt, would otherwise be
+   * rendered to every later turn as "still in force — follow them".
+   */
+  groundDirectives?: boolean;
 };
 
 export type SmartAgentBudgetConfig = {
@@ -1170,6 +1185,12 @@ export type TraceSessionRuntime = {
   sequenceOffset?: number;
   /** 1-based part number; 1 for a session that starts with this invoke. */
   part?: number;
+  /**
+   * Set once the session has been handed to its sink. A closed session takes no
+   * more events: they would never be delivered (and, on a session continued by
+   * the next invoke, would collide with its sequence numbers).
+   */
+  closed?: boolean;
   fileBaseDir?: string;
   fileSessionDir?: string;
 };
@@ -1333,6 +1354,18 @@ export type SummarizationEvent = {
   archivedCount?: number;
   structuredSummary?: StructuredSummary;
   integrity?: SummaryIntegrityCheck;
+  /** Model that produced the summary. */
+  model?: string;
+  /** Directives the summarizer returned that were dropped, and why. */
+  droppedDirectives?: DroppedDirective[];
+};
+
+/** A `user_directives` entry the grounding check refused. */
+export type DroppedDirective = {
+  directive: string;
+  reason: "not_found_in_user_messages" | "source_quote_not_found";
+  /** The quote the summarizer claimed, when it gave one. */
+  sourceQuote?: string;
 };
 
 export type EvalFamily = "recall" | "state_continuity" | "summarization_fidelity" | "context_rollover" | "query_focused_summary";

@@ -9,7 +9,7 @@ import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
 import { createReflectionNode, shouldRunReflection } from "./nodes/reflect.js";
 import { resolveReasoning } from "./smart/reasoning.js";
 import { createTool } from "./tool.js";
-import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent, readTraceContinuation, traceContinuationOf } from "./utils/tracing.js";
+import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent, readTraceContinuation, traceContinuationOf, replayDeferredTraceEvents, DEFERRED_TRACE_EVENTS_KEY } from "./utils/tracing.js";
 import { recordHumanDecisions } from "./utils/traceDecisions.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
@@ -911,6 +911,16 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     // Consumed: it is set again on the way out only if this run stops mid-turn.
     delete ctx.__traceContinuation;
     if (traceSession) ctx.__traceSession = traceSession;
+    // Recorded between legs (context summarization) while no session was open;
+    // they go into this one, ahead of anything this invoke records itself.
+    const deferredTraceEvents = ctx[DEFERRED_TRACE_EVENTS_KEY];
+    delete ctx[DEFERRED_TRACE_EVENTS_KEY];
+    let deferredTraceEventsReplayed = false;
+    const replayDeferred = () => {
+      if (deferredTraceEventsReplayed) return;
+      deferredTraceEventsReplayed = true;
+      replayDeferredTraceEvents(traceSession, deferredTraceEvents);
+    };
 
     // A session is never recovered from the incoming ctx. `invoke(previousState)`
     // is the ordinary continuation and branching pattern, so a handle parked on
@@ -1081,6 +1091,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           },
         };
         stateHolder.value = blocked;
+        replayDeferred();
         await finalizeTraceSession(traceSession, { agentRuntime: runtime, status: "success" });
         emit({ type: "finalAnswer", content: reason });
         const denied: AgentInvokeResult<TOutput> = {
@@ -1099,6 +1110,8 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     let res: AgentState;
     try {
       await startStreamingSession(traceSession, runtimeWithInvokeLimits);
+      // After the streaming start, so a streaming sink receives them too.
+      replayDeferred();
       res = await runLoop(initial, config, emit, stateHolder);
     } catch (err: any) {
       await finalizeTraceSession(traceSession, {

@@ -453,6 +453,40 @@ export function langfuseTracing(config: LangfuseTracingConfig = {}): AgentPlugin
         return undefined;
       },
 
+      // Context summarization is a model call of its own — billed, often the
+      // largest prompt of the run — that never passes pre/postModelCall. It is
+      // exported as a generation so its cost is on the trace with the rest.
+      // Shape only, like everything here: counts, never the summary text.
+      postCompact: ({ summary, tokensBefore, tokensAfter, strategy, call }, ctx) => {
+        const endedAt = Date.now();
+        const latency = Math.max(0, Number(call?.durationMs) || 0);
+        enqueue(
+          {
+            id: newId("evt"),
+            kind: "generation",
+            observationId: newId("gen"),
+            timestamp: new Date(endedAt).toISOString(),
+            traceId: traceIdOf(ctx),
+            name: "summarize_context",
+            startTime: new Date(endedAt - latency).toISOString(),
+            endTime: new Date(endedAt).toISOString(),
+            model: call?.model,
+            usage: normalizeUsage(call?.usage),
+            ...(call?.fallback ? { level: "WARNING" as const, statusMessage: "Summarizer call failed; summary built locally." } : {}),
+            metadata: {
+              strategy,
+              tokensBefore,
+              tokensAfter,
+              messagesCompressed: call?.messagesCompressed,
+              userDirectives: summary.user_directives?.length ?? 0,
+              stableFacts: summary.stable_facts?.length ?? 0,
+              depth: ctx.depth,
+            },
+          },
+          ctx,
+        );
+      },
+
       preToolUse: ({ toolName, toolCallId }, ctx) => {
         const startTime = new Date().toISOString();
         const observationId = newId("span");

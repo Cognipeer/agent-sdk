@@ -547,7 +547,8 @@ function toOtlpStatusCode(status: string): number {
 function toOtlpSpanKind(type: string): number {
   switch (type) {
     case "ai_call":
-      return 3; // CLIENT — outgoing LLM request
+    case "summarization":
+      return 3; // CLIENT — outgoing LLM request (the summarizer is one too)
     case "tool_call":
       return 1; // INTERNAL
     case "agent_iteration":
@@ -1113,6 +1114,15 @@ function collectToolCallSectionsFromMessage(message: any): TraceToolCallSection[
   return sections;
 }
 
+/**
+ * The message sections `recordTraceEvent` builds from a `messageList`, for a
+ * caller that needs them next to sections of its own (an event takes either
+ * `sections` or `messageList`, not both).
+ */
+export function traceSectionsFromMessages(messageList?: any[]): TraceDataSection[] {
+  return convertMessageListToSections(messageList) ?? [];
+}
+
 function convertMessageListToSections(messageList?: any[]): TraceDataSection[] | undefined {
   if (!Array.isArray(messageList) || messageList.length === 0) return undefined;
   const sections: TraceDataSection[] = [];
@@ -1563,12 +1573,68 @@ export function recordTraceEvent(
   return record;
 }
 
+/** An event held for the next trace session: the same input `recordTraceEvent` takes. */
+export type DeferredTraceEvent = Parameters<typeof recordTraceEvent>[1];
+
+/** Where events wait on `ctx` while no trace session is open to take them. */
+export const DEFERRED_TRACE_EVENTS_KEY = "__deferredTraceEvents";
+
+/**
+ * True when `session` still accepts events. The smart agent runs a turn as
+ * several invokes ("legs") and does its own work — context summarization — in
+ * between them; at that point the previous leg has already handed its session
+ * to the sink, and the next leg has not opened one yet.
+ */
+export function isTraceSessionOpen(session: TraceSessionRuntime | undefined): session is TraceSessionRuntime {
+  return Boolean(session) && !session!.closed;
+}
+
+/**
+ * Records `event` into the open session on `ctx`, or — when there is none —
+ * returns a copy of `ctx` holding it for the next invoke to record. Returns
+ * undefined when nothing on ctx changed (recorded, or tracing is off).
+ */
+export function recordOrDeferTraceEvent(
+  ctx: Record<string, any> | undefined,
+  event: DeferredTraceEvent,
+  options: { tracingEnabled: boolean },
+): Record<string, any> | undefined {
+  const session = ctx?.__traceSession as TraceSessionRuntime | undefined;
+  if (isTraceSessionOpen(session)) {
+    recordTraceEvent(session, event);
+    return undefined;
+  }
+  // Tracing off: no invoke will ever open a session to take the event.
+  if (!options.tracingEnabled) return undefined;
+  const held = Array.isArray(ctx?.[DEFERRED_TRACE_EVENTS_KEY]) ? ctx![DEFERRED_TRACE_EVENTS_KEY] : [];
+  return {
+    ...(ctx || {}),
+    [DEFERRED_TRACE_EVENTS_KEY]: [...held, { ...event, timestamp: event.timestamp ?? new Date().toISOString() }],
+  };
+}
+
+/**
+ * Records events another invoke held for this one (see `recordOrDeferTraceEvent`),
+ * in the order they happened. They keep their own timestamps; they get this
+ * session's next sequence numbers, which is where they belong — after what the
+ * previous leg recorded, before anything this one does.
+ */
+export function replayDeferredTraceEvents(session: TraceSessionRuntime | undefined, deferred: unknown): void {
+  if (!session || !Array.isArray(deferred)) return;
+  for (const event of deferred) {
+    if (event && typeof event === "object" && typeof (event as DeferredTraceEvent).type === "string") {
+      recordTraceEvent(session, event as DeferredTraceEvent);
+    }
+  }
+}
+
 export async function finalizeTraceSession(session: TraceSessionRuntime | undefined, params: {
   agentRuntime?: AgentRuntimeConfig;
   status?: TraceSessionStatus;
   error?: { message?: string; stack?: string } | null;
 } = {}): Promise<TraceSessionFile | undefined> {
   if (!session) return undefined;
+  session.closed = true;
 
   const endedAtMs = Date.now();
   const endedAtIso = new Date(endedAtMs).toISOString();

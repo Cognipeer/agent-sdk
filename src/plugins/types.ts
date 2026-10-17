@@ -284,6 +284,20 @@ export interface HookMap {
       tokensAfter: number;
       /** Name of the strategy that produced it — `"builtin"` when no slot is filled. */
       strategy: string;
+      /**
+       * The summarizer's own model call — absent when it produced no call (a
+       * local fallback, or a strategy that reports none). It is a real, billed
+       * model call that never passes `pre/postModelCall`, so this is the only
+       * place an observer sees it.
+       */
+      call?: {
+        model?: string;
+        durationMs?: number;
+        usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; totalTokens?: number };
+        messagesCompressed?: number;
+        /** True when the model call failed and the summary was built locally. */
+        fallback?: boolean;
+      };
     };
     output: void;
   };
