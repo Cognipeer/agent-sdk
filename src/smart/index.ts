@@ -7,7 +7,8 @@ import { openPluginSession } from "../plugins/session.js";
 import { createPluginTraceRecorder } from "../plugins/trace.js";
 import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from "../contextTools.js";
 import { createAskUserQuestionTool } from "../humanLoop.js";
-import { createContextSummarizeNode } from "../nodes/contextSummarize.js";
+import { createContextSummarizeNode, LAST_SUMMARIZATION_CALL_KEY } from "../nodes/contextSummarize.js";
+import { DEFERRED_TRACE_EVENTS_KEY } from "../utils/tracing.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
 import { normalizeSmartAgentOptions } from "./runtimeConfig.js";
@@ -472,7 +473,11 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       };
       return { state: { ...currentState, ctx } as SmartState, rawMessages: currentRawMessages, compressed: false };
     }
-    const ctx = { ...(currentState.ctx || {}) };
+    // The node's ctx carries trace events held for the next leg (no session is
+    // open between legs) and its model call, which only postCompact reads.
+    const ctx = { ...(currentState.ctx || {}), ...(((delta as any).ctx as Record<string, any> | undefined) || {}) };
+    const summarizationCall = (ctx as any)[LAST_SUMMARIZATION_CALL_KEY];
+    delete (ctx as any)[LAST_SUMMARIZATION_CALL_KEY];
     delete ctx.__summarizationExhausted;
     delete (ctx as any).__summarizationExhaustedAtToolCount;
     const updated = await persistLatestSummary(syncPlanStateWith(ref, { ...currentState, ...delta, ctx } as SmartState));
@@ -484,6 +489,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         tokensBefore,
         tokensAfter: countMessagesTokens((updated.messages || []) as any),
         strategy: "builtin",
+        ...(summarizationCall && typeof summarizationCall === "object" ? { call: summarizationCall } : {}),
       });
     }
 
@@ -828,11 +834,20 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // If base produced an assistant message without tool calls (its normal stop), we're done.
         break;
       }
-
       // Fall back if base was never invoked (edge case)
       if (!lastResult) {
         const res = await base.invoke(state, turnConfig);
         lastResult = res as AgentInvokeResult<TOutput>;
+      }
+
+      // Trace events are held on ctx only for the NEXT leg of this turn. A loop
+      // that ended right after a summarization pass (iteration cap) has no next
+      // leg; carried out on the result they would be persisted with the state,
+      // prompt sections and all, and replayed into every branch resumed from it.
+      if ((state as any).ctx?.[DEFERRED_TRACE_EVENTS_KEY]) {
+        const ctx = { ...((state as any).ctx || {}) };
+        delete ctx[DEFERRED_TRACE_EVENTS_KEY];
+        state = { ...state, ctx } as SmartState;
       }
 
       // Ensure summaries are preserved in the final result

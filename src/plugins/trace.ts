@@ -19,7 +19,7 @@
 
 import type { PluginTraceRecord } from "./types.js";
 import type { TraceSessionRuntime } from "../types.js";
-import { recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
+import { isTraceSessionOpen, recordTraceEvent, sanitizeTracePayload } from "../utils/tracing.js";
 
 /** Hook outcomes raised before a trace session exists are held, not dropped. */
 const MAX_PENDING = 32;
@@ -78,10 +78,12 @@ export function createPluginTraceRecorder(
   return {
     record: (record: PluginTraceRecord) => {
       const session = getSession();
-      if (!session) {
+      if (!isTraceSessionOpen(session)) {
         // The input guardrail runs before the first model call, which is where
         // the session is created — and a blocked run is exactly the one worth
-        // seeing, so the record waits rather than disappearing.
+        // seeing, so the record waits rather than disappearing. Same between
+        // smart-agent legs (pre/postCompact): the previous leg's session is
+        // already with its sink, and the next leg opens a new part.
         if (pending.length < MAX_PENDING) pending.push(record);
         return;
       }

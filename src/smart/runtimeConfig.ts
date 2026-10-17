@@ -30,6 +30,7 @@ const BASE_DEFAULTS: ProfileConfig = {
     promptTemplate: "",
     toolFreeCall: true,
     integrityCheck: true,
+    groundDirectives: true,
   },
   context: {
     policy: "hybrid",
