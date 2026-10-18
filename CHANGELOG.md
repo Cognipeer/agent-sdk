@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0]
+
+### Fixed
+- **Context summarization reaches the trace.** The summarizer runs between two invokes ("legs") of the smart agent; it recorded its event into the session on `ctx`, which the previous leg had already handed to its sink — so no summarization was ever delivered (and on a streaming sink it reused the next leg's sequence number). An event recorded while no session is open now waits on `ctx.__deferredTraceEvents` and is recorded at the start of the next invoke, in the turn's own session. Plugin hook records made between legs (`preCompact` / `postCompact`) are held the same way. `TraceSessionRuntime.closed` marks a session already given to its sink. The summarizer's tokens are now part of the session totals.
+- **A directive the user never gave no longer takes over the conversation.** Prod: a conversation with no request for JSON got `user_directives: ["Return strict JSON only."]` — the summarizer's own reply-format instruction read back as the user's — and every later answer came back as JSON; the integrity repair then carried it forward forever. Directives are now kept only when they trace back to a user message (`summarization.groundDirectives`, default `true`): the default prompt asks for a verbatim `source_quote`, which must occur in a user message; a quote-less directive must have most of its words (character bigrams for CJK / Thai) in one user message. With a custom `promptTemplate` a quote-less directive is kept as before. Carried directives are re-checked on every pass; one from a pre-upgrade summary (no recorded source) whose message is no longer in state, or that paraphrases the user across languages without a quote, is dropped — the trace and `droppedDirectives` say so. Directives are taken from user messages only.
+- A parsed summarizer reply with no `stable_facts` no longer turns the lines of its raw JSON into `fact_N` entries (only an unparseable reply does).
+
+### Changed
+- The summarizer prompt states its JSON reply format as the request's own requirement, marks the conversation with `<conversation>` tags, and says where directives may come from. Every user message is sent ahead of tool output (up to 60% of `summaryPromptMaxTokens`); oversized messages keep their start and end (`[TRUNCATED n chars]`) instead of only the start. A custom `promptTemplate` is used as before.
+- One trace event per summarization pass (a failed call was traced twice: once as an error with estimated tokens, once as a success). It carries `model`, `provider`, usage, and sections: the prompt, the model's raw reply, the summary injected into the context, `Compaction` and `User directives` (kept with sources, dropped with reasons). OTLP exports it as a CLIENT span.
+
+### Added
+- `summarization.groundDirectives`; `StructuredSummary.user_directive_sources` (directive → the user's words); `SummarizationEvent.model` and `.droppedDirectives`; `DroppedDirective`.
+- `postCompact` input `call: { model, usage, durationMs, messagesCompressed, fallback }` — the summarizer's model call, which never passes `pre/postModelCall`. `langfuseTracing` exports it as a `summarize_context` generation.
+- A LangChain model gets `{ runName: "summarize_context", tags: ["cognipeer:summarization"] }` on the summarizer call, so LangChain callbacks name the run. Other models get no options, as before.
+- Exports: `isTraceSessionOpen`, `recordOrDeferTraceEvent`, `replayDeferredTraceEvents`, `traceSectionsFromMessages`, `DeferredTraceEvent`.
+
 ## [0.14.0]
 
 ### Fixed

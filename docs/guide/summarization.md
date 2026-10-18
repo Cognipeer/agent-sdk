@@ -50,6 +50,7 @@ Important fields:
 - `summarization.summaryMode` — `"incremental"` (default) chains the prior summary; `"full_rewrite"` discards it
 - `summarization.summaryPromptMaxTokens` — caps the summarization prompt size
 - `summarization.integrityCheck` — verifies stable facts survive across passes (default `true`)
+- `summarization.groundDirectives` — keep a `user_directives` entry only when it traces back to a user message (default `true`; see below)
 - `context.toolResponsePolicy` — retention applied when the summarizer rewrites tool messages
 - `toolResponses.defaultPolicy` — same as above; takes precedence over `context.toolResponsePolicy`
 - `toolResponses.retentionByTool` — two-axis per-tool override (`{ input, output }`), highest priority
@@ -78,6 +79,62 @@ This keeps the loop progressive even when retention policies temporarily lock ou
 When large tool outputs are summarized and archived, the runtime keeps a recovery path through `get_tool_response`.
 
 That means an autonomous agent can continue with compact context, then fetch raw evidence again if it later needs the original output.
+
+## User directives
+
+Each summary carries `user_directives`: standing instructions the user gave
+about how to work or answer ("always answer in Turkish", "never restart prod").
+They are rendered first in the summary, as "User directives (still in force —
+follow them)", so every later turn obeys them. That makes a wrong one costly:
+it rewrites the agent's behaviour for the rest of the conversation.
+
+A directive therefore has to trace back to something the user said:
+
+- the default prompt asks for `{ directive, source_quote }`, the quote copied
+  verbatim from a user message, in the user's language;
+- the runtime keeps a directive only when its quote is found in a user message,
+  or — for a directive without a quote — when most of its words (character
+  pairs, for scripts written without spaces) occur in one user message;
+- with a custom `promptTemplate`, which never asked for quotes, a quote-less
+  directive is kept as before; only a quote it does give is checked;
+- text from assistant, tool or system messages never qualifies, so an
+  instruction inside a tool output or a fetched page cannot become one, and
+  neither can the summarizer's own "reply in JSON" requirement;
+- directives carried from an earlier summary are checked again on every pass.
+  One the earlier pass had already traced (it has a recorded source) is kept
+  even after its message is trimmed from state. One from a summary made before
+  this check existed has no source: it must pass the check like a new one, so
+  if its message is gone from state — or it translates the user's words and the
+  summarizer gives no quote — it is dropped.
+
+The quotes are stored in `summaryRecords[n].user_directive_sources`. Dropped
+directives are reported on the `summarization` event (`droppedDirectives`), in
+the integrity notes, and in the trace. Turn the check off with
+`summarization: { groundDirectives: false }`.
+
+Every user message reaches the summarizer, ahead of tool output: the prompt
+budget is filled with user messages first (up to 60% of it; the first message
+and the newest win when they do not all fit), then with the newest assistant
+and tool messages. An oversized message keeps its start and its end.
+
+## Observability
+
+Every pass is one `summarization` trace event, in the same session as the turn
+it belongs to: the summarizer prompt, the model's raw reply, the summary it put
+into the context, a `Compaction` section (messages compressed, tokens before
+and after, messages sent to and left out of the summarizer, integrity) and a
+`User directives` section (kept, with their sources, and dropped, with the
+reason). The event carries the model and the token usage, so the summarizer's
+cost is in the session totals. A failed call is one `error` event with the
+fallback summary and no token counts.
+
+The summarizer runs between two invokes of the base agent, when no trace
+session is open; its event waits on `ctx` and is recorded at the start of the
+next invoke. `postCompact` observers get the call itself (`call: { model,
+usage, durationMs, messagesCompressed, fallback }`) — the `langfuseTracing`
+plugin exports it as a `summarize_context` generation. With a LangChain model
+the call runs as `runName: "summarize_context"`, tagged
+`cognipeer:summarization`, so LangChain callbacks (LangSmith…) name it too.
 
 ## State surfaces to inspect
 
