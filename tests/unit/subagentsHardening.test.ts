@@ -1,5 +1,5 @@
 /**
- * Sub-agent hardening (0.15.0):
+ * Sub-agent hardening (0.16.0):
  *  - SDK-1 concurrent delegations keep their own tool-call identity
  *  - SDK-2 a child's spend counts against the parent's budget
  *  - SDK-3 a child's outcome is a status, not a silent success
