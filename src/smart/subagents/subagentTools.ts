@@ -330,11 +330,29 @@ async function runChild(
   const childDepth = (Number(parentCtx.__delegationDepth) || 0) + 1;
 
   // The child records into the parent's trace session, under an agent span of
-  // its own. Each segment of a run (the first, and each resume) gets a fresh span
-  // id: the first one was recorded when the child paused and ids are never reused.
+  // its own. The span id belongs to the RUN, not to a segment of it: a child that
+  // pauses and resumes records every segment under the same id (the pending record
+  // says so in `agentSpanId`), so the trace shows one group. A paused child records
+  // the span `pending`; the run's last segment records it again, finished, and the
+  // later record supersedes the earlier one (see `foldSupersededSpans`).
   const parentSession = parentCtx.__traceSession as TraceSessionRuntime | undefined;
   const traced = isTraceSessionOpen(parentSession);
-  const agentSpanId = generateSpanId();
+  // The record comes back from host-persisted state, so each field is checked and
+  // ignored when it is not what runChild wrote.
+  const sessionStart = traced ? parentSession.startedAt : undefined;
+  const persistedId = opts.record?.agentSpanId;
+  const agentSpanId = typeof persistedId === "string" && /^[0-9a-f]{16}$/.test(persistedId) ? persistedId : generateSpanId();
+  const persistedStart = opts.record?.startedAt;
+  const startValid = typeof persistedStart === "number" && Number.isFinite(persistedStart) && persistedStart > 0 && persistedStart <= start;
+  // When the RUN started (its first segment), and which segment this is. A span is
+  // drawn from `timestamp - durationMs` to `timestamp`, so a resumed segment reports
+  // the run's whole extent: that is the interval its children from every segment
+  // fall in. Never earlier than the session the span is recorded in (a resume that
+  // opens a new session), and a skewed clock on another host cannot push it past now.
+  const runStartedAt = startValid ? Math.min(start, Math.max(persistedStart as number, sessionStart ?? (persistedStart as number))) : start;
+  const persistedSegments = opts.record?.segments;
+  const segment = (typeof persistedSegments === "number" && Number.isInteger(persistedSegments) && persistedSegments >= 1 && persistedSegments <= 1000 ? persistedSegments : 0) + 1;
+  const elapsedMs = () => Math.max(0, Date.now() - runStartedAt);
   const parentIterationSpanId = traced ? parentSession.currentIterationSpanId : undefined;
   const traceScope = traced
     ? createSubagentTraceScope(parentSession, { agentSpanId, name: spec.name, spawnId, mode: spec.mode, hitl: opts.allowHITL, iterations: opts.record?.iterations })
@@ -351,7 +369,7 @@ async function runChild(
       parentSpanId: status === "pending" ? parentIterationSpanId : (opts.parentSpanId ?? parentIterationSpanId),
       name: spec.name,
       status,
-      durationMs: Date.now() - start,
+      durationMs: elapsedMs(),
       error: info.error,
       info: {
         id: spawnId,
@@ -361,6 +379,8 @@ async function runChild(
         depth: childDepth,
         parentToolCallId: opts.parentToolCallId,
         status: info.subagentStatus,
+        // Only a run that paused has more than one segment to tell about.
+        ...(segment > 1 || status === "pending" ? { segments: segment } : {}),
         ...(info.note ? { note: info.note } : {}),
         ...(spec.metadata ? { metadata: spec.metadata } : {}),
       },
@@ -546,6 +566,7 @@ async function runChild(
           parentToolCallId: opts.parentToolCallId, name: spec.name, mode: spec.mode,
           adhoc: spec.adhoc, input, childState: cleanChildState(childState),
           pendingKind: "approval", pendingId: childEntry.id, spawnId, iterations: traceScope ? subagentTraceScopeOf(traceScope)?.iterations : undefined,
+          agentSpanId, startedAt: runStartedAt, segments: segment,
         };
         recordSegment("pending", { subagentStatus: "paused", input });
         parentOnEvent?.({ type: "subagent", phase: "paused", name: spec.name, id: spawnId, mode: spec.mode, parentToolCallId: opts.parentToolCallId } as any);
@@ -568,6 +589,7 @@ async function runChild(
           parentToolCallId: opts.parentToolCallId, name: spec.name, mode: spec.mode,
           adhoc: spec.adhoc, input, childState: cleanChildState(childState),
           pendingKind: "user_question", pendingId: childEntry.id, spawnId, iterations: traceScope ? subagentTraceScopeOf(traceScope)?.iterations : undefined,
+          agentSpanId, startedAt: runStartedAt, segments: segment,
         };
         recordSegment("pending", { subagentStatus: "paused", input });
         parentOnEvent?.({ type: "subagent", phase: "paused", name: spec.name, id: spawnId, mode: spec.mode, parentToolCallId: opts.parentToolCallId } as any);

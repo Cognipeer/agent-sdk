@@ -126,10 +126,11 @@ export function otelTracing(config: OtelTracingConfig): AgentPlugin {
             ctx.logger.warn("otelTracing needs fetch to be available in this runtime; export skipped.");
             return;
           }
+          const request = traceSessionToOtlp(payload) as { resourceSpans: Array<{ scopeSpans: Array<{ spans: unknown[] }> }> };
           const response = await fetchFn(endpoint, {
             method: "POST",
             headers: { "content-type": "application/json", ...(config.headers ?? {}) },
-            body: JSON.stringify(traceSessionToOtlp(payload)),
+            body: JSON.stringify(request),
             // The run is over, but a host that cancelled it should not be made
             // to wait on a collector that is refusing to answer.
             signal: ctx.signal,
@@ -140,7 +141,7 @@ export function otelTracing(config: OtelTracingConfig): AgentPlugin {
           }
           ctx.emit({
             type: "metadata",
-            otelTracing: { exported: true, endpoint, spans: session.events.length + 1 },
+            otelTracing: { exported: true, endpoint, spans: request.resourceSpans[0].scopeSpans[0].spans.length },
           } as never);
         } catch (err) {
           // Swallowed: a collector outage must never surface as an agent error.

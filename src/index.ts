@@ -59,7 +59,7 @@ export type {
   ToolInputDigestResult,
   ToolRetentionDeclarations,
 } from "./smart/toolResponses.js";
-export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, buildToolDefinitionsSection, buildResponseFormatSection, readTraceContinuation, traceContinuationOf, isTraceSessionOpen, recordOrDeferTraceEvent, replayDeferredTraceEvents, traceSectionsFromMessages } from "./utils/tracing.js";
+export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, foldSupersededSpans, buildToolDefinitionsSection, buildResponseFormatSection, readTraceContinuation, traceContinuationOf, isTraceSessionOpen, recordOrDeferTraceEvent, replayDeferredTraceEvents, traceSectionsFromMessages } from "./utils/tracing.js";
 export type { DeferredTraceEvent } from "./utils/tracing.js";
 // Native LLM Providers (no LangChain dependency)
 export {

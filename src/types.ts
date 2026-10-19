@@ -1026,6 +1026,10 @@ export type TraceEventRecord = {
    * `pending`: a step that is waiting on someone outside the run — a tool
    * approval or a question to the user that was asked when the run paused.
    * The answer is recorded as a separate event when the run resumes.
+   * A sub-agent's span (type span, actor.role subagent) is also pending while its
+   * run waits; the segment that ends the run records it again under the SAME
+   * spanId, finished. Draw one record per spanId: the highest sequence, dropping
+   * earlier pending ones (foldSupersededSpans).
    */
   status: "success" | "error" | "skipped" | "retry" | "pending";
   durationMs?: number;

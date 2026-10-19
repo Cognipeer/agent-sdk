@@ -709,8 +709,12 @@ export function traceSessionToOtlp(session: TraceSessionFile): Record<string, un
     }));
   }
 
-  // Child spans for each event — inherit traceId from session
-  const childSpans = session.events.map((event) => {
+  // Child spans for each event — inherit traceId from session. A sub-agent that paused
+  // for a human is one span recorded in segments (see foldSupersededSpans), and OTLP can
+  // not take a span back once a backend has it, so an agent span that is still `pending`
+  // is not exported: the span goes out once, from the segment that ends the run.
+  const exported = foldSupersededSpans(session.events).filter((event) => !(event.type === "span" && event.status === "pending"));
+  const childSpans = exported.map((event) => {
     const span = eventToOtlpSpan({
       ...event,
       traceId: event.traceId || traceId,
@@ -1703,6 +1707,36 @@ export function recordSubagentSpan(
     alwaysSections: [{ kind: "metadata", label: "Sub-agent", data: sanitizeTracePayload(span.info) }],
     sections,
   });
+}
+
+/**
+ * The records a reader should draw. A sub-agent that pauses for a human (an
+ * approval or a question) and later resumes is ONE run recorded in several
+ * segments, and records are append-only: each pause records the run's agent span
+ * `pending`, and the segment that ends the run records it again under the SAME
+ * `spanId`, finished, with `durationMs` covering the run from its first segment
+ * (so the span is drawn over its children from every segment, the wait included). The rule for a
+ * reader: for each `spanId` the record with the highest `sequence` wins, and an
+ * earlier record of that id is dropped only when it is `pending`. Nothing else is
+ * ever dropped, so a repeated id on records that are not `pending` comes back
+ * untouched. Order is preserved.
+ *
+ * The session summary is not rewritten: `eventCounts` keeps counting every record
+ * that was written, which is what the file holds.
+ */
+export function foldSupersededSpans<T extends { spanId?: string; sequence?: number; status?: string }>(
+  events: readonly T[],
+): T[] {
+  const rank = (event: T, index: number) =>
+    typeof event.sequence === "number" && Number.isFinite(event.sequence) ? event.sequence : index;
+  const winner = new Map<string, number>();
+  for (let i = 0; i < events.length; i++) {
+    const id = events[i].spanId;
+    if (!id) continue;
+    const current = winner.get(id);
+    if (current === undefined || rank(events[i], i) >= rank(events[current], current)) winner.set(id, i);
+  }
+  return events.filter((event, i) => !(event.spanId && event.status === "pending" && winner.get(event.spanId) !== i));
 }
 
 /**

@@ -142,14 +142,14 @@ agent_iteration  Iteration 1                  (parent)
         tool_call      the child's own tool
 ```
 
-The `span` carries a `Sub-agent` metadata section (`id`, `name`, `mode`, `parallel`, `depth`, `parentToolCallId`, `status`, and the `SubagentDef.metadata` you set; kept even with `logData` off); with `logData` on it also has the `Task` and `Result` messages. Tokens stay on the `ai_call` events, so session totals include the children without counting them twice (the span's `durationMs` and the child's own event durations stay out of `totalDurationMs`; the `delegate_to` call holds that time). A child that pauses for approval or a question records its span as `pending`; the resumed child gets a new span under the resumed `delegate_to` call and keeps the same `id`. An `asTool` child with its own `tracing` keeps its own session.
+The `span` carries a `Sub-agent` metadata section (`id`, `name`, `mode`, `parallel`, `depth`, `parentToolCallId`, `status`, and the `SubagentDef.metadata` you set; kept even with `logData` off); with `logData` on it also has the `Task` and `Result` messages. Tokens stay on the `ai_call` events, so session totals include the children without counting them twice (the span's `durationMs` and the child's own event durations stay out of `totalDurationMs`; the `delegate_to` call holds that time, except for a paused-and-resumed run, where it holds only the resumed leg). A child that pauses for approval or a question records its span as `pending` (under the parent's iteration). When the run ends, the SAME span (same `spanId`) is recorded again, finished, under the resumed `delegate_to` call, with a wall-clock `durationMs` that covers the whole run from its first segment (the wait included) and `segments` in its `Sub-agent` section. Records are append-only, so a reader draws one record per `spanId`: the highest `sequence`, dropping earlier `pending` ones (`foldSupersededSpans(events)` does it; `summary.eventCounts` still counts every record written). The child's iterations, tool calls and the approval request and decision all hang under that one span. An `asTool` child with its own `tracing` keeps its own session.
 
 ## Operational tips
 
 - **Retention** – traces are plain JSON. Rotate or purge `logs/` on a schedule if you generate many sessions.
 - **Privacy** – disable `logData` when prompts contain sensitive information, or redact inside your own tooling before forwarding via your sink.
 - **Streaming** – `mode` is currently `"batched"` for all sessions. Streaming hooks are reserved for future versions.
-- **Correlation** – events include `sessionId`, `eventId`, `traceId`, and span hierarchy (`spanId`, `parentSpanId`), making it simple to join with other telemetry sources. Use `threadId` to correlate sessions across multiple agents participating in the same workflow.
+- **Correlation** – events include `sessionId`, `eventId`, `traceId`, and span hierarchy (`spanId`, `parentSpanId`; a sub-agent that paused and resumed repeats its `spanId` on its `pending` and final records, so fold with `foldSupersededSpans` before joining on it), making it simple to join with other telemetry sources. Use `threadId` to correlate sessions across multiple agents participating in the same workflow.
 
 ## File layout
 

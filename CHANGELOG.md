@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Sub-agents in the parent's trace
+- **A paused-and-resumed sub-agent is ONE span.** 0.17.0 gave every segment of a run its own span id (pending under the parent's iteration, a second span under the resumed `delegate_to`), so a trace showed two groups. The run now keeps one id, stored in the pending record (`SubagentPendingRecord.agentSpanId`, `startedAt`, `segments`, all optional and validated on resume). Every pause records the span `pending`; the segment that ends the run records it again under the same `spanId`, finished, under the resumed `delegate_to` call. The child's iterations, tool calls and approval steps hang under that id, in order. This reverses 0.17.0's "the resumed child records a new span" and "span ids are never reused".
+- **Reading rule.** Records stay append-only in every sink. Per `spanId` the highest `sequence` is drawn and only earlier `pending` records are dropped: exported `foldSupersededSpans(events)`. `summary.eventCounts` / `totalEvents` still count every record written.
+- **Duration.** The agent span's `durationMs` is the run's wall-clock extent from its first segment to its end, the wait included (0.17.0: the last segment's); it stays out of `totalDurationMs`. The `Sub-agent` section gets `segments` once a run has paused. The `subagent` lifecycle event and `subagentStop` keep reporting the last segment's `durationMs`. The start is never earlier than the trace session the span is recorded in.
+- **OTLP.** `traceSessionToOtlp` / `otlpSink` / `otelTracing` export the agent span once, from the segment that ends the run, never a pending one (OTLP cannot take a span back); `otelTracing`'s `spans` metadata counts the spans actually sent.
+- **Compatibility.** A run paused under 0.17.0 resumes with a fresh span id (two groups, as written, not merged). A consumer that keeps the FIRST record per `spanId` must fold first.
+
 ## [0.17.0]
 
 ### Sub-agents in the parent's trace
