@@ -442,7 +442,9 @@ describe("otelTracing", () => {
     // Root span plus one child per trace event — the same conversion otlpSink uses.
     expect(scope.spans).toHaveLength(2);
     expect(scope.spans[0].traceId).toBe("0af7651916cd43dd8448eb211c80319c");
-    expect(scope.spans[1].name).toBe("Assistant Response #1");
+    // GenAI span name (the record carries no model): `chat`, not the cognipeer label.
+    expect(scope.spans[1].name).toBe("chat");
+    expect(scope.spans[1].attributes.find((a: { key: string }) => a.key === "cognipeer.event.label").value.stringValue).toBe("Assistant Response #1");
     const serviceName = body.resourceSpans[0].resource.attributes.find(
       (attr: { key: string }) => attr.key === "service.name",
     );

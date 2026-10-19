@@ -1,0 +1,103 @@
+{
+  "sessionId": "sess_fixture_legs",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:00:02.200Z",
+  "durationMs": 2200,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 1800,
+    "totalInputTokens": 100,
+    "totalOutputTokens": 25,
+    "totalCachedInputTokens": 0,
+    "totalBytesIn": 0,
+    "totalBytesOut": 0,
+    "eventCounts": {
+      "agent_iteration": 1,
+      "ai_call": 1,
+      "tool_approval": 1
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0001_fx1",
+      "sequence": 1,
+      "type": "agent_iteration",
+      "label": "Iteration 1 #1",
+      "spanId": "a00000000000000d",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0002_fx2",
+      "sequence": 2,
+      "type": "ai_call",
+      "label": "Assistant Response #2",
+      "spanId": "a00000000000000e",
+      "parentSpanId": "a00000000000000d",
+      "timestamp": "2026-10-19T12:00:02.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 1800,
+      "inputTokens": 100,
+      "outputTokens": 25,
+      "totalTokens": 125,
+      "cachedInputTokens": 0,
+      "finishReason": "tool_calls",
+      "model": "gpt-4o",
+      "provider": "openai"
+    },
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0003_fx3",
+      "sequence": 3,
+      "type": "tool_approval",
+      "label": "Tool approval - refund_order #3",
+      "spanId": "a00000000000000f",
+      "parentSpanId": "a00000000000000d",
+      "timestamp": "2026-10-19T12:00:02.100Z",
+      "actor": {
+        "scope": "agent",
+        "name": "refund_order",
+        "role": "approval"
+      },
+      "status": "pending"
+    }
+  ],
+  "status": "paused",
+  "errors": []
+}

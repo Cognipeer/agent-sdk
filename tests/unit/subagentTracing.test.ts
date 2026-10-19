@@ -956,7 +956,8 @@ describe("OTLP export of a sub-agent that paused", () => {
     // One agent span in all, and it is the finished one.
     expect(exported).toHaveLength(1);
     expect(exported[0].spanId).toBe(recorded.spanId);
-    expect(exported[0].status.code).toBe(1);
+    // UNSET, not OK: a finished span is not an assertion that the application vouches for it.
+    expect(exported[0].status.code).toBe(0);
     // The children of both segments name it as their parent, so the backend can join them.
     const children = bodies.flatMap(spansOf).filter((s) => s.parentSpanId === recorded.spanId);
     expect(children.length).toBeGreaterThanOrEqual(2);

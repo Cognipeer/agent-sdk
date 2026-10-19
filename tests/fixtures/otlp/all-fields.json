@@ -1,0 +1,200 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "svc"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "cognipeer-agent-sdk",
+            "version": "1.2.3"
+          },
+          "spans": [
+            {
+              "traceId": "0af7651916cd43dd8448eb211c80319c",
+              "spanId": "b7ad6b7169203331",
+              "parentSpanId": "00f067aa0ba902b7",
+              "traceState": "vendor=x,other=y",
+              "flags": 769,
+              "name": "invoke_agent Everything",
+              "kind": 3,
+              "startTimeUnixNano": "1792411205110500000",
+              "endTimeUnixNano": "1792411205123000000",
+              "attributes": [
+                {
+                  "key": "k",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "stringValue": "héllo 😀"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "127"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "128"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "2147483648"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "9007199254740993"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "-1"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "intValue": "-9223372036854775808"
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "doubleValue": 0
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "doubleValue": -1.5e-7
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "bytesValue": "AAEC/w=="
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "a"
+                        },
+                        {
+                          "intValue": "2"
+                        },
+                        {
+                          "arrayValue": {
+                            "values": []
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "k",
+                  "value": {
+                    "kvlistValue": {
+                      "values": [
+                        {
+                          "key": "n",
+                          "value": {
+                            "kvlistValue": {
+                              "values": [
+                                {
+                                  "key": "deep",
+                                  "value": {
+                                    "boolValue": false
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792411205123000000",
+                  "name": "exception",
+                  "attributes": [
+                    {
+                      "key": "exception.message",
+                      "value": {
+                        "stringValue": "boom"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "boom"
+              }
+            },
+            {
+              "traceId": "0af7651916cd43dd8448eb211c80319c",
+              "spanId": "1111111111111111",
+              "parentSpanId": "",
+              "flags": 257,
+              "name": "plain",
+              "kind": 1,
+              "startTimeUnixNano": "1",
+              "endTimeUnixNano": "1",
+              "attributes": [],
+              "status": {
+                "code": 0
+              }
+            }
+          ]
+        }
+      ],
+      "schemaUrl": "https://opentelemetry.io/schemas/1.40.0"
+    }
+  ]
+}
