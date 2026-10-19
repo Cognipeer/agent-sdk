@@ -15,7 +15,7 @@ export class DedupTracker {
    * first time it has been seen.
    */
   checkAndRegister(content: string, executionId: string, toolName: string): DedupEntry | undefined {
-    const hash = createHash("sha1").update(content).digest("hex");
+    const hash = createHash("sha256").update(content).digest("hex");
     const existing = this.seen.get(hash);
     if (!existing) {
       this.seen.set(hash, { executionId, toolName });
