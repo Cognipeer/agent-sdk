@@ -9,7 +9,7 @@ import { createToolLimitFinalizeNode } from "./nodes/toolLimitFinalize.js";
 import { createReflectionNode, shouldRunReflection } from "./nodes/reflect.js";
 import { resolveReasoning } from "./smart/reasoning.js";
 import { createTool } from "./tool.js";
-import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent, readTraceContinuation, traceContinuationOf, replayDeferredTraceEvents, DEFERRED_TRACE_EVENTS_KEY } from "./utils/tracing.js";
+import { createTraceSession, finalizeTraceSession, startStreamingSession, recordTraceEvent, readTraceContinuation, traceContinuationOf, replayDeferredTraceEvents, DEFERRED_TRACE_EVENTS_KEY, createSubagentTraceScope, isTraceSessionOpen, recordSubagentSpan, subagentTraceScopeOf, generateSpanId, withDefaults } from "./utils/tracing.js";
 import { recordHumanDecisions } from "./utils/traceDecisions.js";
 import { evaluateGuardrails } from "./guardrails/engine.js";
 import { captureSnapshot, restoreSnapshot } from "./utils/stateSnapshot.js";
@@ -483,6 +483,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             detail: { reason: budget.reason, iteration: iterations },
           });
         }
+        // The reviewer's answer that resumed this run is still owed to the trace:
+        // no iteration opens below to record it.
+        recordHumanDecisions(state.ctx?.__traceSession, state);
         const ctx = { ...(state.ctx || {}), __limitBreached: budget.reason } as any;
         state = { ...state, ctx } as AgentState;
         break;
@@ -492,14 +495,19 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
       if (traceSession) {
         // Numbered across the whole session, not this invoke: a run resumed
-        // after a pause continues "Iteration 3", it does not restart at 1.
-        const iterationNumber = (traceSession.summary.eventCounts.agent_iteration ?? 0) + 1;
+        // after a pause continues "Iteration 3", it does not restart at 1. A
+        // sub-agent numbers its own iterations; the root leaves those out.
+        const subagentScope = subagentTraceScopeOf(traceSession);
+        const iterationNumber = subagentScope
+          ? ++subagentScope.iterations
+          : (traceSession.summary.eventCounts.agent_iteration ?? 0) - (traceSession.summary.subagentIterations ?? 0) + 1;
         const iterEvent = recordTraceEvent(traceSession, {
           type: "agent_iteration",
           label: `Iteration ${iterationNumber}`,
           actor: { scope: "agent", name: opts.name || "agent", role: "orchestrator" },
           parentSpanId: traceSession.rootSpanId,
         });
+        if (subagentScope) traceSession.summary.subagentIterations = (traceSession.summary.subagentIterations ?? 0) + 1;
         // Override the spanId for the iteration event so children reference it
         if (iterEvent) {
           traceSession.currentIterationSpanId = iterEvent.spanId;
@@ -955,7 +963,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
 
     const stateHolder: { value: AgentState } =
       inheritedSession?.stateHolder ?? { value: undefined as unknown as AgentState };
-    const traceRecorder = createPluginTraceRecorder(() => traceSession);
+    // A sub-agent has no session of its own; its hooks record into the scoped
+    // view of its parent's, which its caller left on ctx.
+    const traceRecorder = createPluginTraceRecorder(() =>
+      traceSession ?? (subagentTraceScopeOf(ctx.__traceSession) ? ctx.__traceSession : undefined),
+    );
 
     const runHost: PluginRunHost | undefined =
       inheritedSession?.host
@@ -1308,7 +1320,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         name: toolName,
         description: description || `Delegate task to agent ${opts.name || 'Agent'}`,
         schema,
-        func: async ({ input }) => {
+        func: async ({ input }, context) => {
           // Read parent runtime delegation policy + current depth from the
           // injected _stateRef. The toolsNode wires this on every call.
           const ref: any = delegatedTool._stateRef;
@@ -1348,7 +1360,36 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             input,
           );
 
-          const childCtx = { __delegationDepth: currentDepth + 1 };
+          const childCtx: Record<string, any> = { __delegationDepth: currentDepth + 1 };
+          // A child with no tracing of its own records into the parent's session,
+          // nested under an agent span; one with its own tracing keeps its session.
+          const parentSession = parentCtx.__traceSession;
+          const traced = isTraceSessionOpen(parentSession);
+          const agentSpanId = generateSpanId();
+          const parentIterationSpanId = traced ? parentSession.currentIterationSpanId : undefined;
+          if (traced && !withDefaults(opts.tracing).enabled) {
+            childCtx.__traceSession = createSubagentTraceScope(parentSession, {
+              agentSpanId,
+              name: opts.name || "agent",
+              mode: "asTool",
+              hitl: false,
+            });
+          }
+          const startedAt = Date.now();
+          const recordSpan = (status: "success" | "error", extra: { error?: string; result?: string }) => {
+            if (!traced || !isTraceSessionOpen(parentSession)) return;
+            recordSubagentSpan(parentSession, {
+              spanId: agentSpanId,
+              parentSpanId: context?.traceSpanId ?? parentIterationSpanId,
+              name: opts.name || "agent",
+              status,
+              durationMs: Date.now() - startedAt,
+              error: extra.error,
+              info: { name: opts.name || "agent", mode: "asTool", depth: currentDepth + 1, parentToolCallId: context?.toolCallId, status: status === "success" ? "ok" : "error" },
+              task: input,
+              result: extra.result,
+            });
+          };
           // Forward the parent's event/streaming/cancellation wiring so a
           // delegated child surfaces its progress to the host (previously the
           // child ran "dark"). Events are stamped with the child's name.
@@ -1366,7 +1407,14 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             stream: Boolean(parentCtx.__streaming),
             cancellationToken: parentCtx.__cancellationToken ?? parentCtx.__abortSignal,
           };
-          const res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any, childConfig as any);
+          let res;
+          try {
+            res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any, childConfig as any);
+          } catch (err: any) {
+            recordSpan("error", { error: err?.message || String(err) });
+            throw err;
+          }
+          recordSpan("success", { result: res.content });
           return {
             content: res.content,
             output: res.output,

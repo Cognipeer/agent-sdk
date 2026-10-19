@@ -16,10 +16,19 @@ import type {
   TraceDataSection,
   TraceSessionRuntime,
 } from "../types.js";
-import { recordTraceEvent, sanitizeTracePayload } from "./tracing.js";
+import { canPauseForHuman, recordTraceEvent, sanitizeTracePayload } from "./tracing.js";
 
 /** Marks a ledger entry whose outcome is already in the trace. */
 const TRACED_KEY = "__outcomeTraced";
+
+/**
+ * A sub-agent's pause is surfaced on the parent as a tagged copy of the child's
+ * own entry. The child records both halves of that step inside its spans, so the
+ * parent's copy would show the same step a second time.
+ */
+function surfacedFromSubagent(entry: { metadata?: Record<string, any> }): boolean {
+  return Boolean(entry.metadata?.__subagent);
+}
 
 function waitedMs(from?: string, to?: string): number | undefined {
   if (!from || !to) return undefined;
@@ -40,7 +49,7 @@ export function recordApprovalRequested(
   session: TraceSessionRuntime | undefined,
   entry: PendingToolApproval,
 ): void {
-  if (!session) return;
+  if (!session || surfacedFromSubagent(entry) || !canPauseForHuman(session)) return;
   const logData = session.resolvedConfig.logData;
   const sections: TraceDataSection[] = [
     {
@@ -85,7 +94,7 @@ export function recordHumanDecisions(
   const logData = session.resolvedConfig.logData;
 
   for (const entry of state.pendingApprovals ?? []) {
-    if (!entry.decidedAt || entry.metadata?.[TRACED_KEY]) continue;
+    if (!entry.decidedAt || entry.metadata?.[TRACED_KEY] || surfacedFromSubagent(entry)) continue;
     if (entry.status !== "approved" && entry.status !== "rejected") continue;
     const approved = entry.status === "approved";
     const edited = approved && entry.approvedArgs !== undefined && !sameJson(entry.approvedArgs, entry.args);
@@ -125,7 +134,7 @@ export function recordHumanDecisions(
   }
 
   for (const entry of state.pendingUserQuestions ?? []) {
-    if (!entry.answeredAt || entry.metadata?.[TRACED_KEY]) continue;
+    if (!entry.answeredAt || entry.metadata?.[TRACED_KEY] || surfacedFromSubagent(entry)) continue;
     if (entry.status !== "answered" && entry.status !== "cancelled") continue;
     const clientTool = readClientTool(entry);
     if (clientTool) {
@@ -176,7 +185,7 @@ export function recordClientToolRequested(
   session: TraceSessionRuntime | undefined,
   entry: PendingUserQuestion,
 ): void {
-  if (!session) return;
+  if (!session || surfacedFromSubagent(entry) || !canPauseForHuman(session)) return;
   const clientTool = readClientTool(entry);
   if (!clientTool) return;
   const sections: TraceDataSection[] = [

@@ -1076,6 +1076,12 @@ export type TraceSessionSummary = {
   totalBytesIn: number;
   totalBytesOut: number;
   eventCounts: Record<string, number>;
+  /**
+   * Iterations run by sub-agents recording into this session. They count in
+   * `eventCounts.agent_iteration` too; the root agent subtracts them to number
+   * its own iterations.
+   */
+  subagentIterations?: number;
 };
 
 /**

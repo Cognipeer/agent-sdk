@@ -12,6 +12,12 @@ export type ToolCallContext = {
   toolCallId?: string;
   cancellationToken?: any;
   signal?: AbortSignal;
+  /**
+   * Span id the tools node will give this call's `tool_call` trace event. Known
+   * before the tool runs so that whatever it records (a sub-agent's spans) can
+   * nest under it. Absent when the run is not traced.
+   */
+  traceSpanId?: string;
 };
 
 export type SmartToolFn = (args: any, context?: ToolCallContext) => Promise<any> | any;

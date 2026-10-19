@@ -10,7 +10,15 @@ import type {
   SmartState,
   StreamChunk,
   ToolInterface,
+  TraceSessionRuntime,
 } from "../../types.js";
+import {
+  createSubagentTraceScope,
+  generateSpanId,
+  isTraceSessionOpen,
+  recordSubagentSpan,
+  subagentTraceScopeOf,
+} from "../../utils/tracing.js";
 import { resolveToolApprovalState } from "../../utils/toolApprovals.js";
 import { resolveUserQuestionState } from "../../utils/userQuestions.js";
 import { totalUsage } from "../../utils/usage.js";
@@ -303,11 +311,13 @@ async function runChild(
   input: string,
   deps: SubagentToolDeps,
   ref: any /* tool _stateRef */,
-  opts: { allowHITL: boolean; parentToolCallId: string; parallel?: boolean; isResume?: boolean; record?: SubagentPendingRecord; reserved?: boolean },
+  opts: { allowHITL: boolean; parentToolCallId: string; parallel?: boolean; isResume?: boolean; record?: SubagentPendingRecord; reserved?: boolean; parentSpanId?: string },
 ): Promise<{ kind: "result"; result: SubagentResult } | { kind: "approval"; toolCallId: string; approvalId: string } | { kind: "user_question"; toolCallId: string; id: string }> {
   const parentCtx: Record<string, any> = ref.ctx || {};
   const parentOnEvent = parentCtx.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
-  const spawnId = `sa_${nanoid(6)}`;
+  // A resumed child keeps its id, so its terminal `subagent` event matches the
+  // `start` and `paused` ones it follows.
+  const spawnId = opts.record?.spawnId ?? `sa_${nanoid(6)}`;
   const start = Date.now();
   const usageTag = { name: spec.name, id: spawnId, mode: spec.mode };
 
@@ -318,6 +328,46 @@ async function runChild(
     | import("../../plugins/host.js").PluginRunHost
     | undefined;
   const childDepth = (Number(parentCtx.__delegationDepth) || 0) + 1;
+
+  // The child records into the parent's trace session, under an agent span of
+  // its own. Each segment of a run (the first, and each resume) gets a fresh span
+  // id: the first one was recorded when the child paused and ids are never reused.
+  const parentSession = parentCtx.__traceSession as TraceSessionRuntime | undefined;
+  const traced = isTraceSessionOpen(parentSession);
+  const agentSpanId = generateSpanId();
+  const parentIterationSpanId = traced ? parentSession.currentIterationSpanId : undefined;
+  const traceScope = traced
+    ? createSubagentTraceScope(parentSession, { agentSpanId, name: spec.name, spawnId, mode: spec.mode, hitl: opts.allowHITL, iterations: opts.record?.iterations })
+    : undefined;
+  const recordSegment = (
+    status: "success" | "skipped" | "error" | "pending",
+    info: { subagentStatus: SubagentStatus | "paused"; input: string; error?: string; note?: string; content?: string },
+  ) => {
+    if (!traced || !isTraceSessionOpen(parentSession)) return;
+    recordSubagentSpan(parentSession, {
+      spanId: agentSpanId,
+      // The tool_call span only exists once the tool returns; a paused child
+      // has not returned, so its span hangs off the iteration.
+      parentSpanId: status === "pending" ? parentIterationSpanId : (opts.parentSpanId ?? parentIterationSpanId),
+      name: spec.name,
+      status,
+      durationMs: Date.now() - start,
+      error: info.error,
+      info: {
+        id: spawnId,
+        name: spec.name,
+        mode: spec.mode,
+        parallel: opts.parallel,
+        depth: childDepth,
+        parentToolCallId: opts.parentToolCallId,
+        status: info.subagentStatus,
+        ...(info.note ? { note: info.note } : {}),
+        ...(spec.metadata ? { metadata: spec.metadata } : {}),
+      },
+      task: info.input,
+      result: info.content,
+    });
+  };
 
   const emitStart = (task: string) => {
     parentOnEvent?.({ type: "subagent", phase: "start", name: spec.name, id: spawnId, mode: spec.mode, parallel: opts.parallel, parentToolCallId: opts.parentToolCallId, input: task } as any);
@@ -330,6 +380,15 @@ async function runChild(
     result.durationMs ??= Date.now() - start;
     deps.registryRef.results.push(result);
     const message = result.error || result.note || result.status;
+    const traceStatus = result.status === "ok" || result.status === "incomplete" ? "success" : result.status === "blocked" ? "skipped" : "error";
+    recordSegment(traceStatus, {
+      subagentStatus: result.status,
+      input,
+      // `message` falls back to the status itself ("ok"): only a failed or refused run has an error to show.
+      error: traceStatus === "success" ? undefined : message,
+      note: result.note,
+      content: result.content,
+    });
     parentOnEvent?.({
       type: "subagent",
       phase: FAILED_STATUSES.has(result.status) ? "error" : "result",
@@ -436,6 +495,7 @@ async function runChild(
       ctx: { __delegationDepth: currentDepth + 1 },
     } as SmartState;
   }
+  if (traceScope) childInput = { ...childInput, ctx: { ...(childInput.ctx || {}), __traceSession: traceScope } } as SmartState;
   // Counted before the run: a resumed child already holds the calls it made
   // before it paused, and those were merged into the parent back then.
   const usageBaseline = childInput.usage?.perRequest?.length ?? 0;
@@ -485,8 +545,9 @@ async function runChild(
         pendingStore[opts.parentToolCallId] = {
           parentToolCallId: opts.parentToolCallId, name: spec.name, mode: spec.mode,
           adhoc: spec.adhoc, input, childState: cleanChildState(childState),
-          pendingKind: "approval", pendingId: childEntry.id,
+          pendingKind: "approval", pendingId: childEntry.id, spawnId, iterations: traceScope ? subagentTraceScopeOf(traceScope)?.iterations : undefined,
         };
+        recordSegment("pending", { subagentStatus: "paused", input });
         parentOnEvent?.({ type: "subagent", phase: "paused", name: spec.name, id: spawnId, mode: spec.mode, parentToolCallId: opts.parentToolCallId } as any);
         return { kind: "approval", toolCallId: surfaced.toolCallId, approvalId: surfaced.id };
       }
@@ -506,8 +567,9 @@ async function runChild(
         pendingStore[opts.parentToolCallId] = {
           parentToolCallId: opts.parentToolCallId, name: spec.name, mode: spec.mode,
           adhoc: spec.adhoc, input, childState: cleanChildState(childState),
-          pendingKind: "user_question", pendingId: childEntry.id,
+          pendingKind: "user_question", pendingId: childEntry.id, spawnId, iterations: traceScope ? subagentTraceScopeOf(traceScope)?.iterations : undefined,
         };
+        recordSegment("pending", { subagentStatus: "paused", input });
         parentOnEvent?.({ type: "subagent", phase: "paused", name: spec.name, id: spawnId, mode: spec.mode, parentToolCallId: opts.parentToolCallId } as any);
         return { kind: "user_question", toolCallId: surfaced.toolCallId, id: surfaced.id };
       }
@@ -646,7 +708,7 @@ export function createDelegateTool(deps: SubagentToolDeps): ToolInterface {
         // back if a `subagentStart` gate refuses the delegation.
         d.registryRef.spawnedCount += 1;
       }
-      return toToolReturn(await runChild(spec, record?.input ?? input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record }));
+      return toToolReturn(await runChild(spec, record?.input ?? input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record, parentSpanId: context?.traceSpanId }));
     },
   });
   (tool as any)._deps = deps;
@@ -697,7 +759,7 @@ export function createSpawnTool(deps: SubagentToolDeps): ToolInterface {
         if (!budget.ok) return refusal(budget.reason);
         d.registryRef.spawnedCount += 1;
       }
-      return toToolReturn(await runChild(spec, record?.input ?? args.input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record }));
+      return toToolReturn(await runChild(spec, record?.input ?? args.input, d, ref, { allowHITL: true, parentToolCallId, isResume: !!record, record, reserved: !record, parentSpanId: context?.traceSpanId }));
     },
   });
   (tool as any)._deps = deps;
@@ -788,6 +850,7 @@ export function createParallelTool(deps: SubagentToolDeps): ToolInterface {
             parentToolCallId: `${parentToolCallId}#${i}`,
             parallel: true,
             reserved: true,
+            parentSpanId: context?.traceSpanId,
           });
           results[i] = outcome.kind === "result"
             ? outcome.result

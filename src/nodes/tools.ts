@@ -12,7 +12,7 @@ import type {
 } from "../types.js";
 import { nanoid } from "nanoid";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes } from "../utils/tracing.js";
+import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, generateSpanId } from "../utils/tracing.js";
 import { recordApprovalRequested, recordClientToolRequested } from "../utils/traceDecisions.js";
 import { extractToolItems, summarizeToolOutput } from "../utils/traceSections.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -697,6 +697,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         return { status: "error" };
       }
 
+      let traceSpanId: string | undefined;
       try {
         if (cachedHit !== undefined) {
           // Short-circuit: serve from cache without re-invoking the tool.
@@ -787,7 +788,10 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const anyTool = tool as any;
         // `toolCallId` is per call: a tool object (and its `_stateRef`) is shared by
         // every sibling call in the turn, so identity cannot ride on it.
-        const callOptions = { cancellationToken, signal: abortSignal, toolCallId };
+        // Allocated up front so a tool that records spans of its own (a sub-agent)
+        // can parent them to the `tool_call` event recorded once the tool returns.
+        traceSpanId = traceSession ? generateSpanId() : undefined;
+        const callOptions = { cancellationToken, signal: abortSignal, toolCallId, ...(traceSpanId ? { traceSpanId } : {}) };
         const invokeOnce = async (): Promise<any> => {
           if (typeof anyTool.func === "function") return anyTool.func(args, callOptions);
           if (typeof anyTool.invoke === "function") return anyTool.invoke(args, callOptions);
@@ -1041,6 +1045,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const outputBytes = traceSession?.resolvedConfig.logData ? estimatePayloadBytes(sanitizedOutput) : undefined;
         recordTraceEvent(traceSession, {
           type: "tool_call",
+          spanId: traceSpanId,
           label: `Tool Execution - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
           ...(reportedFailure ? { status: "error" as const, error: { message: reportedFailure } } : {}),
@@ -1113,6 +1118,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const errorOutput = { message, stack: host?.has("postToolUse") ? undefined : error?.stack };
         recordTraceEvent(traceSession, {
           type: "tool_call",
+          spanId: traceSpanId,
           label: `Tool Error - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
           status: "error",
