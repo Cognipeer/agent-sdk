@@ -2,6 +2,7 @@
 // If the user uses LangChain, they can still pass LC message objects; we treat them opaquely.
 import type { ZodSchema } from "zod";
 import type { ContextPilotConfig, ContextPilotCompressionStats, ResolvedContextPilotConfig } from "./smart/contextPilot/types.js";
+import type { OtlpExportOptions, OtlpExporter, OtlpExportReport, TraceParent } from "./utils/otlp/types.js";
 
 // Image and content part types for multimodal messages
 export type ImageURL =
@@ -206,11 +207,14 @@ export type TraceSinkHttpConfig = {
   headers?: Record<string, string>;
 };
 
+/**
+ * OTLP/HTTP trace export. `endpoint` is the full traces URL; leave it out to
+ * configure the exporter from the standard `OTEL_EXPORTER_OTLP_*` environment
+ * variables (see the OpenTelemetry guide).
+ */
 export type TraceSinkOtlpConfig = {
   type: "otlp";
-  endpoint: string;
-  headers?: Record<string, string>;
-};
+} & OtlpExportOptions;
 
 export type TracingMode = "batched" | "streaming";
 
@@ -1164,7 +1168,7 @@ export type ResolvedTraceSink =
   | { type: "custom"; onEvent?: (event: TraceEventRecord) => void | Promise<void>; onSession?: (session: TraceSessionFile) => void | Promise<void> }
   | { type: "cognipeer"; url: string; apiKey: string }
   | { type: "http"; url: string; headers?: Record<string, string> }
-  | { type: "otlp"; endpoint: string; headers?: Record<string, string> };
+  | { type: "otlp"; endpoint: string; headers?: Record<string, string>; exporter: OtlpExporter };
 
 export type ResolvedTraceConfig = {
   enabled: boolean;
@@ -1203,6 +1207,15 @@ export type TraceSessionRuntime = {
   closed?: boolean;
   fileBaseDir?: string;
   fileSessionDir?: string;
+  /**
+   * Exporters contributed by plugins (`AgentPlugin.traceExporters`), run next to
+   * the `otlp` sink when the session is finalized.
+   */
+  exporters?: OtlpExporter[];
+  /** What each exporter did when the session was finalized, in run order. */
+  exportReports?: OtlpExportReport[];
+  /** Where the trace came from, when this run is part of a larger trace. */
+  parent?: TraceParent;
 };
 
 // Handoff descriptor returned from childAgent.asHandoff(...)

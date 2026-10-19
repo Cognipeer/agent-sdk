@@ -8,7 +8,7 @@ import { createPluginTraceRecorder } from "../plugins/trace.js";
 import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from "../contextTools.js";
 import { createAskUserQuestionTool } from "../humanLoop.js";
 import { createContextSummarizeNode, LAST_SUMMARIZATION_CALL_KEY } from "../nodes/contextSummarize.js";
-import { DEFERRED_TRACE_EVENTS_KEY } from "../utils/tracing.js";
+import { DEFERRED_TRACE_EVENTS_KEY, closeTraceContinuation } from "../utils/tracing.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
 import { normalizeSmartAgentOptions } from "./runtimeConfig.js";
@@ -660,6 +660,39 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         }
       }
 
+      // The trace a leg handed on and no leg has taken yet. If the driver stops
+      // before the next leg (or ends the turn without one), nothing else would
+      // export the root span that is held for it.
+      const traceHandoff: { continuation?: unknown; events?: unknown } = {};
+      // A summarization pass between legs records into `ctx` while no session is open.
+      const noteTraceHandoff = (current: SmartState) => {
+        traceHandoff.continuation = (current as any).ctx?.__traceContinuation;
+        traceHandoff.events = (current as any).ctx?.[DEFERRED_TRACE_EVENTS_KEY];
+      };
+      const closeDanglingTrace = async (
+        status: "success" | "error",
+        error?: { message?: string; stack?: string; name?: string },
+      ) => {
+        const continuation = traceHandoff.continuation;
+        const events = traceHandoff.events;
+        traceHandoff.continuation = undefined;
+        traceHandoff.events = undefined;
+        if (!continuation) return;
+        try {
+          await closeTraceContinuation(continuation, {
+            tracing: opts.tracing,
+            exporters: pluginHost?.contributions.traceExporters,
+            status,
+            error,
+            agentRuntime: base.__runtime,
+            events,
+          });
+        } catch (closeError) {
+          // Reporting must not replace what the run itself ended with.
+          console.warn('[agent-sdk] closing the trace failed:', closeError);
+        }
+      };
+
       try {
       const toolSet = buildInvokeToolSet();
       const stateRef = toolSet.stateRef;
@@ -780,13 +813,19 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const result = await trySummarize(state, rawMessages, stateRef);
           state = result.state;
           rawMessages = result.rawMessages;
+          noteTraceHandoff(state);
           if (result.compressed) continue;
         }
 
         // Delegate a full turn to base agent (includes tools + tool-limit finalize + structured output finalize)
         const modelMessages = buildModelMessages(state, resolved);
+        // The leg takes the continuation (if any) and carries the trace on itself.
+        traceHandoff.continuation = undefined;
+        traceHandoff.events = undefined;
         const res = await base.invoke({ ...state, messages: modelMessages } as SmartState, turnConfig);
         lastResult = res as AgentInvokeResult<TOutput>;
+        // Before anything else can throw: the leg handed its trace on.
+        noteTraceHandoff((res.state as SmartState) ?? state);
         // Preserve summaries from current state when merging with result state
         const currentSummaries = state.summaries;
         const currentSummaryRecords = state.summaryRecords;
@@ -818,6 +857,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const result = await trySummarize(state, rawMessages, stateRef);
           state = result.state;
           rawMessages = result.rawMessages;
+          noteTraceHandoff(state);
           continue;
         }
 
@@ -841,6 +881,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
             const result = await trySummarize(state, rawMessages, stateRef);
             state = result.state;
             rawMessages = result.rawMessages;
+            noteTraceHandoff(state);
             if (result.compressed) continue;
           }
         }
@@ -864,6 +905,8 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       // leg; carried out on the result they would be persisted with the state,
       // prompt sections and all, and replayed into every branch resumed from it.
       if ((state as any).ctx?.[DEFERRED_TRACE_EVENTS_KEY]) {
+        // Held for a next leg that is not coming: they go out with the trace's close.
+        traceHandoff.events = (state as any).ctx[DEFERRED_TRACE_EVENTS_KEY];
         const ctx = { ...((state as any).ctx || {}) };
         delete ctx[DEFERRED_TRACE_EVENTS_KEY];
         state = { ...state, ctx } as SmartState;
@@ -890,8 +933,14 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const strippedCtx = { ...endCtx };
           delete strippedCtx.__traceContinuation;
           lastResult = { ...lastResult, state: { ...lastResult.state, ctx: strippedCtx } as SmartState };
+          // The turn is over and no leg will take the trace: export its root now.
+          traceHandoff.continuation = endCtx.__traceContinuation;
+          await closeDanglingTrace("success");
         }
       }
+      // What is left on the result is a pause the caller will resume, not a dangling trace.
+      traceHandoff.continuation = undefined;
+      traceHandoff.events = undefined;
 
       // Persist opened/bound skills so a resumed run can rehydrate them.
       if (skillsEnabled && lastResult.state) {
@@ -967,6 +1016,11 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // would end with sessionStart fired and sessionEnd never fired, and
         // checkpointing() (which only persists on sessionEnd) would save
         // nothing for precisely the failure it exists to capture.
+        await closeDanglingTrace("error", {
+          message: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+          name: err instanceof Error ? err.name : undefined,
+        });
         await endSession("error", { error: err instanceof Error ? err : new Error(String(err)) });
         throw err;
       }
