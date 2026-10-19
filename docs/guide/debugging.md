@@ -129,6 +129,21 @@ A text-only message has no `parts` field. Summarization sees attachments the sam
 }
 ```
 
+### Sub-agents in traces
+
+A sub-agent (`delegate_to`, `spawn_subagent`, `spawn_subagents_parallel`, and an `asTool` child that has no tracing of its own) records into its parent's session, so one trace holds the whole run:
+
+```
+agent_iteration  Iteration 1                  (parent)
+  tool_call      Tool Execution - delegate_to
+    span         Sub-agent worker              actor { scope: "agent", name: "worker", role: "subagent" }
+      agent_iteration  Iteration 1             (the child numbers its own)
+        ai_call        actor.name = "worker"
+        tool_call      the child's own tool
+```
+
+The `span` carries a `Sub-agent` metadata section (`id`, `name`, `mode`, `parallel`, `depth`, `parentToolCallId`, `status`, and the `SubagentDef.metadata` you set; kept even with `logData` off); with `logData` on it also has the `Task` and `Result` messages. Tokens stay on the `ai_call` events, so session totals include the children without counting them twice (the span's `durationMs` and the child's own event durations stay out of `totalDurationMs`; the `delegate_to` call holds that time). A child that pauses for approval or a question records its span as `pending`; the resumed child gets a new span under the resumed `delegate_to` call and keeps the same `id`. An `asTool` child with its own `tracing` keeps its own session.
+
 ## Operational tips
 
 - **Retention** – traces are plain JSON. Rotate or purge `logs/` on a schedule if you generate many sessions.

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0]
+
+### Sub-agents in the parent's trace
+- **One trace for the whole run.** A sub-agent (`delegate_to`, `spawn_subagent`, `spawn_subagents_parallel`, and an `asTool` child with no tracing of its own) used to run with no trace session: its model calls, tools, approvals and hooks went nowhere and the parent trace showed one `tool_call` with nothing under it. A child now records into its parent's session (same `sessionId` / `traceId`, shared sequence numbers, totals and sink), nested as `agent_iteration` > `tool_call` (`delegate_to`) > `span` "Sub-agent <name>" > the child's own `agent_iteration` > `ai_call` / `tool_call`.
+- **The agent span.** `type: "span"`, `actor: { scope: "agent", name, role: "subagent" }`, `status` `success` / `skipped` (blocked) / `error` (error, cancelled, needs_input) / `pending` (paused), the segment's `durationMs` (left out of `summary.totalDurationMs`, as are a child's own events: the delegating `tool_call` already holds that time), and a `Sub-agent` metadata section, kept even when `logData` is off: `id` (the `subagent` event id), `name`, `mode`, `parallel`, `depth`, `parentToolCallId`, `status`, `note` (why an incomplete run stopped) and `SubagentDef.metadata` when set. Only a failed or refused run carries an `error`. With `logData` on it also has `Task` and `Result` message sections. It carries no tokens: they stay on the child's `ai_call` events (and summarization), so `summary` includes the children exactly once.
+- **Resume.** A child that pauses for approval or a question records its span as `pending` under the parent's iteration (the `delegate_to` span does not exist yet); the resumed child records a new span under the resumed `delegate_to` call. Span ids are never reused. The `subagent` event id is now stable across the pause (`SubagentPendingRecord.spawnId`): `start`, `paused` and the terminal event share one id, where a resumed child used to get a new one.
+- **Iteration numbering.** A child numbers its own iterations from 1, carrying on across a pause (`SubagentPendingRecord.iterations`); the root no longer counts them (`TraceSessionSummary.subagentIterations`, carried in `TraceContinuation`).
+- **Human steps once.** The approval request, client-tool request and decisions a child surfaces on the parent are recorded by the child, inside its spans; the parent's tagged copies (`metadata.__subagent`) are no longer recorded a second time. A run nobody can pause (parallel fan-out, an `asTool` child) records no request, since none could be decided.
+- **`otelTracing` and children.** A child that inherits `otelTracing` no longer exports the parent's half-finished session at its own `sessionEnd`; the parent exports the whole tree once.
+- **Hooks.** Plugin hook outcomes recorded inside a child (`plugins/trace.ts`) now land in the session under the child's spans instead of being held and lost.
+- **Building blocks.** `ToolCallContext.traceSpanId` is the span id the tools node gives the call's `tool_call` event (allocated before the tool runs, so a tool can parent its own spans to it); absent when the run is not traced. The scope and span helpers in `utils/tracing` are internal.
+- **Unchanged.** An `asTool` child with its own `tracing` keeps its own session (the parent still records the agent span, with nothing under it). Nothing is recorded when the parent's tracing is off.
+
 ## [0.16.0]
 
 ### Sub-agents

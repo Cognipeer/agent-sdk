@@ -171,6 +171,10 @@ export type SubagentPendingRecord = {
   /** Maps the child's pending approval/question id -> parent-surfaced id. */
   pendingKind: "approval" | "user_question";
   pendingId: string;
+  /** The run's id on `subagent` events and in its trace; the resumed run keeps it. */
+  spawnId?: string;
+  /** Iterations the child had opened when it paused; the resumed run numbers on from there. */
+  iterations?: number;
 };
 
 export type SubagentToolNames = {

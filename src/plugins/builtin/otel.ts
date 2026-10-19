@@ -28,7 +28,7 @@ import type {
   TraceSessionRuntime,
   TraceSessionStatus,
 } from "../../types.js";
-import { traceSessionToOtlp } from "../../utils/tracing.js";
+import { isSubagentTraceScope, traceSessionToOtlp } from "../../utils/tracing.js";
 
 export type OtelTracingConfig = {
   /** OTLP/HTTP JSON traces endpoint, e.g. `https://collector.example.com/v1/traces`. */
@@ -75,6 +75,10 @@ export function otelTracing(config: OtelTracingConfig): AgentPlugin {
       sessionEnd: async ({ status, durationMs, error }, ctx) => {
         const state = ctx.state as SmartState;
         const session = state.ctx?.__traceSession as TraceSessionRuntime | undefined;
+
+        // A sub-agent inherits this plugin but records into its parent's session,
+        // which is still being written; the parent exports the whole tree.
+        if (isSubagentTraceScope(session)) return;
 
         if (!session) {
           const message =

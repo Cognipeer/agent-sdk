@@ -193,6 +193,21 @@ await agent.invoke(input, {
 
 **Stream isolation.** A host's `onStream` usually appends `chunk.text` to the answer it is building, so a child's tokens would read as the parent's words. By default the children's text deltas are therefore **not forwarded**: neither to `onStream` nor as `stream` events. Everything else a child emits (tool calls, `reasoning`, progress) is still forwarded, tagged with `subagentName` / `subagentId`. Set `subagentPolicy.streamChildren: true` to receive the deltas too: every forwarded chunk then carries `subagentName` / `subagentId` (also on `StreamChunk`), and a chunk without them is the parent's. A child's `isFinal` chunk is never forwarded, on either channel. Filter `reasoning` events on `subagentName` as well if you show the parent's reasoning separately.
 
+## Sub-agents in traces
+
+With tracing on, every child records into the parent's trace session, nested under the tool call that started it:
+
+```
+agent_iteration  Iteration 1                  (parent)
+  tool_call      Tool Execution - delegate_to
+    span         Sub-agent worker              actor { scope: "agent", name: "worker", role: "subagent" }
+      agent_iteration  Iteration 1             (the child numbers its own)
+        ai_call        actor.name = "worker"
+        tool_call      the child's own tool
+```
+
+The span's `Sub-agent` metadata section carries the run's `id` (the same `id` as its `subagent` events, also across a pause and resume), `mode`, `depth`, `parentToolCallId`, `status` and your `SubagentDef.metadata`. A child that pauses for a human records a `pending` span, and the approval or question appears once, under the child. See [Tracing](/guide/debugging#sub-agents-in-traces).
+
 ## Human-in-the-loop
 
 A tool-approval (`needsApproval`) or `ask_user_question` pause **inside a sequential** sub-agent is surfaced to the parent. The parent pauses with the child's pending entry in `state.pendingApprovals` / `state.pendingUserQuestions` (tagged with `metadata.__subagent`). Resolve at the parent level and re-invoke — the child resumes transparently:

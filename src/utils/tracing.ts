@@ -237,7 +237,7 @@ function ensureDir(p: string) {
   }
 }
 
-function withDefaults(config?: SmartAgentTracingConfig): ResolvedTraceConfig {
+export function withDefaults(config?: SmartAgentTracingConfig): ResolvedTraceConfig {
   const enabled = Boolean(config?.enabled);
   const logData = config?.logData ?? DEFAULT_TRACE_CONFIG.logData;
   const mode: TracingMode = config?.mode === "streaming" ? "streaming" : "batched";
@@ -1349,7 +1349,11 @@ export function recordTraceEvent(
     status?: TraceEventRecord["status"];
     /** Explicit parent span ID. Falls back to session.currentIterationSpanId when omitted. */
     parentSpanId?: string;
+    /** Pre-allocated span ID, for an event whose children are recorded before it is. */
+    spanId?: string;
     durationMs?: number;
+    /** False for a span that wraps events already counted, so the totals do not take the time twice. */
+    countDuration?: boolean;
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
@@ -1369,6 +1373,8 @@ export function recordTraceEvent(
     messageList?: any[];
     /** Pre-built sections to use instead of auto-converting messageList */
     sections?: TraceDataSection[];
+    /** Identity sections kept even when logData is off; the caller vouches they carry no payload. */
+    alwaysSections?: TraceDataSection[];
     /**
      * Tool MENU bound to this model call (`ai_call` events). Appended as a
      * `tool_definitions` section AFTER messageList/sections resolution, so it
@@ -1399,7 +1405,9 @@ export function recordTraceEvent(
   const eventLabel = `${baseLabel} #${sequence}`;
 
   const durationMs = event.durationMs !== undefined ? Number(event.durationMs) : undefined;
-  if (!Number.isNaN(durationMs ?? NaN) && durationMs !== undefined) {
+  // A sub-agent's own events happen inside the delegating tool_call, which
+  // already holds that wall time; so does a span that says it wraps counted events.
+  if (!Number.isNaN(durationMs ?? NaN) && durationMs !== undefined && event.countDuration !== false && !isSubagentTraceScope(session)) {
     session.summary.totalDurationMs += durationMs;
   }
 
@@ -1464,6 +1472,10 @@ export function recordTraceEvent(
     }
   }
 
+  if (event.alwaysSections?.length) {
+    sections = ensureUniqueSections(id, [...event.alwaysSections, ...(sections ?? [])]);
+  }
+
   const resolvedModel = event.model ?? inferModelFromMessages(event.messageList);
   const resolvedProvider = event.provider ?? inferProviderFromMessages(event.messageList);
 
@@ -1472,7 +1484,7 @@ export function recordTraceEvent(
 
   // Span hierarchy: traceId from session, unique spanId per event,
   // parentSpanId from explicit param or current iteration span
-  const spanId = generateSpanId();
+  const spanId = event.spanId || generateSpanId();
   const parentSpanId = event.parentSpanId || session.currentIterationSpanId || session.rootSpanId;
   
   const record: TraceEventRecord = {
@@ -1587,6 +1599,110 @@ export const DEFERRED_TRACE_EVENTS_KEY = "__deferredTraceEvents";
  */
 export function isTraceSessionOpen(session: TraceSessionRuntime | undefined): session is TraceSessionRuntime {
   return Boolean(session) && !session!.closed;
+}
+
+const SUBAGENT_TRACE_SCOPE = Symbol("subagentTraceScope");
+
+export type SubagentTraceScopeInfo = {
+  agentSpanId: string;
+  name: string;
+  spawnId?: string;
+  mode?: string;
+  /** False when no human can answer a pause in this run (parallel fan-out, asTool). */
+  hitl?: boolean;
+  /** Iterations the sub-agent has opened so far; numbers its own "Iteration n". */
+  iterations: number;
+};
+
+/**
+ * A view of `parent` for one sub-agent run. Everything goes through to the
+ * parent — events, sequence numbers, totals, errors, the sink — so the child
+ * records into the parent's session. Only two things are the scope's own:
+ * `rootSpanId` is the child's agent span (where its iterations and any event
+ * without a better parent land), and `currentIterationSpanId` is a private slot.
+ * A shared slot would let the child's iteration become the parent's current one
+ * after the child returns, and let parallel children overwrite each other's.
+ */
+export function createSubagentTraceScope(
+  parent: TraceSessionRuntime,
+  info: { agentSpanId: string; name: string; spawnId?: string; mode?: string; hitl?: boolean; iterations?: number },
+): TraceSessionRuntime {
+  const scope: SubagentTraceScopeInfo = { ...info, iterations: info.iterations ?? 0 };
+  let currentIterationSpanId: string | undefined;
+  return new Proxy(parent, {
+    get(target, prop) {
+      if (prop === SUBAGENT_TRACE_SCOPE) return scope;
+      if (prop === "rootSpanId") return scope.agentSpanId;
+      if (prop === "currentIterationSpanId") return currentIterationSpanId;
+      return Reflect.get(target, prop);
+    },
+    set(target, prop, value) {
+      if (prop === "currentIterationSpanId") {
+        currentIterationSpanId = value;
+        return true;
+      }
+      return Reflect.set(target, prop, value);
+    },
+  });
+}
+
+/** The scope info when `session` is a sub-agent's view of its parent's session. */
+export function subagentTraceScopeOf(session: TraceSessionRuntime | undefined): SubagentTraceScopeInfo | undefined {
+  if (!session) return undefined;
+  return (session as any)[SUBAGENT_TRACE_SCOPE] as SubagentTraceScopeInfo | undefined;
+}
+
+/** False when `session` is a run nobody can pause for, so a request recorded there could never be decided. */
+export function canPauseForHuman(session: TraceSessionRuntime | undefined): boolean {
+  return subagentTraceScopeOf(session)?.hitl !== false;
+}
+
+export function isSubagentTraceScope(session: TraceSessionRuntime | undefined): boolean {
+  return subagentTraceScopeOf(session) !== undefined;
+}
+
+/**
+ * Records the span that groups one sub-agent run under the tool call (or the
+ * iteration) that started it. No token fields: the child's own `ai_call`
+ * events already carry them into the session totals, and repeating them here
+ * would count the run twice.
+ */
+export function recordSubagentSpan(
+  session: TraceSessionRuntime,
+  span: {
+    spanId: string;
+    parentSpanId?: string;
+    name: string;
+    status: TraceEventRecord["status"];
+    durationMs: number;
+    error?: string;
+    /** Identity and outcome of the run, always recorded. */
+    info: Record<string, any>;
+    /** The brief the sub-agent was given and what it answered; recorded under `logData`. */
+    task?: string;
+    result?: string;
+  },
+): void {
+  const sections: TraceDataSection[] = [];
+  if (session.resolvedConfig.logData) {
+    if (span.task !== undefined) sections.push({ kind: "message", label: "Task", role: "user", content: span.task });
+    if (span.result) sections.push({ kind: "message", label: "Result", role: "assistant", content: span.result });
+  }
+  recordTraceEvent(session, {
+    type: "span",
+    spanId: span.spanId,
+    parentSpanId: span.parentSpanId,
+    label: `Sub-agent ${span.name}`,
+    actor: { scope: "agent", name: span.name, role: "subagent" },
+    status: span.status,
+    durationMs: span.durationMs,
+    // The child's own calls and the delegating tool_call already hold this time.
+    countDuration: false,
+    ...(span.error ? { error: { message: span.error } } : {}),
+    // The Console reads which sub-agent ran from here, so it survives logData off.
+    alwaysSections: [{ kind: "metadata", label: "Sub-agent", data: sanitizeTracePayload(span.info) }],
+    sections,
+  });
 }
 
 /**

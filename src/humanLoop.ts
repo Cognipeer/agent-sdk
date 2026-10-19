@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { createTool } from "./tool.js";
-import { recordTraceEvent } from "./utils/tracing.js";
+import { canPauseForHuman, recordTraceEvent } from "./utils/tracing.js";
 import type {
   PendingUserQuestion,
   UserQuestionItem,
@@ -149,7 +149,7 @@ export function createAskUserQuestionTool(
 
       // `pending`: the run pauses here. The answer is recorded as its own
       // event (same questionId) when the run resumes — see traceDecisions.
-      recordTraceEvent(ctx.__traceSession, {
+      if (canPauseForHuman(ctx.__traceSession)) recordTraceEvent(ctx.__traceSession, {
         type: "user_question",
         label: "Question to user",
         timestamp: entry.requestedAt,
