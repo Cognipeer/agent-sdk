@@ -48,7 +48,7 @@ describe("options", () => {
       maxMessages: 32,
       maxAttributeBytes: 32768,
       encoding: "json",
-      include: ["system", "input", "output", "tools", "toolArgs", "toolResults"],
+      include: ["system", "input", "output", "tools", "toolArgs", "toolResults", "sections"],
     });
     expect(resolveContentOptions({ enabled: true, maxMessages: 0, maxStringChars: -1 })).toMatchObject({ maxMessages: 32, maxStringChars: 4096 });
   });

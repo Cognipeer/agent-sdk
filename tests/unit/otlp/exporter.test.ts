@@ -149,6 +149,17 @@ describe("retries", () => {
     expect(result.error).toMatch(/timed out after 1000 ms/);
   });
 
+  it("a 200 whose body never arrives does not hold the export: the body is read inside the attempt's timeout", async () => {
+    const stalled = { ok: true, status: 200, statusText: "OK", text: () => new Promise(() => undefined), arrayBuffer: () => new Promise(() => undefined), headers: { get: () => null } };
+    for (const protocol of ["http/json", "http/protobuf"] as const) {
+      const { result, calls } = await run({ timeoutMs: 300, retry: false, protocol }, [() => stalled]);
+      expect(calls).toHaveLength(1);
+      // The collector accepted the spans; only the (optional) body is given up on.
+      expect(result).toMatchObject({ ok: true, attempts: 1, status: 200 });
+      expect(result.partialSuccess).toBeUndefined();
+    }
+  });
+
   it("the abort signal reaches fetch", async () => {
     let signal: AbortSignal | undefined;
     const fetch = vi.fn((_url: string, init: any) => {

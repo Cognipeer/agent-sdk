@@ -958,6 +958,12 @@ export type TraceMetadataSection = {
   kind: "metadata";
   label: string;
   data: Record<string, any>;
+  /**
+   * Set on the sections a caller records with `alwaysSections`: ids, status and
+   * timestamps that stay when `logData` is off and that an OTLP export carries
+   * whether or not content capture is on. Never prompt text or arguments.
+   */
+  identity?: boolean;
 };
 
 /** One tool of the menu offered to the model on a single call. */
@@ -1170,6 +1176,13 @@ export type TraceContinuation = {
    * parent without the caller passing it again. Plain data: no credentials.
    */
   parent?: { spanId: string; flags: number; traceState?: string };
+  /**
+   * Sub-agent spans recorded `pending` that no later record has finished, with
+   * their identity sections only. The OTLP export withholds a pending span until
+   * the run ends; if the run is abandoned instead (`closeTraceContinuation`) the
+   * closing export writes them, so the spans of the earlier legs keep a parent.
+   */
+  pendingSpans?: TraceEventRecord[];
 };
 
 export type TraceSinkSnapshot =
@@ -1247,6 +1260,11 @@ export type TraceSessionRuntime = {
   sequenceOffset?: number;
   /** 1-based part number; 1 for a session that starts with this invoke. */
   part?: number;
+  /**
+   * Pending sub-agent spans earlier parts recorded (see `TraceContinuation.pendingSpans`).
+   * Not in `events`: only the OTLP export reads them.
+   */
+  carriedSpans?: TraceEventRecord[];
   /**
    * Set once the session has been handed to its sink. A closed session takes no
    * more events: they would never be delivered (and, on a session continued by

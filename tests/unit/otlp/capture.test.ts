@@ -74,11 +74,13 @@ describe("off by default", () => {
     expect(JSON.stringify(h.bodies)).not.toContain("SECRET-RESULT");
   });
 
-  it("logData alone adds cognipeer.sections only, never the gen_ai content attributes", async () => {
+  it("logData alone adds nothing: neither the gen_ai content attributes nor the payload in cognipeer.sections", async () => {
     const h = harness({ logData: true });
-    await createAgent({ name: "A", model: scripted("m", [{ content: "done" }]), ...h.options }).invoke(go());
+    await createAgent({ name: "A", model: scripted("m", [{ tool_calls: [call("t1", "lookup", { q: "SECRET-ARG" })] }, { content: "SECRET-REPLY" }]), tools: [lookup()], ...h.options }).invoke(go());
     expect(contentKeys(h.spans())).toEqual([]);
-    expect(attrsOf(h.chat())["cognipeer.sections"]).toBeDefined();
+    expect(h.spans().some((s) => attrsOf(s)["cognipeer.sections"] !== undefined)).toBe(false);
+    const body = JSON.stringify(h.bodies);
+    for (const secret of ["SECRET-PROMPT", "SECRET-ARG", "SECRET-RESULT", "SECRET-REPLY"]) expect(body).not.toContain(secret);
   });
 
   it("nothing is held on the records when no exporter asked", () => {
@@ -179,6 +181,66 @@ describe("on", () => {
     expect(body).not.toContain("SECRET-RESULT");
     expect(body).not.toContain("SECRET-ANSWER");
     expect(body).toContain("[masked]");
+  });
+});
+
+describe("cognipeer.sections is payload: it follows the content setting, the redact hook and the caps", () => {
+  const SECRETS = ["SECRET-PROMPT", "SECRET-ARG", "SECRET-RESULT", "SECRET-REPLY"];
+  const secretRun = (h: ReturnType<typeof harness>) =>
+    createAgent({
+      name: "A",
+      model: scripted("m", [{ tool_calls: [call("t1", "lookup", { q: "SECRET-ARG" })] }, { content: "SECRET-REPLY" }]),
+      tools: [lookup()],
+      ...h.options,
+    }).invoke(go());
+  const sectionsOf = (h: ReturnType<typeof harness>) => h.spans().map((s) => attrsOf(s)["cognipeer.sections"]).filter((v) => v !== undefined) as string[];
+
+  it("default semconv (both), content off, logData on: no prompt, reply, tool argument or tool result anywhere in the body", async () => {
+    const h = harness({ logData: true });
+    await secretRun(h);
+    expect(sectionsOf(h)).toEqual([]);
+    for (const secret of SECRETS) expect(JSON.stringify(h.bodies)).not.toContain(secret);
+  });
+
+  it("content on without a hook: the sections go out as before (the Console reads them), capped", async () => {
+    const h = harness({ content: true, logData: true });
+    await secretRun(h);
+    const joined = sectionsOf(h).join("");
+    expect(joined).toContain("SECRET-PROMPT");
+    expect(joined).toContain("SECRET-REPLY");
+  });
+
+  it("content on with a hook: the hook sees the sections (field 'sections') and what it masks is masked there too", async () => {
+    const fields: string[] = [];
+    const h = harness({
+      content: { enabled: true, redact: (value, info) => { fields.push(info.field); return JSON.parse(JSON.stringify(value).replace(/SECRET-[A-Z]+/g, "[MASKED]")); } },
+      logData: true,
+    });
+    await secretRun(h);
+    expect(fields).toContain("sections");
+    expect(sectionsOf(h).join("")).toContain("[MASKED]");
+    for (const secret of SECRETS) expect(JSON.stringify(h.bodies)).not.toContain(secret);
+  });
+
+  it("a hook that returns something that is not the list of sections, or throws, or drops it: nothing leaks (fail closed)", async () => {
+    for (const redact of [() => "[REDACTED]", () => { throw new Error("boom"); }, () => null]) {
+      const h = harness({ content: { enabled: true, redact: redact as never }, logData: true });
+      await secretRun(h);
+      expect(sectionsOf(h)).toEqual([]);
+      for (const secret of SECRETS) expect(JSON.stringify(h.bodies)).not.toContain(secret);
+    }
+  });
+
+  it("`include` without 'sections' leaves them out; the caps apply to what is left", async () => {
+    const without = harness({ content: { enabled: true, include: ["input", "output"] }, logData: true });
+    await secretRun(without);
+    expect(sectionsOf(without)).toEqual([]);
+
+    const capped = harness({ content: { enabled: true, maxStringChars: 6 }, logData: true });
+    await secretRun(capped);
+    const joined = sectionsOf(capped).join("");
+    expect(joined).toContain("...[truncated");
+    expect(joined).not.toContain("SECRET-REPLY");
   });
 });
 

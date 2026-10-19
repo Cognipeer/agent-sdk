@@ -98,7 +98,14 @@ export function otelTracing(config: OtelTracingConfig = {}): AgentPlugin {
         }
         ctx.emit({
           type: "metadata",
-          otelTracing: { exported: true, endpoint: report.endpoint, spans: result.spans, terminal: report.terminal },
+          otelTracing: {
+            exported: true,
+            endpoint: report.endpoint,
+            spans: result.spans,
+            terminal: report.terminal,
+            // A 200 that refused some spans: the collector's count and message.
+            ...(result.partialSuccess ? { rejectedSpans: result.partialSuccess.rejectedSpans, ...(result.partialSuccess.message ? { rejectionMessage: result.partialSuccess.message } : {}) } : {}),
+          },
         } as never);
       },
     },

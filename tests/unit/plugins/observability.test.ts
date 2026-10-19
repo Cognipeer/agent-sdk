@@ -515,18 +515,39 @@ describe("otelTracing", () => {
   it("a sub-agent run that inherited the plugin does not report or export the parent's session", async () => {
     const fetchMock = stubFetch(async () => okResponse());
     const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
-    const parent = createTraceSession(
-      { tracing: { enabled: true, sink: customSink(() => {}) } } as never,
-      undefined,
-      { exporters: plugin.traceExporters },
-    )!;
+    // A parent that WAS exported: its exportReports hold this plugin's report, which
+    // is exactly what the observer would announce if it forgot the child is not a root.
+    const parent = await finalizedSession(plugin);
+    expect(parent.exportReports?.some((report) => report.exporter === "otel-tracing" && report.result.ok)).toBe(true);
+    fetchMock.mockClear();
     const scope = createSubagentTraceScope(parent, { agentSpanId: "abcdabcdabcdabcd", name: "helper" });
-    const { host, run, events } = harness([plugin], { ctx: { __traceSession: scope } });
-    await host.setup({ model: null });
 
-    await run.runObservers("sessionEnd", sessionEndInput());
+    const root = harness([plugin], { ctx: { __traceSession: parent } });
+    await root.host.setup({ model: null });
+    await root.run.runObservers("sessionEnd", sessionEndInput());
+    // Control: the root session is reported.
+    expect(metadataEvents(root.events)).toHaveLength(1);
+
+    const child = harness([plugin], { ctx: { __traceSession: scope } });
+    await child.host.setup({ model: null });
+
+    await child.run.runObservers("sessionEnd", sessionEndInput());
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(metadataEvents(events)).toHaveLength(0);
+    expect(metadataEvents(child.events)).toHaveLength(0);
+  });
+
+  it("a collector that refuses some spans of a 200 is reported: rejected count and message in the metadata event", async () => {
+    stubFetch(async () => ({ ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ partialSuccess: { rejectedSpans: 2, errorMessage: "bad span" } }), headers: { get: () => null } }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    const session = await finalizedSession(plugin);
+    // The finalizer warns once per export, since nothing else would say so.
+    expect(warn.mock.calls.some((call) => /rejected 2 span\(s\): bad span/.test(String(call[0])))).toBe(true);
+
+    const { host, run, events } = harness([plugin], { ctx: { __traceSession: session } });
+    await host.setup({ model: null });
+    await run.runObservers("sessionEnd", sessionEndInput());
+    expect(metadataEvents(events)[0].otelTracing).toMatchObject({ exported: true, rejectedSpans: 2, rejectionMessage: "bad span" });
   });
 });

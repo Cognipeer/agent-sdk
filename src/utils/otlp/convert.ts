@@ -16,11 +16,12 @@
  * - Legs. A run that paused is exported leg by leg. Only the terminal leg carries
  *   the root span (OTLP cannot take a span back, so a root per leg would repeat
  *   one span id), and a sub-agent span that is still `pending` is held back: the
- *   segment that ends the run records it again under the same id.
+ *   segment that ends the run records it again under the same id. The terminal
+ *   export writes one that is still pending as it stands (no later leg will finish
+ *   it, and its children name it as their parent).
  */
 
 import type {
-  TraceDataSection,
   TraceErrorRecord,
   TraceEventRecord,
   TraceSessionFile,
@@ -34,7 +35,7 @@ import type {
   OtlpSpan,
   OtlpSpanEvent,
 } from "./types.js";
-import { contentAttributes } from "./content.js";
+import { contentAttributes, sectionsAttribute } from "./content.js";
 import { ATTR, OPERATION, errorTypeOf, genAiProviderName, genAiUsageOf } from "./semconv.js";
 
 export const SCOPE_NAME = "cognipeer-agent-sdk";
@@ -113,6 +114,9 @@ function classify(event: EventView): SpanClass {
   if (event.type === "tool_call") {
     const source = (event.debug as { shortCircuitSource?: string } | undefined)?.shortCircuitSource;
     if (event.skipReason || event.status === "skipped" || source === "cache" || source === "plugin") return "plain";
+    // A host-run (client) tool the run paused on: the placeholder is not an execution.
+    // The result recorded on resume is the execute_tool span.
+    if (event.status === "pending") return "plain";
     return "execute_tool";
   }
   if (event.type === "span" && event.actor?.role === "subagent") return "invoke_agent";
@@ -169,10 +173,13 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
   const agentName = file.agent?.name;
 
   // Records that are exported. A sub-agent span still `pending` is held back for
-  // the segment that ends its run (see foldSupersededSpans).
+  // the segment that ends its run (see foldSupersededSpans) - unless this is the
+  // terminal export: no later segment will finish it, and its children, already
+  // exported or exported now, need a parent. It then goes out as it stands
+  // (status UNSET, `cognipeer.event.status` pending).
   const everyEvent = file.events as EventView[];
   const exportedEvents = foldSupersededSpans(everyEvent).filter(
-    (event) => !(event.type === "span" && event.status === "pending"),
+    (event) => options.terminal || !(event.type === "span" && event.status === "pending"),
   );
 
   const startMs = parseMs(file.startedAt);
@@ -349,14 +356,9 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
           strAllowEmpty("cognipeer.event.id", event.id),
         ]),
       );
-      const sections: TraceDataSection[] | undefined = event.data?.sections;
-      if (sections && sections.length > 0) {
-        try {
-          attributes.push({ key: "cognipeer.sections", value: { stringValue: JSON.stringify(sections) } });
-        } catch {
-          // Unserializable sections are dropped, as before.
-        }
-      }
+      // Identity sections always; payload sections only with content capture, through redact and caps.
+      const sectionsAttr = sectionsAttribute(event.data?.sections, event, options.content);
+      if (sectionsAttr) attributes.push(sectionsAttr);
       attributes.push({ key: "cognipeer.event.status", value: { stringValue: event.status } });
     }
 

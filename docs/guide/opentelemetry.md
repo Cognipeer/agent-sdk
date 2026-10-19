@@ -40,7 +40,7 @@ createSmartAgent({
 | `resourceAttributes` | none | Extra resource attributes. |
 | `content` | off | Prompt and response content; see below. |
 
-An export never throws and never fails the run. 429, 502, 503, 504 and transport errors are retried with full-jitter back-off (a server's `Retry-After` is honoured); other statuses are final. A response's `partial_success` is read defensively and reported. A request with no spans is not sent. A failing `otlp` sink marks the session `partial`; a failing plugin exporter is only reported.
+An export never throws and never fails the run. 429, 502, 503, 504 and transport errors are retried with full-jitter back-off (a server's `Retry-After` is honoured); other statuses are final. A response's `partial_success` is read defensively; rejected spans are warned about (`console.warn`) and, with `otelTracing`, reported as `rejectedSpans` in its `metadata` event. The response body is read inside the attempt's timeout, so a collector that sends `200` and stalls cannot hold the run. A request with no spans is not sent. A failing `otlp` sink marks the session `partial`; a failing plugin exporter is only reported.
 
 ## Environment variables
 
@@ -87,7 +87,7 @@ A model call that never reached the provider (blocked by a plugin, cancelled bef
 
 ### Pauses and resumes (legs)
 
-An approval or question pause ends one invoke and the resume is another. The exporter sends each leg's finished spans when the leg ends, and the **root span exactly once, with the leg that ends the run**, covering the whole run (the wait included). A sub-agent that pauses and resumes is one `invoke_agent` span with one id: while it is pending it is held back, and it is exported once from its final record, so every exported span's parent is an exported span. A run that is abandoned while paused is closed by `closeTraceContinuation(continuation, { tracing, exporters })`, which exports the held root through the OTLP exporters only (the SDK's smart driver calls it itself when it drops a dangling continuation or fails).
+An approval or question pause ends one invoke and the resume is another. The exporter sends each leg's finished spans when the leg ends, and the **root span exactly once, with the leg that ends the run**, covering the whole run (the wait included). A sub-agent that pauses and resumes is one `invoke_agent` span with one id: while it is pending it is held back, and it is exported once from its final record, so every exported span's parent is an exported span. If the run ends with that span still pending (an abandoned pause closed by `closeTraceContinuation`), the closing export writes it as it stands, UNSET with `cognipeer.event.status` `pending`; the continuation carries the unfinished spans for that (`pendingSpans`, identity sections only). A run that is abandoned while paused is closed by `closeTraceContinuation(continuation, { tracing, exporters })`, which exports the held root through the OTLP exporters only (the SDK's smart driver calls it itself when it drops a dangling continuation or fails).
 
 ## Parent context (W3C Trace Context)
 
@@ -109,7 +109,7 @@ otlpSink({
   endpoint,
   content: {
     enabled: true,
-    include: ["input", "output", "toolArgs", "toolResults"], // also "system", "tools"
+    include: ["input", "output", "toolArgs", "toolResults"], // also "system", "tools", "sections" (the default set has all of them)
     redact: (value, { field, toolName }) => (field === "toolArgs" ? null : maskPii(value)),
     maxStringChars: 4096, maxMessages: 32, maxAttributeBytes: 32768,
     encoding: "json", // or "structured"
@@ -119,9 +119,13 @@ otlpSink({
 
 It fills `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (JSON string by default). The `redact` hook runs first, the caps second. Caps drop whole messages (oldest first) or substitute `{"truncated":true}`; JSON is never cut in the middle. A hook that throws leaves the field out. Content is built when the event is recorded, only when an exporter asked for it, and lives in a side channel that other sinks and persisted state never see.
 
+### `cognipeer.sections` is content too
+
+With `semconv` `cognipeer` or `both` each span can carry `cognipeer.sections`, the record's sections as a JSON string: the prompt, reply, tool arguments and results (the same text the `gen_ai.*` content holds), and metadata. It is gated like the rest. **Payload sections go out only when `content.enabled` is true and `"sections"` is in `include`** (it is, by default), through the same `redact` hook (`field: "sections"`; the value is the list of sections, and a hook must return a list, anything else drops the attribute) and the same caps (`maxStringChars`, `maxMessages` as a count of sections, `maxAttributeBytes`, dropping whole sections oldest first). With `content` off, `tracing.logData: true` exports no prompt or tool text at all. What always goes, `content` or not, are the **identity sections**: sub-agent identity and the ids, status and timestamps that pair an approval or question with its decision (`approvalId` / `questionId`, `toolCallId`, `requestedAt`, `decidedAt`). They hold no prompt, comment or arguments, and they are kept even when `tracing.logData` is off.
+
 ## The Cognipeer Console
 
-The Console reads OTLP/JSON only, so an explicit endpoint defaults to `http/json`. Keep the default `semconv: "both"` for it: the `cognipeer.*` attributes (`cognipeer.event.sequence`, `cognipeer.event.status`, the event type) carry what it needs to rebuild the session.
+The Console reads OTLP/JSON only, so an explicit endpoint defaults to `http/json`. Keep the default `semconv: "both"` for it, and turn `content` on if you want the transcript (message text) in the Console, since that text travels in `cognipeer.sections`: the `cognipeer.*` attributes (`cognipeer.event.sequence`, `cognipeer.event.status`, the event type) carry what it needs to rebuild the session.
 
 ## Not covered
 

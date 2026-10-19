@@ -65,7 +65,7 @@ function retryAfterMs(response: any): number | undefined {
 }
 
 type Attempt =
-  | { kind: "ok"; status: number; response: any }
+  | { kind: "ok"; status: number; partialSuccess?: OtlpExportResult["partialSuccess"] }
   | { kind: "http"; status: number; message: string; retryable: boolean; retryAfter?: number }
   | { kind: "network"; message: string };
 
@@ -74,6 +74,7 @@ async function attemptOnce(
   url: string,
   init: { method: string; headers: Record<string, string>; body: string | Uint8Array },
   timeoutMs: number,
+  protocol: OtlpProtocol,
 ): Promise<Attempt> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -90,7 +91,14 @@ async function attemptOnce(
     const response = await Promise.race([pending, timeout]);
     const status = typeof response?.status === "number" ? response.status : response?.ok ? 200 : 0;
     const ok = typeof response?.ok === "boolean" ? response.ok : status >= 200 && status < 300;
-    if (ok) return { kind: "ok", status, response };
+    if (ok) {
+      // The body is read while the timer is still armed: a collector that sends
+      // 200 and then stalls must not hold the run past this attempt's budget. The
+      // export itself succeeded, so a body that is late is just not read.
+      const lateBody = timeout.catch(() => undefined);
+      const partialSuccess = await Promise.race([readPartialSuccess(response, protocol), lateBody]);
+      return { kind: "ok", status, ...(partialSuccess ? { partialSuccess } : {}) };
+    }
 
     let body = "";
     try {
@@ -215,10 +223,10 @@ export function createOtlpExporter(options: OtlpExportOptions & { name?: string 
             env.endpoint!,
             { method: "POST", headers, body },
             Math.max(1, Math.min(timeoutMs, remaining)),
+            protocol,
           );
           if (outcome.kind === "ok") {
-            const partialSuccess = await readPartialSuccess(outcome.response, protocol);
-            return { ok: true, attempts, status: outcome.status, spans, bytes, ...(partialSuccess ? { partialSuccess } : {}) };
+            return { ok: true, attempts, status: outcome.status, spans, bytes, ...(outcome.partialSuccess ? { partialSuccess: outcome.partialSuccess } : {}) };
           }
           lastError = outcome.message;
           lastStatus = outcome.kind === "http" ? outcome.status : undefined;

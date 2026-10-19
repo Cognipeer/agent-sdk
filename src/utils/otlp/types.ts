@@ -108,7 +108,7 @@ export type OtlpExportOptions = {
 };
 
 /** What a span's content attributes are made of; `include` picks from this list. */
-export type OtlpContentField = "system" | "input" | "output" | "tools" | "toolArgs" | "toolResults";
+export type OtlpContentField = "system" | "input" | "output" | "tools" | "toolArgs" | "toolResults" | "sections";
 
 export type OtlpContentRedactInfo = {
   field: OtlpContentField;

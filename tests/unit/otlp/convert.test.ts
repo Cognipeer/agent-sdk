@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { sessionToOtlp } from "../../../src/utils/otlp/convert.js";
+import { resolveContentOptions } from "../../../src/utils/otlp/content.js";
 import { traceSessionToOtlp } from "../../../src/index.js";
 import { genAiProviderName, errorTypeOf } from "../../../src/utils/otlp/semconv.js";
 import type { OtlpConvertOptions, OtlpSemconv } from "../../../src/utils/otlp/types.js";
@@ -157,7 +158,8 @@ describe("legacy cognipeer.* parity", () => {
   for (const name of ["run-success", "run-error"]) {
     for (const mode of ["cognipeer", "both"] as const) {
       it(`${name} in ${mode} mode keeps every legacy key and value; cognipeer.event.status is the one addition`, () => {
-        const request = convert(loadSession(name), mode);
+        // The legacy export carried the sections unconditionally; they are payload now, so parity holds with content capture on.
+        const request = convert(loadSession(name), mode, { content: resolveContentOptions(true) });
         const spans = spansOf(request);
         const expected = legacy[name];
         expect(asLegacy(cognipeerOnly(resourceAttrsOf(request)))).toEqual(legacyText(expected.resource));
@@ -492,9 +494,82 @@ describe("pending sub-agent spans", () => {
       { type: "tool_call", spanId: "e".repeat(16) },
       { type: "span", status: "pending", spanId: "f".repeat(16), actor: { role: "subagent", name: "x" } },
     ]);
-    const spans = spansOf(convert(file)).slice(1);
+    // A leg that will be followed by another: the pending span waits for its final record.
+    const spans = spansOf(convert(file, "both", { terminal: false }));
     expect(spans.filter((s) => s.spanId === "e".repeat(16))).toHaveLength(2);
     expect(spans.some((s) => s.spanId === "f".repeat(16))).toBe(false);
+  });
+
+  it("the terminal export writes a sub-agent span that is still pending, so its children have a parent", () => {
+    const sub = "f".repeat(16);
+    const file = fileOf([
+      { type: "span", status: "pending", spanId: sub, parentSpanId: "c".repeat(16), actor: { role: "subagent", name: "x" }, label: "Sub-agent x #1" },
+      { type: "agent_iteration", spanId: "1".repeat(16), parentSpanId: sub },
+    ]);
+    const spans = spansOf(convert(file));
+    const ids = new Set([...spans.map((s) => s.spanId), ""]);
+    for (const span of spans) expect(ids.has(span.parentSpanId), span.name).toBe(true);
+    const pending = spans.find((s) => s.spanId === sub)!;
+    expect(pending.status.code).toBe(0);
+    expect(attrsOf(pending)["cognipeer.event.status"]).toBe("pending");
+    // Folded first: a pending record a later record finished is not exported twice.
+    const finished = fileOf([
+      { type: "span", status: "pending", spanId: sub, actor: { role: "subagent", name: "x" } },
+      { type: "span", status: "success", spanId: sub, actor: { role: "subagent", name: "x" } },
+    ]);
+    expect(spansOf(convert(finished)).filter((s) => s.spanId === sub)).toHaveLength(1);
+  });
+
+  it("a client tool the run paused on is a plain span, not an execute_tool; the resumed result is the execution", () => {
+    const file = fileOf([
+      { type: "tool_call", status: "pending", label: "Tool Execution - pick (client) #1", actor: { scope: "client", name: "pick", role: "tool" } },
+      { type: "tool_call", status: "success", label: "Tool Execution - pick (client) #2", actor: { scope: "client", name: "pick", role: "tool" } },
+    ]);
+    const spans = spansOf(convert(file)).slice(1);
+    const attrs = spans.map((s) => attrsOf(s));
+    expect(attrs.filter((a) => a["gen_ai.operation.name"] === "execute_tool")).toHaveLength(1);
+    expect(attrs[0]["gen_ai.operation.name"]).toBeUndefined();
+    expect(attrs[0]["cognipeer.event.status"]).toBe("pending");
+    expect(spans[0].status.code).toBe(0);
+  });
+});
+
+describe("cognipeer.sections", () => {
+  const withSections = () =>
+    fileOf([
+      {
+        type: "ai_call",
+        label: "Assistant Response #1",
+        model: "gpt-4o",
+        data: {
+          sections: [
+            { kind: "metadata", label: "Approval ids", data: { approvalId: "a1" }, identity: true },
+            { kind: "message", label: "User", role: "user", content: "SECRET-PROMPT" },
+          ],
+        },
+      },
+    ]);
+  const sectionsOfFirst = (request: any): any[] | undefined => {
+    const raw = attrsOf(spansOf(request)[1])["cognipeer.sections"];
+    return raw === undefined ? undefined : JSON.parse(raw);
+  };
+
+  it("without content only the identity sections are exported", () => {
+    const list = sectionsOfFirst(traceSessionToOtlp(withSections()))!;
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ label: "Approval ids", identity: true });
+    expect(JSON.stringify(traceSessionToOtlp(withSections()))).not.toContain("SECRET-PROMPT");
+  });
+
+  it("with content on the payload follows, through redact and caps; identity sections are never cut", () => {
+    expect(sectionsOfFirst(traceSessionToOtlp(withSections(), { content: true }))).toHaveLength(2);
+    const masked = traceSessionToOtlp(withSections(), { content: { enabled: true, redact: (value) => JSON.parse(JSON.stringify(value).replace("SECRET-PROMPT", "[MASKED]")) } });
+    expect(JSON.stringify(masked)).not.toContain("SECRET-PROMPT");
+    expect(JSON.stringify(masked)).toContain("[MASKED]");
+    // A byte cap too small for the payload drops it (oldest sections first) and keeps the identity ones.
+    const tiny = sectionsOfFirst(traceSessionToOtlp(withSections(), { content: { enabled: true, maxAttributeBytes: 150 } }))!;
+    expect(tiny).toHaveLength(1);
+    expect(tiny[0].identity).toBe(true);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   createSmartAgent,
   createTool,
   otlpSink,
+  readTraceContinuation,
 } from "../../../src/index.js";
 import { createPluginHost } from "../../../src/plugins/index.js";
 import type { AgentPlugin } from "../../../src/plugins/types.js";
@@ -315,6 +316,78 @@ describe("closeTraceContinuation", () => {
     expect(attrsOf(root)["error.type"]).toBe("TypeError");
   });
 
+  it("an abandoned sub-agent pause: the withheld agent span is exported by the close, so no exported parent is missing", async () => {
+    const { bodies, fetch } = collector();
+    const tracing = { enabled: true, sink: otlpSink({ endpoint: "https://c.example.test/v1/traces", fetch }) };
+    const def: SubagentDef = {
+      name: "once", header: "h",
+      model: scripted("child", [{ tool_calls: [call("c1", "dangerous")] }, { content: "final" }]),
+      tools: [dangerous()],
+    };
+    const parent = createSmartAgent({
+      name: "parent",
+      model: scripted("parent", [{ tool_calls: [call("p1", "delegate_to", { subagent: "once", input: "go" })] }, { content: "parent-done" }]),
+      subagents: [def], summarization: false, tracing,
+    } as any);
+    const paused: any = await parent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
+    // Leg 1 exported the child's spans under a parent that is withheld while it is pending.
+    expect(allSpans(bodies).filter((s) => s.name === "invoke_agent once")).toHaveLength(0);
+
+    // The continuation survives being persisted, then the host abandons the approval.
+    const continuation = roundTrip(paused.state).ctx.__traceContinuation;
+    expect(continuation.pendingSpans).toHaveLength(1);
+    await closeTraceContinuation(continuation, { tracing, agentRuntime: { name: "parent" } as any });
+
+    const spans = allSpans(bodies);
+    const exported = new Set(spans.map((s) => s.spanId));
+    const roots = rootsOf(bodies);
+    expect(roots).toHaveLength(1);
+    for (const span of spans) {
+      if (span === roots[0]) continue;
+      expect(exported.has(span.parentSpanId), `${span.name} -> ${span.parentSpanId}`).toBe(true);
+    }
+    // Exported once, as it stood: not an error, not finished.
+    const agentSpans = spans.filter((s) => s.name === "invoke_agent once");
+    expect(agentSpans).toHaveLength(1);
+    expect(agentSpans[0].status.code).toBe(0);
+    expect(attrsOf(agentSpans[0])["cognipeer.event.status"]).toBe("pending");
+    expect(agentSpans[0].parentSpanId).not.toBe("");
+  });
+
+  it("a resumed sub-agent that finishes supersedes the carried pending span: exported once, as the finished one", async () => {
+    const { bodies, fetch } = collector();
+    const tracing = { enabled: true, sink: otlpSink({ endpoint: "https://c.example.test/v1/traces", fetch }) };
+    const def: SubagentDef = {
+      name: "once", header: "h",
+      model: scripted("child", [{ tool_calls: [call("c1", "dangerous")] }, { content: "final" }]),
+      tools: [dangerous()],
+    };
+    const parent = createSmartAgent({
+      name: "parent",
+      model: scripted("parent", [{ tool_calls: [call("p1", "delegate_to", { subagent: "once", input: "go" })] }, { content: "parent-done" }]),
+      subagents: [def], summarization: false, tracing,
+    } as any);
+    const paused: any = await parent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
+    const state = roundTrip(paused.state);
+    const pending = state.pendingApprovals.find((x: any) => x.status === "pending");
+    await parent.invoke(parent.resolveToolApproval(state, { id: pending.id, approved: true, decidedBy: "ops" }) as any);
+    const agentSpans = allSpans(bodies).filter((s) => s.name === "invoke_agent once");
+    expect(agentSpans).toHaveLength(1);
+    expect(attrsOf(agentSpans[0])["cognipeer.event.status"]).toBe("success");
+  });
+
+  it("a continuation's pendingSpans are read defensively: only well-formed pending sub-agent spans survive", () => {
+    const good = { sessionId: "s", id: "evt_1", type: "span", label: "Sub-agent x #1", sequence: 3, timestamp: "2026-10-19T12:00:00.000Z", spanId: "a".repeat(16), parentSpanId: "b".repeat(16), status: "pending", actor: { role: "subagent", name: "x" }, durationMs: 4, data: { sections: [{ kind: "message", label: "Task", role: "user", content: "SECRET-BRIEF" }] } };
+    const read = readTraceContinuation({
+      v: 1, sessionId: "s", startedAt: 1, nextSequence: 4, part: 1,
+      pendingSpans: [good, { ...good, spanId: "" }, { ...good, status: "success" }, { ...good, type: "tool_call" }, { ...good, sequence: "x" }, { ...good, timestamp: "nope" }, null, 7],
+    });
+    expect(read?.pendingSpans).toHaveLength(1);
+    // The brief is payload: it is not carried.
+    expect(JSON.stringify(read?.pendingSpans)).not.toContain("SECRET-BRIEF");
+    expect(readTraceContinuation({ v: 1, sessionId: "s", startedAt: 1, nextSequence: 1, part: 1, pendingSpans: "x" })?.pendingSpans).toBeUndefined();
+  });
+
   it("returns undefined for something that is not a continuation, or when nothing would export it", async () => {
     expect(await closeTraceContinuation({ nope: true }, { tracing: { enabled: true } })).toBeUndefined();
     const sessions: TraceSessionFile[] = [];
@@ -404,5 +477,65 @@ describe("smart driver", () => {
     expect(roots).toHaveLength(1);
     expect(roots[0].status).toMatchObject({ code: 2, message: "memory store down" });
     expect(attrsOf(roots[0])["error.type"]).toBe("Error");
+  });
+});
+
+describe("approval and question pairing does not depend on logData", () => {
+  const secretTool = () => createTool({
+    name: "wire", description: "moves money", schema: z.object({ account: z.string() }), needsApproval: true, func: async () => "SECRET-RESULT",
+  });
+
+  async function run(logData: boolean, content = false) {
+    const sessions: TraceSessionFile[] = [];
+    const { bodies, fetch } = collector();
+    const agent = createSmartAgent({
+      name: "Approver",
+      model: scripted("m", [{ tool_calls: [call("w1", "wire", { account: "SECRET-ARG" })] }, { content: "done" }]),
+      tools: [secretTool()], summarization: false,
+      plugins: [{ name: "p", traceExporters: [createOtlpExporter({ endpoint: "https://x/v1/traces", fetch, content })] }],
+      tracing: { enabled: true, logData, sink: customSink({ onSession: (s) => { sessions.push(s); } }) },
+    } as any);
+    const paused: any = await agent.invoke({ messages: [{ role: "user", content: "pay SECRET-PROMPT" }] } as any);
+    const state = roundTrip(paused.state);
+    const pending = state.pendingApprovals.find((x: any) => x.status === "pending");
+    await agent.invoke(agent.resolveToolApproval(state, { id: pending.id, approved: true, decidedBy: "ops", comment: "SECRET-COMMENT" }) as any);
+    return { sessions, bodies, approvalId: pending.id as string };
+  }
+
+  const identitySections = (file: TraceSessionFile, type: string) =>
+    (file.events.find((e) => e.type === type)?.data?.sections ?? []).filter((x: any) => x.identity === true) as any[];
+
+  it("logData off: the JSON record keeps the ids, status and timestamps of the request and the decision, and no payload", async () => {
+    const { sessions, approvalId } = await run(false);
+    const [requested] = identitySections(sessions[0], "tool_approval");
+    expect(requested).toMatchObject({ kind: "metadata", label: "Approval ids", data: { approvalId, toolCallId: "w1", status: "pending" } });
+    expect(typeof requested.data.requestedAt).toBe("string");
+    const [decided] = identitySections(sessions[1], "tool_approval");
+    expect(decided.data).toMatchObject({ approvalId, toolCallId: "w1", decision: "approved" });
+    expect(typeof decided.data.decidedAt).toBe("string");
+    // Only the ids: the arguments, the prompt and the comment are logData payload.
+    expect(JSON.stringify(sessions)).not.toContain("SECRET-ARG");
+    expect(JSON.stringify(sessions)).not.toContain("SECRET-COMMENT");
+    for (const session of sessions) for (const event of session.events.filter((e) => e.type === "tool_approval")) {
+      expect((event.data?.sections ?? []).every((section: any) => section.identity === true)).toBe(true);
+    }
+  });
+
+  it("logData off, content off: the OTLP export pairs the two halves by id and carries no payload", async () => {
+    const { bodies, approvalId } = await run(false);
+    const spans = allSpans(bodies).filter((s) => attrsOf(s)["cognipeer.event.type"] === "tool_approval");
+    expect(spans).toHaveLength(2);
+    const parsed = spans.map((s) => JSON.parse(attrsOf(s)["cognipeer.sections"]) as any[]);
+    expect(parsed.map((list) => list[0].data.approvalId)).toEqual([approvalId, approvalId]);
+    expect(parsed.map((list) => list[0].data.status ?? list[0].data.decision)).toEqual(["pending", "approved"]);
+    for (const secret of ["SECRET-PROMPT", "SECRET-ARG", "SECRET-RESULT", "SECRET-COMMENT"]) expect(JSON.stringify(bodies)).not.toContain(secret);
+  });
+
+  it("logData on, content off: the ids still go out; the arguments and the comment do not", async () => {
+    const { bodies, approvalId } = await run(true);
+    const spans = allSpans(bodies).filter((s) => attrsOf(s)["cognipeer.event.type"] === "tool_approval");
+    const parsed = spans.map((s) => JSON.parse(attrsOf(s)["cognipeer.sections"]) as any[]);
+    expect(parsed.every((list) => list.length === 1 && list[0].data.approvalId === approvalId)).toBe(true);
+    for (const secret of ["SECRET-ARG", "SECRET-RESULT", "SECRET-COMMENT"]) expect(JSON.stringify(bodies)).not.toContain(secret);
   });
 });

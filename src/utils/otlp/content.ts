@@ -37,7 +37,7 @@ const DEFAULTS = {
   maxAttributeBytes: 32768,
 } as const;
 
-const FIELDS: OtlpContentField[] = ["system", "input", "output", "tools", "toolArgs", "toolResults"];
+const FIELDS: OtlpContentField[] = ["system", "input", "output", "tools", "toolArgs", "toolResults", "sections"];
 
 /** Content options with the defaults filled in. */
 export function resolveContentOptions(content: boolean | OtlpContentOptions | undefined): ResolvedOtlpContent {
@@ -324,7 +324,7 @@ function render(
   }
 
   working = capStrings(working, options.maxStringChars);
-  if ((field === "input" || field === "system") && Array.isArray(working) && working.length > options.maxMessages) {
+  if ((field === "input" || field === "system" || field === "sections") && Array.isArray(working) && working.length > options.maxMessages) {
     working = working.slice(-options.maxMessages);
   }
 
@@ -395,4 +395,79 @@ export function contentAttributes(
     if (include.has("toolResults") && captured.toolResults !== undefined) add(ATTR.toolCallResult, render(captured.toolResults, "toolResults", options, info));
   }
   return attrs;
+}
+
+/**
+ * The `cognipeer.sections` attribute of one span: the record's sections as the
+ * Console reads them. Two kinds, and they are not treated alike.
+ *
+ * - Identity sections (ids, status, timestamps; see `TraceMetadataSection.identity`)
+ *   always go. They are what lets a viewer pair an approval with its decision.
+ * - Everything else is payload (prompts, replies, tool arguments and results,
+ *   tool menus): it goes only when content capture is on for this exporter, and
+ *   then it passes the same gate as the `gen_ai.*` content, redact hook first,
+ *   caps second (whole sections are dropped oldest first; a payload that still
+ *   does not fit is left out, identity sections are never cut).
+ *
+ * Returns undefined when there is nothing to carry.
+ */
+export function sectionsAttribute(
+  sections: Array<{ identity?: boolean } & Record<string, any>> | undefined,
+  event: { type: string; spanId?: string; model?: string },
+  options: ResolvedOtlpContent | undefined,
+): OtlpKeyValue | undefined {
+  if (!sections || sections.length === 0) return undefined;
+  const identity = sections.filter((section) => section.identity === true);
+  const payload = sections.filter((section) => section.identity !== true);
+
+  let kept: unknown[] = [];
+  if (options?.enabled && options.include.includes("sections") && payload.length > 0) {
+    kept = redactedSections(payload, options, event);
+  }
+  const max = options?.maxAttributeBytes ?? DEFAULTS.maxAttributeBytes;
+  const encode = (list: unknown[]): string | undefined => {
+    try {
+      return JSON.stringify(list);
+    } catch {
+      return undefined;
+    }
+  };
+  let text = encode([...identity, ...kept]);
+  while (text !== undefined && kept.length > 0 && byteLength(text) > max) {
+    kept.shift();
+    text = encode([...identity, ...kept]);
+  }
+  if (text === undefined) {
+    // Unserializable sections are dropped, as before; the identity ones may still go.
+    text = encode(identity);
+  }
+  if (text === undefined || text === "[]") return undefined;
+  return { key: "cognipeer.sections", value: { stringValue: text } };
+}
+
+/** The payload sections after the redact hook and the string / count caps; [] when the hook refuses them. */
+function redactedSections(
+  payload: unknown[],
+  options: ResolvedOtlpContent,
+  event: { type: string; spanId?: string; model?: string },
+): unknown[] {
+  let working: unknown = plain(payload);
+  if (working === undefined) return [];
+  if (options.redact) {
+    try {
+      working = plain(options.redact(plain(working), {
+        field: "sections",
+        eventType: event.type,
+        ...(event.spanId ? { spanId: event.spanId } : {}),
+        ...(event.model ? { model: event.model } : {}),
+      }));
+    } catch {
+      return [];
+    }
+    // A hook that returns something other than the list of sections has not
+    // vouched for it: fail closed.
+    if (!Array.isArray(working)) return [];
+  }
+  const capped = capStrings(working, options.maxStringChars);
+  return Array.isArray(capped) ? capped.slice(-options.maxMessages) : [];
 }
