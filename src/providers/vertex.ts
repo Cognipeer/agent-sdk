@@ -512,10 +512,15 @@ export class VertexProvider extends BaseProvider {
           textParts.push(part.text);
         }
       } else if (part.functionCall) {
+        // Gemini can return an id for the call; when it does that is the call's id,
+        // otherwise one is made up here and marked so a trace does not pass it off as the provider's.
+        const suppliedId = typeof part.functionCall.id === "string" && part.functionCall.id ? part.functionCall.id : undefined;
+        const position = toolCallIdx++;
         toolCalls.push({
-          id: `call_${toolCallIdx++}`,
+          id: suppliedId ?? `call_${position}`,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
+          ...(suppliedId ? {} : { idSynthesized: true }),
           ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
         });
       }
@@ -559,12 +564,15 @@ export class VertexProvider extends BaseProvider {
         }
       } else if (part.functionCall) {
         if (!delta.toolCalls) delta.toolCalls = [];
+        const suppliedId = typeof part.functionCall.id === "string" && part.functionCall.id ? part.functionCall.id : undefined;
+        const position = counter.next++;
         delta.toolCalls.push({
           // Unique across the whole stream: the adapter merges chunks by id.
-          id: `call_${counter.next}`,
-          index: counter.next++,
+          id: suppliedId ?? `call_${position}`,
+          index: position,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
+          ...(suppliedId ? {} : { idSynthesized: true }),
           ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
         });
       }

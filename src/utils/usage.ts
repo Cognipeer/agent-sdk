@@ -226,3 +226,33 @@ export function splitUsage(usage: AgentState["usage"]): {
   }
   return { own, subagent, ownCalls: ownEntries.length, subagentCalls: subagentEntries.length, ownEntries, subagentEntries };
 }
+
+/**
+ * Tokens written to the provider's prompt cache, from whichever key the usage
+ * object uses (the SDK's `prompt_tokens_details.cache_write_tokens`, the flat
+ * `cache_write_tokens`, Anthropic's `cache_creation_input_tokens`, Bedrock's
+ * `cacheWriteInputTokens`). Undefined when none is reported.
+ *
+ * Kept apart from `normalizeUsage`, which feeds budgets and cost and must not
+ * change shape.
+ */
+export function cacheWriteTokensOf(raw: any): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const details = raw.prompt_tokens_details || raw.promptTokensDetails || raw.input_token_details || raw.inputTokenDetails || {};
+  const candidates = [
+    details.cache_write_tokens,
+    details.cacheWriteTokens,
+    details.cache_creation,
+    raw.cache_write_tokens,
+    raw.cacheWriteTokens,
+    raw.cache_creation_input_tokens,
+    raw.cacheCreationInputTokens,
+    raw.cacheWriteInputTokens,
+    raw.cacheWriteInputTokenCount,
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return undefined;
+}

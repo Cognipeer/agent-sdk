@@ -920,6 +920,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     // continuation on its state: keep recording into that session.
     const traceSession = createTraceSession(opts, readTraceContinuation(input.ctx?.__traceContinuation), {
       exporters: pluginHost.contributions.traceExporters,
+      traceParent: config?.traceParent,
     });
 
     const ctx: Record<string, any> = {

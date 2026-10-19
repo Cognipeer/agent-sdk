@@ -78,7 +78,11 @@
       "cachedInputTokens": 0,
       "finishReason": "tool_calls",
       "model": "gpt-4o",
-      "provider": "openai"
+      "provider": "openai",
+      "responseId": "chatcmpl-GhI789",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
     },
     {
       "sessionId": "sess_fixture_error",
@@ -99,7 +103,8 @@
       "durationMs": 400,
       "error": {
         "message": "Cannot read properties of undefined (reading 'id')",
-        "stack": "TypeError: Cannot read properties of undefined (reading 'id')\n    at lookup (tools.js:4:9)"
+        "stack": "TypeError: Cannot read properties of undefined (reading 'id')\n    at lookup (tools.js:4:9)",
+        "type": "TypeError"
       },
       "toolExecutionId": "call_lookup_1"
     },
@@ -119,7 +124,8 @@
         "role": "tool"
       },
       "status": "skipped",
-      "toolExecutionId": "call_delete_1"
+      "toolExecutionId": "call_delete_1",
+      "skipReason": "denied"
     },
     {
       "sessionId": "sess_fixture_error",
@@ -142,7 +148,8 @@
       "debug": {
         "fromCache": true,
         "shortCircuitSource": "cache"
-      }
+      },
+      "skipReason": "short_circuit"
     },
     {
       "sessionId": "sess_fixture_error",
@@ -162,7 +169,8 @@
       },
       "status": "skipped",
       "model": "gpt-4o",
-      "provider": "openai"
+      "provider": "openai",
+      "skipReason": "blocked"
     },
     {
       "sessionId": "sess_fixture_error",
@@ -190,7 +198,8 @@
       "cachedInputTokens": 0,
       "error": {
         "message": "429 Too Many Requests",
-        "stack": "RateLimitError: 429 Too Many Requests\n    at callModel (agent.js:10:5)"
+        "stack": "RateLimitError: 429 Too Many Requests\n    at callModel (agent.js:10:5)",
+        "type": "RateLimitError"
       }
     }
   ],

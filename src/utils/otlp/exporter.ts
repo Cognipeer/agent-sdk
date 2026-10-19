@@ -18,6 +18,7 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import type { TraceSessionFile } from "../../types.js";
 import { countSpans, sessionToOtlp } from "./convert.js";
+import { resolveContentOptions } from "./content.js";
 import { currentEnv, resolveOtlpEnv } from "./env.js";
 import { decodeExportTraceServiceResponse, encodeExportTraceServiceRequest } from "./protobuf.js";
 import type {
@@ -155,13 +156,15 @@ export function createOtlpExporter(options: OtlpExportOptions & { name?: string 
   const serviceName = options.serviceName ?? env.serviceName;
   const resourceAttributes = { ...env.resourceAttributes, ...(options.resourceAttributes ?? {}) };
   const endpoint = env.endpoint ?? "";
+  const content = resolveContentOptions(options.content);
 
   return {
     name: options.name ?? "otlp",
     endpoint,
     semconv,
     protocol,
-    wantsContent: false,
+    wantsContent: content.enabled,
+    contentOptions: content,
 
     async exportSession(file: TraceSessionFile, run): Promise<OtlpExportResult> {
       try {
@@ -175,6 +178,7 @@ export function createOtlpExporter(options: OtlpExportOptions & { name?: string 
           terminal: run.terminal,
           cancelled: run.cancelled,
           parent: run.parent,
+          content,
         };
         const request = sessionToOtlp(file, convertOptions);
         const spans = countSpans(request);

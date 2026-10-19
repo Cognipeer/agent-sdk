@@ -533,6 +533,24 @@
                   }
                 },
                 {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o-2024-08-06"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-le007"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.type",
+                  "value": {
+                    "stringValue": "text"
+                  }
+                },
+                {
                   "key": "gen_ai.response.finish_reasons",
                   "value": {
                     "arrayValue": {

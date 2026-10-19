@@ -97,19 +97,72 @@ export type OtlpExportOptions = {
   /** `service.name` on the resource. */
   serviceName?: string;
   resourceAttributes?: Record<string, string>;
+  /**
+   * Prompt, response, tool-definition and tool argument/result content on the
+   * spans (`gen_ai.input.messages` and friends). OFF by default and independent
+   * of `tracing.logData`. `true` turns it on with the defaults.
+   */
+  content?: boolean | OtlpContentOptions;
   /** Injectable for tests; defaults to `globalThis.fetch`, read at export time. */
   fetch?: (input: string, init?: any) => Promise<any>;
+};
+
+/** What a span's content attributes are made of; `include` picks from this list. */
+export type OtlpContentField = "system" | "input" | "output" | "tools" | "toolArgs" | "toolResults";
+
+export type OtlpContentRedactInfo = {
+  field: OtlpContentField;
+  eventType: string;
+  spanId?: string;
+  toolName?: string;
+  model?: string;
+};
+
+export type OtlpContentOptions = {
+  /** Default false. */
+  enabled?: boolean;
+  /** Default: every field. */
+  include?: OtlpContentField[];
+  /** Longer text is cut and marked `...[truncated N chars]`. Default 4096. */
+  maxStringChars?: number;
+  /** A message list keeps its most recent messages. Default 32. */
+  maxMessages?: number;
+  /**
+   * An attribute whose JSON exceeds this is made smaller by dropping whole
+   * messages (oldest first) or, failing that, replaced by `{"truncated":true}`.
+   * JSON is never cut in the middle. Default 32768.
+   */
+  maxAttributeBytes?: number;
+  /**
+   * Runs on each captured field BEFORE the caps apply. Return the (possibly
+   * masked) value, or `null` / `undefined` to leave the field out. A throw
+   * leaves it out too (fail closed). It gets a private copy: mutating it does
+   * not change the trace the file and other sinks hold.
+   */
+  redact?: (value: unknown, info: OtlpContentRedactInfo) => unknown;
+  /** `json` (default): a JSON string. `structured`: OTLP AnyValue arrays and maps. */
+  encoding?: "json" | "structured";
+};
+
+/** Content options with every default filled in. */
+export type ResolvedOtlpContent = Required<Omit<OtlpContentOptions, "redact">> & {
+  redact?: OtlpContentOptions["redact"];
 };
 
 /** A W3C parent of the root span: where the trace came from. */
 export type TraceParent = {
   traceId: string;
   spanId: string;
+  /** The incoming trace-flags byte, carried unchanged (bit 0 is `sampled`). */
+  flags: number;
   sampled: boolean;
   /** True when the parent lives in another process (the usual case for a traceparent). */
   remote: boolean;
   traceState?: string;
 };
+
+/** A `traceparent` header value, or the pair of W3C headers. */
+export type TraceParentInput = string | { traceparent: string; tracestate?: string };
 
 export type OtlpConvertOptions = {
   semconv: OtlpSemconv;
@@ -119,7 +172,9 @@ export type OtlpConvertOptions = {
   terminal: boolean;
   /** The run was cancelled: the root reports `partial`. */
   cancelled?: boolean;
-  parent?: Pick<TraceParent, "spanId" | "remote" | "traceState"> & { sampled?: boolean };
+  parent?: Pick<TraceParent, "spanId" | "remote" | "traceState"> & { flags?: number; sampled?: boolean };
+  /** Content capture; absent or disabled means none leaves the process. */
+  content?: ResolvedOtlpContent;
 };
 
 export type OtlpExportResult = {
@@ -144,6 +199,8 @@ export type OtlpExporter = {
   protocol: OtlpProtocol;
   /** True when this exporter asks for prompt/response content to be captured. */
   wantsContent: boolean;
+  /** The content options behind `wantsContent`, defaults filled in. */
+  contentOptions?: ResolvedOtlpContent;
   exportSession(
     file: import("../../types.js").TraceSessionFile,
     options: { terminal: boolean; cancelled?: boolean; parent?: OtlpConvertOptions["parent"] },

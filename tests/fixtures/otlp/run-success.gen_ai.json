@@ -130,6 +130,24 @@
                   }
                 },
                 {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o-2024-08-06"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-AbC123"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.type",
+                  "value": {
+                    "stringValue": "text"
+                  }
+                },
+                {
                   "key": "gen_ai.response.finish_reasons",
                   "value": {
                     "arrayValue": {
@@ -199,6 +217,12 @@
                   }
                 },
                 {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_lookup_1"
+                  }
+                },
+                {
                   "key": "gen_ai.tool.type",
                   "value": {
                     "stringValue": "function"
@@ -261,6 +285,30 @@
                   "key": "gen_ai.request.model",
                   "value": {
                     "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o-2024-08-06"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-DeF456"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.output.type",
+                  "value": {
+                    "stringValue": "text"
                   }
                 },
                 {

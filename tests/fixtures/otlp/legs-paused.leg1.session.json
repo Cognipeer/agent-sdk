@@ -78,7 +78,11 @@
       "cachedInputTokens": 0,
       "finishReason": "tool_calls",
       "model": "gpt-4o",
-      "provider": "openai"
+      "provider": "openai",
+      "responseId": "chatcmpl-le002",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
     },
     {
       "sessionId": "sess_fixture_legs",

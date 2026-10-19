@@ -34,34 +34,20 @@ import type {
   OtlpSpan,
   OtlpSpanEvent,
 } from "./types.js";
-import { ATTR, OPERATION, errorTypeOf, genAiProviderName, genAiUsageOf, type EnrichedUsage } from "./semconv.js";
+import { contentAttributes } from "./content.js";
+import { ATTR, OPERATION, errorTypeOf, genAiProviderName, genAiUsageOf } from "./semconv.js";
 
 export const SCOPE_NAME = "cognipeer-agent-sdk";
 
 const SPAN_KIND_INTERNAL = 1;
 const SPAN_KIND_CLIENT = 3;
-/** W3C sampled bit plus the OTLP "parent is known" bit; 0x200 more when the parent is remote. */
-const FLAGS_LOCAL = 0x101;
-const FLAGS_REMOTE = 0x301;
+/** OTLP span flags: the W3C trace-flags byte, bit 8 "parent is known", bit 9 "parent is remote". */
+const FLAG_HAS_PARENT = 0x100;
+const FLAG_REMOTE_PARENT = 0x200;
 const MAX_STATUS_MESSAGE = 1024;
 
-/**
- * Optional record fields a later enrichment fills in (response facts, skip
- * reasons, provider-supplied tool call ids). The converter reads them when
- * present and works without them.
- */
-type EventView = TraceEventRecord & EnrichedUsage & {
-  responseId?: string;
-  responseModel?: string;
-  rawFinishReason?: string;
-  streaming?: boolean;
-  outputType?: "text" | "json";
-  toolCallId?: string;
-  skipReason?: string;
-  error?: { message: string; stack?: string; type?: string } | null;
-};
-
-type SessionError = TraceErrorRecord & { errorName?: string };
+type EventView = TraceEventRecord;
+type SessionError = TraceErrorRecord;
 
 type Node = {
   event: EventView;
@@ -134,7 +120,7 @@ function classify(event: EventView): SpanClass {
 }
 
 const knownModel = (model: string | undefined): string | undefined =>
-  model && model !== "unknown-model" ? model : undefined;
+  model && model !== "unknown-model" && model !== "unknown_model" ? model : undefined;
 
 function toolNameOf(event: EventView): string | undefined {
   if (event.actor?.name) return event.actor.name;
@@ -175,7 +161,11 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
   const rootSpanId = file.rootSpanId || generateSpanId();
   const parent = options.parent;
   const traceState = parent?.traceState || undefined;
-  const flags = parent?.remote ? FLAGS_REMOTE : FLAGS_LOCAL;
+  // The incoming trace-flags byte is carried unchanged; a run with no parent is sampled.
+  const traceFlags = (typeof parent?.flags === "number" ? parent.flags : 1) & 0xff;
+  const flags = traceFlags | FLAG_HAS_PARENT;
+  // Only the span whose parent lives in another process says so.
+  const rootFlags = parent?.remote ? flags | FLAG_REMOTE_PARENT : flags;
   const agentName = file.agent?.name;
 
   // Records that are exported. A sub-agent span still `pending` is held back for
@@ -299,7 +289,7 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
       spanId: rootSpanId,
       parentSpanId: parent?.spanId ?? "",
       ...(traceState ? { traceState } : {}),
-      flags,
+      flags: rootFlags,
       name: rootName,
       kind: SPAN_KIND_INTERNAL,
       startTimeUnixNano: rootStart.toString(),
@@ -410,6 +400,7 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
           );
         }
         if (conversation) attributes.push(conversation);
+        attributes.push(...contentAttributes("chat", event, genAiProviderName(event.provider), options.content));
       } else if (kind === "execute_tool") {
         const tool = toolNameOf(event);
         name = tool ? `${OPERATION.executeTool} ${tool}` : OPERATION.executeTool;
@@ -423,6 +414,7 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
             conversation,
           ]),
         );
+        attributes.push(...contentAttributes("execute_tool", event, undefined, options.content));
       } else if (kind === "invoke_agent") {
         const child = event.actor?.name;
         name = child ? `${OPERATION.invokeAgent} ${child}` : OPERATION.invokeAgent;

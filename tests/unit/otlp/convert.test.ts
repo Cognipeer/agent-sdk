@@ -505,7 +505,7 @@ describe("W3C parent and trace state", () => {
     );
     expect(spans[0].parentSpanId).toBe("b7ad6b7169203331");
     expect(spans[0].flags).toBe(769);
-    expect(spans.slice(1).every((s) => s.flags === 769)).toBe(true);
+    expect(spans.slice(1).every((s) => s.flags === 257)).toBe(true);
     expect(spans.every((s) => s.traceState === "vendor=x")).toBe(true);
   });
 });

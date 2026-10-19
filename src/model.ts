@@ -20,7 +20,7 @@ export interface BaseChatMessage {
   name?: string;
   content: string | BaseChatMessagePart[];
   // Tool call metadata (OpenAI style)
-  tool_calls?: Array<{ id: string; type?: string; function?: { name: string; arguments: string }; thoughtSignature?: string }>;
+  tool_calls?: Array<{ id: string; type?: string; function?: { name: string; arguments: string }; thoughtSignature?: string; idSynthesized?: boolean }>;
   tool_call_id?: string; // for tool response messages
   usage?: any; // optional provider usage shape
   response_metadata?: any; // optional provider wrapper metadata

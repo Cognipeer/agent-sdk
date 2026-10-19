@@ -32,6 +32,13 @@ export const ATTR = {
   usageCacheWrite: "gen_ai.usage.cache_write.input_tokens",
   usageReasoning: "gen_ai.usage.reasoning.output_tokens",
   errorType: "error.type",
+  // Content (opt-in).
+  systemInstructions: "gen_ai.system_instructions",
+  inputMessages: "gen_ai.input.messages",
+  outputMessages: "gen_ai.output.messages",
+  toolDefinitions: "gen_ai.tool.definitions",
+  toolCallArguments: "gen_ai.tool.call.arguments",
+  toolCallResult: "gen_ai.tool.call.result",
 } as const;
 
 export const OPERATION = {
@@ -104,7 +111,7 @@ export function errorTypeOf(error: { type?: string; stack?: string } | null | un
 }
 
 /** What a record's gen_ai usage attributes say, or undefined when it reported none. */
-export function genAiUsageOf(event: TraceEventRecord & EnrichedUsage): {
+export function genAiUsageOf(event: TraceEventRecord): {
   input: number;
   output: number;
   cacheRead?: number;
@@ -129,12 +136,3 @@ export function genAiUsageOf(event: TraceEventRecord & EnrichedUsage): {
     ...(reasoning > 0 ? { reasoning } : {}),
   };
 }
-
-/**
- * Fields a record may carry once the record enrichment lands: all optional, so
- * the converter works on today's records and picks the rest up as they appear.
- */
-export type EnrichedUsage = {
-  cacheWriteTokens?: number;
-  usageBasis?: { inputExcludesCache?: boolean; outputExcludesReasoning?: boolean };
-};

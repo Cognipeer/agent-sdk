@@ -115,7 +115,11 @@
       "cachedInputTokens": 0,
       "finishReason": "stop",
       "model": "gpt-4o",
-      "provider": "openai"
+      "provider": "openai",
+      "responseId": "chatcmpl-le007",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "stop",
+      "outputType": "text"
     }
   ],
   "status": "success",

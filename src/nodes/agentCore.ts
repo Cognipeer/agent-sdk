@@ -1,6 +1,8 @@
 import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../types.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
-import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
+import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, traceErrorOf } from "../utils/tracing.js";
+import { providerHintOf, traceResponseFacts } from "../utils/traceFacts.js";
+import { WIRE_INFO, wireInfoOf } from "../providers/wireInfo.js";
 import { toToolDefinition } from "../providers/adapter.js";
 import { isCancellationRequested } from "../utils/abort.js";
 import { buildSystemPrompt } from "../prompts.js";
@@ -71,7 +73,8 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     // a schema-conversion failure must never break the model invocation.
     let traceToolDefinitions: Array<{ name: string; description?: string; parameters?: Record<string, any> }> | undefined;
     const computeTraceToolDefinitions = (menu: Array<ToolInterface<any, any, any>>) => {
-      if (!traceSession || !traceSession.resolvedConfig.logData || menu.length === 0) return undefined;
+      // Also needed, independent of logData, by an exporter that captures content.
+      if (!traceSession || !(traceSession.resolvedConfig.logData || traceSession.captureContent) || menu.length === 0) return undefined;
       try {
         const wire = shouldUseStrictToolCalling ? prepareStrictToolMenu(menu).menu : menu;
         return wire.map((tool) => {
@@ -383,8 +386,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           // outcome, and an "error" status would flip the whole trace session
           // status to error for a run that behaved exactly as configured.
           status: "skipped",
+          skipReason: "blocked",
           model: getModelName((runtime as any).model || (opts as any).model),
-          provider: getProviderName((runtime as any).model || (opts as any).model),
+          provider: providerHintOf((runtime as any).model || (opts as any).model),
           messageList: state.messages,
         });
         // Exactly one appended message, no tool_calls, so the loop terminates.
@@ -423,10 +427,18 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       for (const key of ["usage", "usage_metadata", "response_metadata"]) {
         if (merged[key] === undefined && original?.[key] !== undefined) merged[key] = original[key];
       }
+      // What the provider said about this answer (response id, model, stop reason) is
+      // accounting too, and a hook that builds its message from scratch has no copy.
+      if (wireInfoOf(merged) === undefined && wireInfoOf(original) !== undefined) merged[WIRE_INFO] = wireInfoOf(original);
       return merged;
     };
 
     let response: any;
+    // The messages as the provider was sent them (after the plugin gates and the
+    // adjacency pass), and whether the call went out as a stream: facts the trace
+    // record states about the call.
+    let sentMessages: any[] | undefined;
+    let streamedCall = false;
     let modelAttempt = 0;
     const maxModelRetries = host?.maxModelRetries ?? 0;
 
@@ -451,12 +463,16 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         // "skipped", not "error": the call did not fail, the caller ended it —
         // and an "error" would flip the whole session to error.
         status: "skipped",
+        // The call reached the provider and was hung up on: still a model call, not a skipped one.
+        skipReason: "cancelled",
+        ...(streamedCall ? { streaming: true } : {}),
         durationMs: Date.now() - start,
         requestBytes: promptBytes,
         model: getModelName((runtime as any).model || (opts as any).model),
-        provider: getProviderName((runtime as any).model || (opts as any).model),
+        provider: providerHintOf((runtime as any).model || (opts as any).model),
         messageList: state.messages,
         toolDefinitions: traceToolDefinitions,
+        capture: { input: sentMessages ?? wireMessages, toolDefinitions: traceToolDefinitions },
       });
       onEvent?.({ type: "cancelled", stage: "agent", reason });
       onProgress?.({ stage: "agent", message: "Cancelled", detail: { reason } });
@@ -474,8 +490,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
           label: "Assistant (plugin short-circuit)",
           actor: { scope: "agent", name: actorName, role: "assistant", version: actorVersion },
           status: "skipped",
+          skipReason: "short_circuit",
           model: getModelName((runtime as any).model || (opts as any).model),
-          provider: getProviderName((runtime as any).model || (opts as any).model),
+          provider: providerHintOf((runtime as any).model || (opts as any).model),
           messageList: state.messages,
           toolDefinitions: traceToolDefinitions,
         });
@@ -486,8 +503,10 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
         try {
           // Adjacency normalization stays the LAST transform before the wire.
           const normalizedMessages = normalizeBedrockToolPairing([...wireMessages]);
+          sentMessages = normalizedMessages;
           debugToolPairing(normalizedMessages);
           if (streamingEnabled && typeof (modelWithTools as any).stream === "function") {
+            streamedCall = true;
             let streamedMessage: any | undefined;
             let cutByCancel = false;
             for await (const chunk of (modelWithTools as any).stream(normalizedMessages, invokeParams)) {
@@ -550,12 +569,14 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
             durationMs,
             requestBytes: promptBytes,
             model: getModelName((runtime as any).model || (opts as any).model),
-            provider: getProviderName((runtime as any).model || (opts as any).model),
-            error: { message: err?.message || String(err), stack: err?.stack },
+            provider: providerHintOf((runtime as any).model || (opts as any).model),
+            error: traceErrorOf(err),
+            ...(streamedCall ? { streaming: true } : {}),
             messageList: state.messages,
             toolDefinitions: traceToolDefinitions,
             responseFormat: traceResponseFormat,
             responseFormatStrategy: traceResponseFormatStrategy,
+            capture: { input: sentMessages ?? wireMessages, toolDefinitions: traceToolDefinitions },
           });
           throw err;
         }
@@ -638,6 +659,9 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       ?? (response as any)?.response_metadata?.finishReason
       ?? (response as any)?.finishReason;
 
+    const facts = traceResponseFacts((runtime as any).model || (opts as any).model, response, rawUsage, streamedCall);
+    const jsonOutput = Boolean(responseFormat) && (responseFormat as any)?.response_format?.type !== "text" && (responseFormat as any)?.type !== "text";
+
     recordTraceEvent(traceSession, {
       type: "ai_call",
       label: "Assistant Response",
@@ -654,11 +678,13 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       requestBytes: promptBytes,
       responseBytes: responseBytes,
       model: modelName,
-      provider: getProviderName((runtime as any).model || (opts as any).model),
+      ...facts,
+      outputType: jsonOutput ? "json" : "text",
       messageList: messagesWithResponse,
       toolDefinitions: traceToolDefinitions,
       responseFormat: traceResponseFormat,
       responseFormatStrategy: traceResponseFormatStrategy,
+      capture: { input: sentMessages ?? wireMessages, output: response, toolDefinitions: traceToolDefinitions },
     });
     if (normalized) {
       recordUsage(state, modelName, normalized);

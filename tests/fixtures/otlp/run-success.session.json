@@ -91,7 +91,11 @@
             "content": "Looking up the order."
           }
         ]
-      }
+      },
+      "responseId": "chatcmpl-AbC123",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
     },
     {
       "sessionId": "sess_fixture_success",
@@ -117,7 +121,8 @@
         "name": "lookup_order",
         "description": "Find an order",
         "source": "local"
-      }
+      },
+      "toolCallId": "call_lookup_1"
     },
     {
       "sessionId": "sess_fixture_success",
@@ -172,7 +177,12 @@
             "content": "Your order shipped yesterday."
           }
         ]
-      }
+      },
+      "responseId": "chatcmpl-DeF456",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "stop",
+      "outputType": "text",
+      "streaming": true
     }
   ],
   "status": "success",
