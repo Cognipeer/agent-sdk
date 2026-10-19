@@ -2,6 +2,7 @@
 // If the user uses LangChain, they can still pass LC message objects; we treat them opaquely.
 import type { ZodSchema } from "zod";
 import type { ContextPilotConfig, ContextPilotCompressionStats, ResolvedContextPilotConfig } from "./smart/contextPilot/types.js";
+import type { OtlpExportOptions, OtlpExporter, OtlpExportReport, TraceParent, TraceParentInput } from "./utils/otlp/types.js";
 
 // Image and content part types for multimodal messages
 export type ImageURL =
@@ -206,11 +207,14 @@ export type TraceSinkHttpConfig = {
   headers?: Record<string, string>;
 };
 
+/**
+ * OTLP/HTTP trace export. `endpoint` is the full traces URL; leave it out to
+ * configure the exporter from the standard `OTEL_EXPORTER_OTLP_*` environment
+ * variables (see the OpenTelemetry guide).
+ */
 export type TraceSinkOtlpConfig = {
   type: "otlp";
-  endpoint: string;
-  headers?: Record<string, string>;
-};
+} & OtlpExportOptions;
 
 export type TracingMode = "batched" | "streaming";
 
@@ -245,6 +249,15 @@ export type TracingConfig = {
    * attribution/reporting; not interpreted by the SDK itself.
    */
   metadata?: Record<string, string>;
+  /**
+   * W3C trace context of the caller (a `traceparent` header value, or
+   * `{ traceparent, tracestate }`): the exported root span becomes a child of
+   * that span and joins its trace. A static value for every run of this agent;
+   * `InvokeConfig.traceParent` sets it per request and wins. An upstream
+   * `sampled=0` flag suppresses the OTLP export only (file, cognipeer, http and
+   * custom sinks still record). Invalid values are ignored with one warning.
+   */
+  parent?: TraceParentInput;
 };
 
 // Alias for backward compatibility
@@ -945,6 +958,12 @@ export type TraceMetadataSection = {
   kind: "metadata";
   label: string;
   data: Record<string, any>;
+  /**
+   * Set on the sections a caller records with `alwaysSections`: ids, status and
+   * timestamps that stay when `logData` is off and that an OTLP export carries
+   * whether or not content capture is on. Never prompt text or arguments.
+   */
+  identity?: boolean;
 };
 
 /** One tool of the menu offered to the model on a single call. */
@@ -1026,6 +1045,10 @@ export type TraceEventRecord = {
    * `pending`: a step that is waiting on someone outside the run — a tool
    * approval or a question to the user that was asked when the run paused.
    * The answer is recorded as a separate event when the run resumes.
+   * A sub-agent's span (type span, actor.role subagent) is also pending while its
+   * run waits; the segment that ends the run records it again under the SAME
+   * spanId, finished. Draw one record per spanId: the highest sequence, dropping
+   * earlier pending ones (foldSupersededSpans).
    */
   status: "success" | "error" | "skipped" | "retry" | "pending";
   durationMs?: number;
@@ -1052,10 +1075,41 @@ export type TraceEventRecord = {
   responseBytes?: number;
   model?: string;
   provider?: string;
+  // What the provider said about this response, recorded when it did. Absent
+  // means "not reported", never zero or empty.
+  /** The provider's response id (`ai_call`). */
+  responseId?: string;
+  /** The model that actually answered, which may differ from the one requested (`ai_call`). */
+  responseModel?: string;
+  /** The provider's own stop reason (`end_turn`, `STOP`, `tool_calls`), before normalisation (`ai_call`). */
+  rawFinishReason?: string;
+  /** Tokens written to the provider's prompt cache (`ai_call`, `summarization`). */
+  cacheWriteTokens?: number;
+  /**
+   * How the provider counts: whether `inputTokens` leaves the cache read/write
+   * tokens out (Anthropic, Bedrock) and whether `outputTokens` leaves the
+   * reasoning tokens out (Vertex). Exporters use it to report totals the way
+   * the OpenTelemetry GenAI conventions define them.
+   */
+  usageBasis?: { inputExcludesCache?: boolean; outputExcludesReasoning?: boolean };
+  /** True when the model call was streamed (`ai_call`). */
+  streaming?: boolean;
+  /** `json` when the call asked for structured output, else `text` (`ai_call`). */
+  outputType?: "text" | "json";
+  /** The id the PROVIDER gave this tool call (`tool_call`); absent for ids the SDK made up. */
+  toolCallId?: string;
+  /**
+   * Why a call that never ran is recorded: `blocked` (a plugin refused the model
+   * call), `short_circuit` (a plugin or cache answered), `denied` (a policy
+   * refused the tool), `skipped` (a limit or circuit breaker), `cancelled` (the
+   * caller stopped the run).
+   */
+  skipReason?: "blocked" | "short_circuit" | "denied" | "skipped" | "cancelled";
   toolDetails?: TraceToolDetails;
   toolExecutionId?: string;
   retryOf?: string;
-  error?: { message: string; stack?: string } | null;
+  /** `type` is the error's class name (`RateLimitError`) when it has one. */
+  error?: { message: string; stack?: string; type?: string } | null;
   data?: { sections: TraceDataSection[] };
   debug?: Record<string, any>;
 };
@@ -1065,6 +1119,8 @@ export type TraceErrorRecord = {
   message: string;
   stack?: string;
   type?: string;
+  /** Class name of the error behind a session-level failure. */
+  errorName?: string;
   timestamp?: string;
 };
 
@@ -1114,6 +1170,19 @@ export type TraceContinuation = {
   /** Totals so far — a continued session reports cumulative totals. */
   summary: TraceSessionSummary;
   errors: TraceErrorRecord[];
+  /**
+   * The remote parent of the root span (`TracingConfig.parent` /
+   * `InvokeConfig.traceParent`), kept so a later leg exports under the same
+   * parent without the caller passing it again. Plain data: no credentials.
+   */
+  parent?: { spanId: string; flags: number; traceState?: string };
+  /**
+   * Sub-agent spans recorded `pending` that no later record has finished, with
+   * their identity sections only. The OTLP export withholds a pending span until
+   * the run ends; if the run is abandoned instead (`closeTraceContinuation`) the
+   * closing export writes them, so the spans of the earlier legs keep a parent.
+   */
+  pendingSpans?: TraceEventRecord[];
 };
 
 export type TraceSinkSnapshot =
@@ -1160,7 +1229,7 @@ export type ResolvedTraceSink =
   | { type: "custom"; onEvent?: (event: TraceEventRecord) => void | Promise<void>; onSession?: (session: TraceSessionFile) => void | Promise<void> }
   | { type: "cognipeer"; url: string; apiKey: string }
   | { type: "http"; url: string; headers?: Record<string, string> }
-  | { type: "otlp"; endpoint: string; headers?: Record<string, string> };
+  | { type: "otlp"; endpoint: string; headers?: Record<string, string>; exporter: OtlpExporter };
 
 export type ResolvedTraceConfig = {
   enabled: boolean;
@@ -1192,6 +1261,11 @@ export type TraceSessionRuntime = {
   /** 1-based part number; 1 for a session that starts with this invoke. */
   part?: number;
   /**
+   * Pending sub-agent spans earlier parts recorded (see `TraceContinuation.pendingSpans`).
+   * Not in `events`: only the OTLP export reads them.
+   */
+  carriedSpans?: TraceEventRecord[];
+  /**
    * Set once the session has been handed to its sink. A closed session takes no
    * more events: they would never be delivered (and, on a session continued by
    * the next invoke, would collide with its sequence numbers).
@@ -1199,6 +1273,23 @@ export type TraceSessionRuntime = {
   closed?: boolean;
   fileBaseDir?: string;
   fileSessionDir?: string;
+  /**
+   * Exporters contributed by plugins (`AgentPlugin.traceExporters`), run next to
+   * the `otlp` sink when the session is finalized.
+   */
+  exporters?: OtlpExporter[];
+  /** What each exporter did when the session was finalized, in run order. */
+  exportReports?: OtlpExportReport[];
+  /** Where the trace came from, when this run is part of a larger trace. */
+  parent?: TraceParent;
+  /**
+   * True when some OTLP exporter asked for prompt/response content. Only then
+   * does `recordTraceEvent` build the content it holds on the record's
+   * non-enumerable side channel. Runtime only.
+   */
+  captureContent?: boolean;
+  /** What `recordTraceEvent` keeps of captured content: the widest message cap among the exporters that want it, and their string cap with headroom. */
+  captureLimits?: { maxStringChars: number; maxMessages: number };
 };
 
 // Handoff descriptor returned from childAgent.asHandoff(...)
@@ -1758,6 +1849,13 @@ export type InvokeConfig = RunnableConfig & {
   onStateChange?: (state: SmartState) => boolean;
   // Optional reason stored alongside checkpoint metadata.
   checkpointReason?: string;
+  /**
+   * W3C trace context of the request that started this run (a `traceparent`
+   * header value, or `{ traceparent, tracestate }`). The exported root span is
+   * made a child of it. Wins over `TracingConfig.parent`; a run that continues a
+   * paused trace keeps the parent it started with.
+   */
+  traceParent?: TraceParentInput;
   /**
    * Keys of `skills` to open deterministically at the start of this invoke,
    * before the first model call. Each one is opened through the real

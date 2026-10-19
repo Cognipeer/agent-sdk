@@ -1,6 +1,6 @@
 {
   "name": "@cognipeer/agent-sdk",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Composable lightweight smart agent core (no LangGraph) with pluggable model adapters.",
   "license": "MIT",
   "type": "module",
@@ -124,6 +124,7 @@
     "@vitest/ui": "^4.0.18",
     "eslint": "^9.9.0",
     "openai": "^6.17.0",
+    "protobufjs": "8.8.0",
     "tsup": "^8.1.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",

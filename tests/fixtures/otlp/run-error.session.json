@@ -1,0 +1,230 @@
+{
+  "sessionId": "sess_fixture_error",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:00:04.100Z",
+  "durationMs": 4100,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 3200,
+    "totalInputTokens": 90,
+    "totalOutputTokens": 20,
+    "totalCachedInputTokens": 0,
+    "totalBytesIn": 0,
+    "totalBytesOut": 0,
+    "eventCounts": {
+      "agent_iteration": 1,
+      "ai_call": 3,
+      "tool_call": 3
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0001_fx1",
+      "sequence": 1,
+      "type": "agent_iteration",
+      "label": "Iteration 1 #1",
+      "spanId": "a000000000000006",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0002_fx2",
+      "sequence": 2,
+      "type": "ai_call",
+      "label": "Assistant Response #2",
+      "spanId": "a000000000000007",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:02.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 1800,
+      "inputTokens": 90,
+      "outputTokens": 20,
+      "totalTokens": 110,
+      "cachedInputTokens": 0,
+      "finishReason": "tool_calls",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "responseId": "chatcmpl-GhI789",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0003_fx3",
+      "sequence": 3,
+      "type": "tool_call",
+      "label": "Tool Error - lookup_order #3",
+      "spanId": "a000000000000008",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:02.600Z",
+      "actor": {
+        "scope": "tool",
+        "name": "lookup_order",
+        "role": "tool"
+      },
+      "status": "error",
+      "durationMs": 400,
+      "error": {
+        "message": "Cannot read properties of undefined (reading 'id')",
+        "stack": "TypeError: Cannot read properties of undefined (reading 'id')\n    at lookup (tools.js:4:9)",
+        "type": "TypeError"
+      },
+      "toolExecutionId": "call_lookup_1"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0004_fx4",
+      "sequence": 4,
+      "type": "tool_call",
+      "label": "Tool Denied - delete_user #4",
+      "spanId": "a000000000000009",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:02.700Z",
+      "actor": {
+        "scope": "tool",
+        "name": "delete_user",
+        "role": "tool"
+      },
+      "status": "skipped",
+      "toolExecutionId": "call_delete_1",
+      "skipReason": "denied"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0005_fx5",
+      "sequence": 5,
+      "type": "tool_call",
+      "label": "Tool Execution - get_prices #5",
+      "spanId": "a00000000000000a",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:02.800Z",
+      "actor": {
+        "scope": "tool",
+        "name": "get_prices",
+        "role": "tool"
+      },
+      "status": "success",
+      "durationMs": 0,
+      "toolExecutionId": "call_prices_1",
+      "debug": {
+        "fromCache": true,
+        "shortCircuitSource": "cache"
+      },
+      "skipReason": "short_circuit"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0006_fx6",
+      "sequence": 6,
+      "type": "ai_call",
+      "label": "Assistant Blocked (plugin) #6",
+      "spanId": "a00000000000000b",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:02.900Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "skipped",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "skipReason": "blocked"
+    },
+    {
+      "sessionId": "sess_fixture_error",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0007_fx7",
+      "sequence": 7,
+      "type": "ai_call",
+      "label": "Assistant Error #7",
+      "spanId": "a00000000000000c",
+      "parentSpanId": "a000000000000006",
+      "timestamp": "2026-10-19T12:00:04.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "error",
+      "durationMs": 1000,
+      "model": "gpt-4o",
+      "provider": "openai",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "cachedInputTokens": 0,
+      "error": {
+        "message": "429 Too Many Requests",
+        "stack": "RateLimitError: 429 Too Many Requests\n    at callModel (agent.js:10:5)",
+        "type": "RateLimitError"
+      }
+    }
+  ],
+  "status": "error",
+  "errors": [
+    {
+      "eventId": "evt_0003_fx3",
+      "message": "Cannot read properties of undefined (reading 'id')",
+      "stack": "TypeError: Cannot read properties of undefined (reading 'id')\n    at lookup (tools.js:4:9)",
+      "type": "tool_call",
+      "timestamp": "2026-10-19T12:00:02.600Z"
+    },
+    {
+      "eventId": "evt_0007_fx7",
+      "message": "429 Too Many Requests",
+      "stack": "RateLimitError: 429 Too Many Requests\n    at callModel (agent.js:10:5)",
+      "type": "ai_call",
+      "timestamp": "2026-10-19T12:00:04.000Z"
+    },
+    {
+      "eventId": "session",
+      "message": "429 Too Many Requests",
+      "stack": "RateLimitError: 429 Too Many Requests\n    at callModel (agent.js:10:5)",
+      "type": "session",
+      "timestamp": "2026-10-19T12:00:04.100Z"
+    }
+  ]
+}

@@ -59,8 +59,23 @@ export type {
   ToolInputDigestResult,
   ToolRetentionDeclarations,
 } from "./smart/toolResponses.js";
-export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, buildToolDefinitionsSection, buildResponseFormatSection, readTraceContinuation, traceContinuationOf, isTraceSessionOpen, recordOrDeferTraceEvent, replayDeferredTraceEvents, traceSectionsFromMessages } from "./utils/tracing.js";
+export { fileSink, customSink, cognipeerSink, httpSink, otlpSink, startStreamingSession, generateTraceId, generateSpanId, traceSessionToOtlp, closeTraceContinuation, foldSupersededSpans, buildToolDefinitionsSection, buildResponseFormatSection, readTraceContinuation, traceContinuationOf, isTraceSessionOpen, recordOrDeferTraceEvent, replayDeferredTraceEvents, traceSectionsFromMessages } from "./utils/tracing.js";
 export type { DeferredTraceEvent } from "./utils/tracing.js";
+export { createOtlpExporter, parseTraceparent, formatTraceparent, traceparentOf, GENAI_SEMCONV_COMMIT } from "./utils/otlp/index.js";
+export type {
+  OtlpContentField,
+  OtlpContentOptions,
+  OtlpContentRedactInfo,
+  OtlpExportOptions,
+  OtlpExporter,
+  OtlpExportResult,
+  OtlpExportTraceServiceRequest,
+  OtlpProtocol,
+  OtlpRetryOptions,
+  OtlpSemconv,
+  TraceParent,
+  TraceParentInput,
+} from "./utils/otlp/index.js";
 // Native LLM Providers (no LangChain dependency)
 export {
   createProvider,

@@ -1,7 +1,8 @@
 import type { Message, SmartAgentOptions, SmartState, ToolInterface } from "../types.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
-import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, getProviderName } from "../utils/tracing.js";
+import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, getModelName, traceErrorOf } from "../utils/tracing.js";
+import { providerHintOf, traceResponseFacts } from "../utils/traceFacts.js";
 
 export function createAgentNode(opts: SmartAgentOptions) {
   return async (state: SmartState): Promise<Partial<SmartState>> => {
@@ -64,9 +65,10 @@ export function createAgentNode(opts: SmartAgentOptions) {
         durationMs,
         requestBytes: promptBytes,
         model: getModelName((runtime as any).model || (opts as any).model),
-        provider: getProviderName((runtime as any).model || (opts as any).model),
-        error: { message: err?.message || String(err), stack: err?.stack },
+        provider: providerHintOf((runtime as any).model || (opts as any).model),
+        error: traceErrorOf(err),
         messageList: promptMessages,
+        capture: { input: promptMessages },
       });
       throw err;
     }
@@ -85,7 +87,7 @@ export function createAgentNode(opts: SmartAgentOptions) {
       || (response as any)?.response_metadata?.usageMetadata;
     const normalized = normalizeUsage(rawUsage);
     const modelName = getModelName((runtime as any).model || (opts as any).model) || "unknown_model";
-    const providerName = getProviderName((runtime as any).model || (opts as any).model);
+    const facts = traceResponseFacts((runtime as any).model || (opts as any).model, response, rawUsage);
     const durationMs = Date.now() - start;
     const shouldLogResponse = !!traceSession && traceSession.resolvedConfig.logData;
     const responsePayload = shouldLogResponse ? sanitizeTracePayload(response) : undefined;
@@ -103,8 +105,9 @@ export function createAgentNode(opts: SmartAgentOptions) {
       requestBytes: promptBytes,
       responseBytes,
       model: modelName,
-      provider: providerName,
+      ...facts,
       messageList: messagesWithResponse,
+      capture: { input: promptMessages, output: response },
     });
     if (normalized) {
       recordUsage(state, modelName, normalized);

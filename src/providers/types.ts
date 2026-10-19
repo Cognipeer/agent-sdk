@@ -53,6 +53,8 @@ export type ToolCall = {
   arguments: string; // JSON string
   /** Gemini `thoughtSignature` attached to a functionCall part; must be echoed back on the next turn. */
   thoughtSignature?: string;
+  /** True when `id` was made up by the adapter (the provider gave none), not supplied by the provider. */
+  idSynthesized?: boolean;
   /** Position of the call within the assistant turn. Set on streamed deltas so a consumer can frame them (OpenAI `tool_calls[].index`). */
   index?: number;
 };

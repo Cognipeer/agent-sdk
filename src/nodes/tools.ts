@@ -12,7 +12,7 @@ import type {
 } from "../types.js";
 import { nanoid } from "nanoid";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, generateSpanId } from "../utils/tracing.js";
+import { recordTraceEvent, sanitizeTracePayload, estimatePayloadBytes, generateSpanId, traceErrorOf } from "../utils/tracing.js";
 import { recordApprovalRequested, recordClientToolRequested } from "../utils/traceDecisions.js";
 import { extractToolItems, summarizeToolOutput } from "../utils/traceSections.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -73,7 +73,9 @@ function countSuccessfulToolExecutions(toolHistory: SmartState["toolHistory"], t
   return toolHistory.filter((entry) => entry?.toolName === toolName && (entry?.status === "success" || entry?.status === "handoff")).length;
 }
 
-function normalizeToolCall(call: any): { id?: string; name: string; args: any } | null {
+type NormalizedToolCall = { id?: string; name: string; args: any; idSynthesized?: boolean };
+
+function normalizeToolCall(call: any): NormalizedToolCall | null {
   if (!call || typeof call !== "object") return null;
 
   const name = call.name ?? call.tool ?? call.function?.name ?? call.function_call?.name;
@@ -83,8 +85,17 @@ function normalizeToolCall(call: any): { id?: string; name: string; args: any } 
     id: call.id,
     name,
     args: call.args ?? call.arguments ?? call.input ?? call.function?.arguments ?? call.function_call?.arguments,
+    ...(call.idSynthesized === true ? { idSynthesized: true } : {}),
   };
 }
+
+/**
+ * The id the PROVIDER gave a tool call, for the trace. A call with no id (the
+ * transcript then uses `${name}_${n}`) or one an adapter made up has none; the
+ * marker travels on the persisted tool call, so this holds after a resume too.
+ */
+const providerToolCallId = (tc: { id?: string; idSynthesized?: boolean }): string | undefined =>
+  tc.id && !tc.idSynthesized ? tc.id : undefined;
 
 function normalizeToolSchema(tool: ToolInterface, toolName: string): any {
   const schema = (tool as any).schema;
@@ -293,9 +304,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     // sub-agent human-input pause it skips already-completed sibling tool_calls
     // (which have tool results) and re-runs only the still-pending delegating tool.
     let toolCount = state.toolCallCount || 0;
-    const toolCalls: Array<{ id?: string; name: string; args: any }> = selectPendingToolCalls(state.messages)
+    const toolCalls: NormalizedToolCall[] = selectPendingToolCalls(state.messages)
       .map((toolCall: any) => normalizeToolCall(toolCall))
-      .filter((toolCall: { id?: string; name: string; args: any } | null): toolCall is { id?: string; name: string; args: any } => toolCall !== null);
+      .filter((toolCall: NormalizedToolCall | null): toolCall is NormalizedToolCall => toolCall !== null);
     const toolHistory = state.toolHistory || [];
     const toolHistoryArchived = state.toolHistoryArchived || [];
     const remaining = Math.max(0, limits.maxToolCalls - toolCount);
@@ -334,7 +345,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
     // keep `appended` as the canonical accumulator but slots let parallel
     // execution preserve the deterministic planned order.
     const runOne = async (
-      tc: { id?: string; name: string; args: any },
+      tc: NormalizedToolCall,
       slot: Message[] = appended,
     ): Promise<ToolExecutionResult> => {
       const push = (msg: Message) => slot.push(msg);
@@ -422,6 +433,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           label: `Tool Denied - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
           status: "skipped",
+          skipReason: "denied",
+          toolCallId: providerToolCallId(tc),
           toolDetails,
           toolExecutionId: toolCallId,
           sections: buildToolTraceSections({
@@ -514,6 +527,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             label: `Tool Skipped - ${toolName}`,
             actor: { scope: "tool", name: toolName, role: "tool" },
             status: "skipped",
+            skipReason: "skipped",
+            toolCallId: providerToolCallId(tc),
             toolDetails,
             toolExecutionId: tc.id,
             sections: buildToolTraceSections({
@@ -679,10 +694,13 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           label: `Tool Error - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
           status: "error",
+          // The tool was not run: an open breaker refused the call.
+          skipReason: "skipped",
+          toolCallId: providerToolCallId(tc),
           requestBytes: inputBytes,
           toolDetails,
           toolExecutionId: toolCallId,
-          error: { message: breakerMsg },
+          error: { message: breakerMsg, type: "circuit_breaker_open" },
           sections: buildToolTraceSections({
             args,
             executionId: toolCallId,
@@ -752,6 +770,9 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             type: "tool_call",
             label: shortCircuitSource === "plugin" ? `Tool Short-Circuited - ${toolName}` : `Tool Execution - ${toolName}`,
             actor: { scope: "tool", name: toolName, role: "tool" },
+            // Answered from the cache or by a plugin: nothing executed.
+            skipReason: "short_circuit",
+            toolCallId: providerToolCallId(tc),
             durationMs: 0,
             requestBytes: inputBytes,
             responseBytes: outputBytes,
@@ -791,7 +812,15 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         // Allocated up front so a tool that records spans of its own (a sub-agent)
         // can parent them to the `tool_call` event recorded once the tool returns.
         traceSpanId = traceSession ? generateSpanId() : undefined;
-        const callOptions = { cancellationToken, signal: abortSignal, toolCallId, ...(traceSpanId ? { traceSpanId } : {}) };
+        const callOptions = {
+          cancellationToken,
+          signal: abortSignal,
+          toolCallId,
+          ...(traceSpanId ? { traceSpanId } : {}),
+          // So the tool can propagate the trace to what it calls (traceparentOf).
+          ...(traceSpanId && traceSession?.traceId ? { traceId: traceSession.traceId } : {}),
+          ...(traceSpanId && traceSession?.parent ? { traceFlags: traceSession.parent.flags } : {}),
+        };
         const invokeOnce = async (): Promise<any> => {
           if (typeof anyTool.func === "function") return anyTool.func(args, callOptions);
           if (typeof anyTool.invoke === "function") return anyTool.invoke(args, callOptions);
@@ -1048,7 +1077,10 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           spanId: traceSpanId,
           label: `Tool Execution - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
-          ...(reportedFailure ? { status: "error" as const, error: { message: reportedFailure } } : {}),
+          ...(reportedFailure ? { status: "error" as const, error: { message: reportedFailure, type: "tool_error" } } : {}),
+          toolCallId: providerToolCallId(tc),
+          // `output` is already past postToolUse, so a redaction plugin has applied.
+          capture: reportedFailure ? { toolArguments: args } : { toolArguments: args, toolResult: output, hasToolResult: true },
           durationMs,
           requestBytes: inputBytes,
           responseBytes: outputBytes,
@@ -1122,12 +1154,14 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           label: `Tool Error - ${toolName}`,
           actor: { scope: "tool", name: toolName, role: "tool" },
           status: "error",
+          toolCallId: providerToolCallId(tc),
+          capture: { toolArguments: args },
           durationMs,
           requestBytes: inputBytes,
           responseBytes: traceSession?.resolvedConfig.logData ? estimatePayloadBytes(errorOutput) : undefined,
           toolDetails,
           toolExecutionId: executionId,
-          error: { message, stack: host?.has("postToolUse") ? undefined : error?.stack },
+          error: { ...traceErrorOf(error), message, stack: host?.has("postToolUse") ? undefined : error?.stack },
           sections: buildToolTraceSections({
             args: sanitizedArgs,
             durationMs,
@@ -1278,6 +1312,8 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         label: `Tool Skipped - ${tc.name}`,
         actor: { scope: "tool", name: tc.name, role: "tool" },
         status: "skipped",
+        skipReason: "skipped",
+        toolCallId: providerToolCallId(tc),
         toolDetails,
         toolExecutionId: tc.id,
         sections: buildToolTraceSections({

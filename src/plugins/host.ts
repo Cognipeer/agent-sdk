@@ -36,6 +36,7 @@ import type {
 } from "./types.js";
 import type { ConversationGuardrail, SmartAgentEvent, SmartState, ToolInterface } from "../types.js";
 import { collectAttachments, replaceTextContent, textFromContent } from "../utils/content.js";
+import type { OtlpExporter } from "../utils/otlp/types.js";
 
 const DEFAULT_PRIORITY = 100;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -318,6 +319,7 @@ export function createPluginHost(
   let contributions: PluginContributions = {
     tools: [],
     toolDescriptions: {},
+    traceExporters: [],
     guardrails: [],
     applySystemPrompt: (base: string) => base,
     applyModelWrappers: (model: unknown) => model,
@@ -331,6 +333,7 @@ export function createPluginHost(
   async function runSetup(setupInput: Parameters<PluginHost["setup"]>[0]): Promise<void> {
     const tools: ToolInterface[] = [];
     const toolDescriptions: Record<string, string | ((d: string) => string)> = {};
+    const traceExporters: OtlpExporter[] = [];
     const guardrails: ConversationGuardrail[] = [];
     const promptSteps: Array<(current: string, ctx: PluginSetupContext) => string> = [];
     const modelWrappers: Array<{ plugin: string; wrap: (model: unknown, ctx: PluginSetupContext) => unknown }> = [];
@@ -379,6 +382,7 @@ export function createPluginHost(
         );
       }
       if (plugin.toolDescriptions) Object.assign(toolDescriptions, plugin.toolDescriptions);
+      if (plugin.traceExporters?.length) traceExporters.push(...plugin.traceExporters.filter(Boolean));
       if (plugin.guardrails?.length) guardrails.push(...plugin.guardrails);
       if (typeof plugin.wrapModel === "function") {
         modelWrappers.push({ plugin: plugin.name, wrap: plugin.wrapModel });
@@ -396,6 +400,7 @@ export function createPluginHost(
     contributions = {
       tools,
       toolDescriptions,
+      traceExporters,
       guardrails,
       applySystemPrompt: (base: string) =>
         promptSteps.reduce((current, step) => {

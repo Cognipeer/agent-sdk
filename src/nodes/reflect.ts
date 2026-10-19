@@ -15,7 +15,7 @@ import type { SmartState, SmartAgentOptions, SmartAgentEvent, ReflectionRecord, 
 import type { ResolvedReflectionConfig } from "../smart/reasoning.js";
 import { randomUUID } from "node:crypto";
 import { normalizeUsage } from "../utils/usage.js";
-import { recordTraceEvent } from "../utils/tracing.js";
+import { recordTraceEvent, traceErrorOf } from "../utils/tracing.js";
 
 const REFLECTION_SYSTEM_NAME = "agent_reflection";
 const REFLECTION_ASK_NAME = "agent_reflection_ask";
@@ -163,7 +163,7 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
         label: "Reflection error",
         actor: { scope: "agent", name: opts.name || "agent", role: "reflection" },
         status: "error",
-        error: { message: err?.message || String(err) },
+        error: traceErrorOf(err),
       });
       return {};
     }

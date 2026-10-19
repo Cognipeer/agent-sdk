@@ -1,0 +1,190 @@
+{
+  "sessionId": "sess_fixture_success",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:00:09.000Z",
+  "durationMs": 9000,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 6500,
+    "totalInputTokens": 320,
+    "totalOutputTokens": 90,
+    "totalCachedInputTokens": 40,
+    "totalBytesIn": 6184,
+    "totalBytesOut": 1632,
+    "eventCounts": {
+      "agent_iteration": 2,
+      "ai_call": 2,
+      "tool_call": 1
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_success",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0001_fx1",
+      "sequence": 1,
+      "type": "agent_iteration",
+      "label": "Iteration 1 #1",
+      "spanId": "a000000000000001",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_success",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0002_fx2",
+      "sequence": 2,
+      "type": "ai_call",
+      "label": "Assistant Response #2",
+      "spanId": "a000000000000002",
+      "parentSpanId": "a000000000000001",
+      "timestamp": "2026-10-19T12:00:03.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 2000,
+      "inputTokens": 120,
+      "outputTokens": 30,
+      "totalTokens": 150,
+      "cachedInputTokens": 40,
+      "reasoningTokens": 5,
+      "finishReason": "tool_calls",
+      "requestBytes": 2048,
+      "responseBytes": 512,
+      "model": "gpt-4o",
+      "provider": "openai",
+      "data": {
+        "sections": [
+          {
+            "kind": "message",
+            "label": "Assistant",
+            "role": "assistant",
+            "content": "Looking up the order."
+          }
+        ]
+      },
+      "responseId": "chatcmpl-AbC123",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
+    },
+    {
+      "sessionId": "sess_fixture_success",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0003_fx3",
+      "sequence": 3,
+      "type": "tool_call",
+      "label": "Tool Execution - lookup_order #3",
+      "spanId": "a000000000000003",
+      "parentSpanId": "a000000000000001",
+      "timestamp": "2026-10-19T12:00:04.500Z",
+      "actor": {
+        "scope": "tool",
+        "name": "lookup_order",
+        "role": "tool"
+      },
+      "status": "success",
+      "durationMs": 1500,
+      "requestBytes": 40,
+      "responseBytes": 220,
+      "toolExecutionId": "call_lookup_1",
+      "toolDetails": {
+        "name": "lookup_order",
+        "description": "Find an order",
+        "source": "local"
+      },
+      "toolCallId": "call_lookup_1"
+    },
+    {
+      "sessionId": "sess_fixture_success",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0004_fx4",
+      "sequence": 4,
+      "type": "agent_iteration",
+      "label": "Iteration 2 #4",
+      "spanId": "a000000000000004",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:05.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_success",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0005_fx5",
+      "sequence": 5,
+      "type": "ai_call",
+      "label": "Assistant Response #5",
+      "spanId": "a000000000000005",
+      "parentSpanId": "a000000000000004",
+      "timestamp": "2026-10-19T12:00:08.500Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 3000,
+      "inputTokens": 200,
+      "outputTokens": 60,
+      "totalTokens": 260,
+      "cachedInputTokens": 0,
+      "finishReason": "stop",
+      "requestBytes": 4096,
+      "responseBytes": 900,
+      "model": "gpt-4o",
+      "provider": "openai",
+      "data": {
+        "sections": [
+          {
+            "kind": "message",
+            "label": "Assistant",
+            "role": "assistant",
+            "content": "Your order shipped yesterday."
+          }
+        ]
+      },
+      "responseId": "chatcmpl-DeF456",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "stop",
+      "outputType": "text",
+      "streaming": true
+    }
+  ],
+  "status": "success",
+  "errors": []
+}

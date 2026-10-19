@@ -34,6 +34,7 @@ import type {
 } from "../types.js";
 import type { Skill } from "../smart/skills/types.js";
 import type { MediaAttachment } from "../utils/content.js";
+import type { OtlpExporter } from "../utils/otlp/types.js";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -540,6 +541,13 @@ export type AgentPlugin = {
   tools?: ToolInterface[] | ((ctx: PluginSetupContext) => MaybePromise<ToolInterface[]>);
   systemPrompt?: string | ((current: string, ctx: PluginSetupContext) => string);
   toolDescriptions?: Record<string, string | ((defaultDescription: string) => string)>;
+  /**
+   * OTLP exporters the SDK runs when a trace session is finalized, next to the
+   * `otlp` sink. This is how a plugin ships traces to a collector without a
+   * hook of its own: the SDK knows which leg ends the run, the plugin does not.
+   * Requires `tracing: { enabled: true }`.
+   */
+  traceExporters?: OtlpExporter[];
   wrapModel?: (model: unknown, ctx: PluginSetupContext) => unknown;
 
   // ── Slots ──────────────────────────────────────────────────────────────────
@@ -556,6 +564,8 @@ export type AgentPlugin = {
 export type PluginContributions = {
   tools: ToolInterface[];
   toolDescriptions: Record<string, string | ((defaultDescription: string) => string)>;
+  /** Trace exporters contributed by plugins, in plugin priority order. */
+  traceExporters: OtlpExporter[];
   guardrails: ConversationGuardrail[];
   /** Applied in priority order, before any legacy `promptHooks.transformSystemPrompt`. */
   applySystemPrompt: (base: string) => string;

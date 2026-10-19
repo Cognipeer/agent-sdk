@@ -13,7 +13,8 @@ import type {
 import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
 import { contentPartToText } from "../utils/content.js";
 import { isCompactedToolContent, isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
-import { getModelName, getProviderName, recordOrDeferTraceEvent, sanitizeTracePayload, traceSectionsFromMessages } from "../utils/tracing.js";
+import { getModelName, recordOrDeferTraceEvent, sanitizeTracePayload, traceErrorOf, traceSectionsFromMessages } from "../utils/tracing.js";
+import { providerHintOf, traceResponseFacts, type TraceResponseFacts } from "../utils/traceFacts.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
 import { renderStructuredSummary } from "../smart/contextPolicy.js";
@@ -734,7 +735,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     const inputTokensEstimate = countApproxTokens(summaryPrompt.map(m => m.content).join("\n"));
 
     const modelName = getModelName(model);
-    const providerName = getProviderName(model);
+    const providerName = providerHintOf(model);
     const tracingEnabled = Boolean(opts.tracing?.enabled);
     // ctx carrying trace events held for the next leg (see recordOrDeferTraceEvent).
     let ctxWithDeferredTrace: Record<string, any> | undefined;
@@ -771,7 +772,8 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     let totalTokensActual: number | undefined;
     let reasoningTokensActual: number | undefined;
     let fallback = false;
-    let summarizerError: { message: string; stack?: string } | undefined;
+    let summarizerError: { message: string; stack?: string; type?: string } | undefined;
+    let responseFacts: TraceResponseFacts | undefined;
 
     const directivesSection = (): TraceDataSection => ({
         kind: "metadata",
@@ -837,6 +839,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
           || (response as any)?.response_metadata?.tokenUsage
           || (response as any)?.response_metadata?.usage;
         const normalized = normalizeUsage(rawUsage);
+        responseFacts = traceResponseFacts(model, response, rawUsage);
         if (normalized) {
           inputTokensActual = normalized.prompt_tokens;
           outputTokensActual = normalized.completion_tokens;
@@ -885,7 +888,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         
         // Traced once, below, with the rest of the pass: as an error event
         // carrying the failure and the summary the fallback put in its place.
-        summarizerError = { message: err?.message || String(err), stack: err?.stack };
+        summarizerError = traceErrorOf(err);
                 // Continue with local fallback summary to avoid losing the compaction step.
     }
 
@@ -1121,9 +1124,15 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         cachedInputTokens: cachedInputTokens,
         totalTokens: totalTokensActual,
         ...(reasoningTokensActual !== undefined ? { reasoningTokens: reasoningTokensActual } : {}),
+        // Which counting rules the usage above follows (only when the provider reported it).
+        ...(inputTokensActual !== undefined && responseFacts?.usageBasis ? { usageBasis: responseFacts.usageBasis } : {}),
+        ...(inputTokensActual !== undefined && responseFacts?.cacheWriteTokens ? { cacheWriteTokens: responseFacts.cacheWriteTokens } : {}),
       }),
+      ...(responseFacts?.responseId ? { responseId: responseFacts.responseId } : {}),
+      ...(responseFacts?.responseModel ? { responseModel: responseFacts.responseModel } : {}),
+      ...(responseFacts?.rawFinishReason ? { rawFinishReason: responseFacts.rawFinishReason } : {}),
       ...(modelName ? { model: modelName } : {}),
-      ...(providerName ? { provider: providerName } : {}),
+      ...((responseFacts?.provider ?? providerName) ? { provider: responseFacts?.provider ?? providerName } : {}),
       ...(summarizerError ? { error: summarizerError } : {}),
       sections: [
         ...promptAndOutputSections(),

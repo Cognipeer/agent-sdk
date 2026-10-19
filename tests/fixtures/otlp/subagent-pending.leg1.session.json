@@ -1,0 +1,173 @@
+{
+  "sessionId": "sess_fixture_subagent",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:00:04.300Z",
+  "durationMs": 4300,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 3600,
+    "totalInputTokens": 160,
+    "totalOutputTokens": 40,
+    "totalCachedInputTokens": 0,
+    "totalBytesIn": 0,
+    "totalBytesOut": 0,
+    "eventCounts": {
+      "agent_iteration": 2,
+      "ai_call": 2,
+      "tool_approval": 1,
+      "span": 1
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0001_fx1",
+      "sequence": 1,
+      "type": "agent_iteration",
+      "label": "Iteration 1 #1",
+      "spanId": "a000000000000014",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0002_fx2",
+      "sequence": 2,
+      "type": "ai_call",
+      "label": "Assistant Response #2",
+      "spanId": "a000000000000015",
+      "parentSpanId": "a000000000000014",
+      "timestamp": "2026-10-19T12:00:02.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 1800,
+      "inputTokens": 100,
+      "outputTokens": 25,
+      "totalTokens": 125,
+      "cachedInputTokens": 0,
+      "finishReason": "tool_calls",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "responseId": "chatcmpl-su002",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0003_fx3",
+      "sequence": 3,
+      "type": "agent_iteration",
+      "label": "Iteration 1 #3",
+      "spanId": "a000000000000017",
+      "parentSpanId": "5555555555555555",
+      "timestamp": "2026-10-19T12:00:02.100Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0004_fx4",
+      "sequence": 4,
+      "type": "ai_call",
+      "label": "Assistant Response #4",
+      "spanId": "a000000000000018",
+      "parentSpanId": "a000000000000017",
+      "timestamp": "2026-10-19T12:00:04.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "assistant"
+      },
+      "status": "success",
+      "durationMs": 1800,
+      "inputTokens": 60,
+      "outputTokens": 15,
+      "totalTokens": 75,
+      "cachedInputTokens": 0,
+      "finishReason": "tool_calls",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "responseId": "chatcmpl-su004",
+      "responseModel": "gpt-4o-mini-2024-07-18",
+      "rawFinishReason": "tool_calls",
+      "outputType": "text"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0005_fx5",
+      "sequence": 5,
+      "type": "tool_approval",
+      "label": "Tool approval - web_search #5",
+      "spanId": "a000000000000019",
+      "parentSpanId": "a000000000000017",
+      "timestamp": "2026-10-19T12:00:04.100Z",
+      "actor": {
+        "scope": "agent",
+        "name": "web_search",
+        "role": "approval"
+      },
+      "status": "pending"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0006_fx6",
+      "sequence": 6,
+      "type": "span",
+      "label": "Sub-agent researcher #6",
+      "spanId": "5555555555555555",
+      "parentSpanId": "a000000000000016",
+      "timestamp": "2026-10-19T12:00:04.200Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "subagent"
+      },
+      "status": "pending",
+      "durationMs": 2100,
+      "countDuration": false
+    }
+  ],
+  "status": "paused",
+  "errors": []
+}

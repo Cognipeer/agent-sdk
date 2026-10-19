@@ -18,6 +18,18 @@ export type ToolCallContext = {
    * nest under it. Absent when the run is not traced.
    */
   traceSpanId?: string;
+  /**
+   * Trace id of the run this call belongs to. With `traceSpanId` it is what a
+   * downstream call (an HTTP request, an MCP `_meta`) needs to join the trace:
+   * `traceparentOf(ctx)` builds the `traceparent` header. Absent when the run is
+   * not traced.
+   */
+  traceId?: string;
+  /**
+   * The W3C trace-flags byte of an incoming `traceparent`, when the run has one;
+   * `traceparentOf` passes it on unchanged. Absent means sampled (`01`).
+   */
+  traceFlags?: number;
 };
 
 export type SmartToolFn = (args: any, context?: ToolCallContext) => Promise<any> | any;

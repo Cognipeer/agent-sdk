@@ -338,8 +338,32 @@ type TracingConfig = {
   threadId?: string;
   logData?: boolean;
   sink?: TraceSinkConfig;
+  metadata?: Record<string, string>;
+  /** W3C parent of the exported root span: a `traceparent` value or `{ traceparent, tracestate }`. */
+  parent?: string | { traceparent: string; tracestate?: string };
 }
 ```
+
+`InvokeConfig.traceParent` sets the same per request and wins.
+
+The `otlp` sink takes `OtlpExportOptions`:
+
+```ts
+type OtlpExportOptions = {
+  endpoint?: string;                       // omit to use OTEL_EXPORTER_OTLP_*
+  headers?: Record<string, string>;
+  protocol?: "http/json" | "http/protobuf";
+  compression?: "gzip" | "none";
+  timeoutMs?: number;                      // per attempt, default 10000
+  retry?: false | { maxAttempts?: number; initialDelayMs?: number; maxDelayMs?: number; maxElapsedMs?: number };
+  semconv?: "cognipeer" | "gen_ai" | "both"; // default "both"
+  serviceName?: string;
+  resourceAttributes?: Record<string, string>;
+  content?: boolean | OtlpContentOptions;  // prompt/response capture, off by default
+}
+```
+
+New exports: `createOtlpExporter`, `closeTraceContinuation`, `parseTraceparent`, `formatTraceparent`, `traceparentOf`, `GENAI_SEMCONV_COMMIT`. See the [OpenTelemetry guide](/guide/opentelemetry).
 
 Supported sink families:
 

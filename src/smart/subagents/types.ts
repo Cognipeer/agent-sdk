@@ -175,6 +175,16 @@ export type SubagentPendingRecord = {
   spawnId?: string;
   /** Iterations the child had opened when it paused; the resumed run numbers on from there. */
   iterations?: number;
+  /**
+   * The run's agent span id in the trace. Every segment of the run (the first,
+   * and each resume) records under this one id, so the trace shows one group.
+   * Absent on a record written by 0.17.0: its resume gets a fresh id.
+   */
+  agentSpanId?: string;
+  /** Epoch ms the run's first segment started; the span reports the run from here. */
+  startedAt?: number;
+  /** Segments run so far: 1 once it has paused for the first time. */
+  segments?: number;
 };
 
 export type SubagentToolNames = {

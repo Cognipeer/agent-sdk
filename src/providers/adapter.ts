@@ -17,6 +17,7 @@ import type {
 } from "./types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { linkAbortSignal } from "../utils/abort.js";
+import { attachWireInfo } from "./wireInfo.js";
 
 export type NativeModelOptions = {
   /** Override the model ID per adapter instance */
@@ -114,7 +115,12 @@ export function fromNativeProvider(
         if (link.signal) request.signal = link.signal;
         request = await applyTransform(request);
         const response = await provider.complete(request);
-        return toBaseChatMessage(response);
+        return attachWireInfo(toBaseChatMessage(response), {
+          provider: provider.providerName,
+          responseId: response.id,
+          responseModel: response.model,
+          rawFinishReason: response.rawFinishReason,
+        });
       } finally {
         link.dispose();
       }
@@ -138,6 +144,8 @@ export function fromNativeProvider(
         let reasoningText = "";
         let finishReason: string | undefined;
         let responseModel: string | undefined;
+        let responseId: string | undefined;
+        let rawFinishReason: string | undefined;
         const toolCallBuffers = new Map<string, ToolCall>();
 
         for await (const chunk of provider.completeStream(request)) {
@@ -148,6 +156,8 @@ export function fromNativeProvider(
           }
 
           if (chunk.model) responseModel = chunk.model;
+          if (chunk.id) responseId = chunk.id;
+          if (chunk.rawFinishReason) rawFinishReason = chunk.rawFinishReason;
           if (chunk.finishReason) finishReason = chunk.finishReason;
 
           // Capture final reasoning blocks (emitted near end of stream).
@@ -176,6 +186,7 @@ export function fromNativeProvider(
                     name: tc.name ?? "",
                     arguments: tc.arguments ?? "",
                     ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+                    ...(tc.idSynthesized ? { idSynthesized: true } : {}),
                   });
                 }
               }
@@ -206,7 +217,13 @@ export function fromNativeProvider(
             ...(responseModel ? { model_name: responseModel } : {}),
           };
         }
-        yield finalMessage;
+        yield attachWireInfo(finalMessage, {
+          provider: provider.providerName,
+          responseId,
+          responseModel,
+          rawFinishReason,
+          streaming: true,
+        });
       } finally {
         link.dispose();
       }
@@ -743,6 +760,7 @@ function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
       ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+      ...(tc.idSynthesized ? { idSynthesized: true } : {}),
     }));
   }
 
@@ -770,6 +788,7 @@ function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUs
       type: "function" as const,
       function: { name: tc.name, arguments: tc.arguments },
       ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+      ...(tc.idSynthesized ? { idSynthesized: true } : {}),
     }));
   }
 

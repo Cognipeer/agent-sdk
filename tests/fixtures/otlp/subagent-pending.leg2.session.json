@@ -1,0 +1,216 @@
+{
+  "sessionId": "sess_fixture_subagent",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:00:35.100Z",
+  "durationMs": 35100,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 39400,
+    "totalInputTokens": 460,
+    "totalOutputTokens": 120,
+    "totalCachedInputTokens": 0,
+    "totalBytesIn": 0,
+    "totalBytesOut": 0,
+    "eventCounts": {
+      "agent_iteration": 4,
+      "ai_call": 4,
+      "tool_approval": 2,
+      "span": 2,
+      "tool_call": 2
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0007_fx7",
+      "sequence": 7,
+      "type": "tool_approval",
+      "label": "Tool approval decision - web_search #7",
+      "spanId": "a00000000000001f",
+      "parentSpanId": "5555555555555555",
+      "timestamp": "2026-10-19T12:00:30.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "web_search",
+        "role": "approval"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0008_fx8",
+      "sequence": 8,
+      "type": "agent_iteration",
+      "label": "Iteration 2 #8",
+      "spanId": "a00000000000001a",
+      "parentSpanId": "5555555555555555",
+      "timestamp": "2026-10-19T12:00:30.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0009_fx9",
+      "sequence": 9,
+      "type": "tool_call",
+      "label": "Tool Execution - web_search #9",
+      "spanId": "a00000000000001b",
+      "parentSpanId": "a00000000000001a",
+      "timestamp": "2026-10-19T12:00:31.000Z",
+      "actor": {
+        "scope": "tool",
+        "name": "web_search",
+        "role": "tool"
+      },
+      "status": "success",
+      "durationMs": 1000,
+      "toolExecutionId": "call_search_1"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0010_fx10",
+      "sequence": 10,
+      "type": "ai_call",
+      "label": "Assistant Response #10",
+      "spanId": "a00000000000001c",
+      "parentSpanId": "a00000000000001a",
+      "timestamp": "2026-10-19T12:00:33.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "assistant"
+      },
+      "status": "success",
+      "durationMs": 2000,
+      "inputTokens": 80,
+      "outputTokens": 30,
+      "totalTokens": 110,
+      "cachedInputTokens": 0,
+      "finishReason": "stop",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "responseId": "chatcmpl-su010",
+      "responseModel": "gpt-4o-mini-2024-07-18",
+      "rawFinishReason": "stop",
+      "outputType": "text"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0011_fx11",
+      "sequence": 11,
+      "type": "span",
+      "label": "Sub-agent researcher #11",
+      "spanId": "5555555555555555",
+      "parentSpanId": "a000000000000016",
+      "timestamp": "2026-10-19T12:00:33.100Z",
+      "actor": {
+        "scope": "agent",
+        "name": "researcher",
+        "role": "subagent"
+      },
+      "status": "success",
+      "durationMs": 31000,
+      "countDuration": false
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0012_fx12",
+      "sequence": 12,
+      "type": "tool_call",
+      "label": "Tool Execution - delegate_to #12",
+      "spanId": "a000000000000016",
+      "parentSpanId": "a000000000000014",
+      "timestamp": "2026-10-19T12:00:33.200Z",
+      "actor": {
+        "scope": "tool",
+        "name": "delegate_to",
+        "role": "tool"
+      },
+      "status": "success",
+      "durationMs": 31100,
+      "toolExecutionId": "call_delegate_1"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0013_fx13",
+      "sequence": 13,
+      "type": "agent_iteration",
+      "label": "Iteration 2 #13",
+      "spanId": "a00000000000001d",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:00:33.300Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_subagent",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0014_fx14",
+      "sequence": 14,
+      "type": "ai_call",
+      "label": "Assistant Response #14",
+      "spanId": "a00000000000001e",
+      "parentSpanId": "a00000000000001d",
+      "timestamp": "2026-10-19T12:00:35.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 1700,
+      "inputTokens": 220,
+      "outputTokens": 50,
+      "totalTokens": 270,
+      "cachedInputTokens": 0,
+      "finishReason": "stop",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "responseId": "chatcmpl-su014",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "stop",
+      "outputType": "text"
+    }
+  ],
+  "status": "success",
+  "errors": [],
+  "continuation": {
+    "part": 2,
+    "firstSequence": 7
+  }
+}

@@ -918,7 +918,10 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     };
     // A run that paused (approval, question) or a smart-agent leg left a
     // continuation on its state: keep recording into that session.
-    const traceSession = createTraceSession(opts, readTraceContinuation(input.ctx?.__traceContinuation));
+    const traceSession = createTraceSession(opts, readTraceContinuation(input.ctx?.__traceContinuation), {
+      exporters: pluginHost.contributions.traceExporters,
+      traceParent: config?.traceParent,
+    });
 
     const ctx: Record<string, any> = {
       ...(input.ctx || {}),
@@ -1140,7 +1143,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       await finalizeTraceSession(traceSession, {
         agentRuntime: runtime,
         status: "error",
-        error: { message: err?.message, stack: err?.stack },
+        error: { message: err?.message, stack: err?.stack, name: err?.name },
       });
       await endSession("error", { error: err instanceof Error ? err : new Error(String(err)), state: stateHolder.value });
       if (userTokenCounter) {
@@ -1169,6 +1172,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     await finalizeTraceSession(traceSession, {
       agentRuntime: res.agent || runtime,
       status: pausedForHuman ? "paused" : midTurn ? "in_progress" : "success",
+      // The file says `success` for a cancelled run (it did not fail); the
+      // exported root says `partial`, the old plugin mapping.
+      cancelled: statusFor(res) === "cancelled",
     });
     if (traceSession && midTurn) {
       res.ctx = { ...(res.ctx || {}), __traceContinuation: traceContinuationOf(traceSession) };

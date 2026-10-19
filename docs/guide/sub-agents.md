@@ -206,7 +206,7 @@ agent_iteration  Iteration 1                  (parent)
         tool_call      the child's own tool
 ```
 
-The span's `Sub-agent` metadata section carries the run's `id` (the same `id` as its `subagent` events, also across a pause and resume), `mode`, `depth`, `parentToolCallId`, `status` and your `SubagentDef.metadata`. A child that pauses for a human records a `pending` span, and the approval or question appears once, under the child. See [Tracing](/guide/debugging#sub-agents-in-traces).
+The span's `Sub-agent` metadata section carries the run's `id` (the same `id` as its `subagent` events, also across a pause and resume), `mode`, `depth`, `parentToolCallId`, `status` and your `SubagentDef.metadata`. A child that pauses for a human records its span `pending` and records it again, same `spanId`, finished, when the run ends, so a paused-and-resumed child is one group with its approval or question inside (draw it with `foldSupersededSpans`). See [Tracing](/guide/debugging#sub-agents-in-traces).
 
 ## Human-in-the-loop
 

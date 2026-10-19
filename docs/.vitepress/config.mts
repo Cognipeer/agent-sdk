@@ -67,6 +67,7 @@ export default defineConfig({
             { text: 'Tool-Heavy & Long-Running Agents', link: '/guide/tool-heavy-agents' },
             { text: 'Limits & Tokens', link: '/guide/limits-tokens' },
             { text: 'Debugging & Tracing', link: '/guide/debugging' },
+            { text: 'OpenTelemetry Export', link: '/guide/opentelemetry' },
             { text: 'Testing & Evaluation', link: '/guide/testing' },
             { text: 'FAQ', link: '/guide/faq' },
           ],

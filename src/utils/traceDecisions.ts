@@ -8,6 +8,12 @@
  * with the wait as its duration (timestamp = decision time, like every other
  * agent-sdk event, which is stamped when the step ends). Both carry the same
  * `approvalId` / `questionId`, so a viewer can fold them into one step.
+ *
+ * The ids, status and timestamps that pair the two halves are also recorded as an
+ * identity section (label "... ids", see `idSection`): it survives
+ * `logData: false`, and an OTLP export carries it whether or not content capture
+ * is on. It holds no prompt, comment, notes or arguments. The sections that do
+ * (the ones older releases wrote) are unchanged and exist only under `logData`.
  */
 
 import type {
@@ -44,6 +50,14 @@ function sameJson(a: unknown, b: unknown): boolean {
   }
 }
 
+/** An identity section: kept when `logData` is off, and exported whatever the content setting. Ids, status and timestamps only. */
+const idSection = (label: string, data: Record<string, unknown>): TraceDataSection => ({
+  kind: "metadata",
+  label,
+  data,
+  identity: true,
+});
+
 /** The run is pausing for `entry`: record what it is waiting on. */
 export function recordApprovalRequested(
   session: TraceSessionRuntime | undefined,
@@ -73,7 +87,7 @@ export function recordApprovalRequested(
     timestamp: entry.requestedAt,
     status: "pending",
     actor: { scope: "agent", name: entry.toolName, role: "approval_request" },
-    sections,
+    sections: [...sections, idSection("Approval ids", { approvalId: entry.id, toolCallId: entry.toolCallId, status: "pending", requestedAt: entry.requestedAt })],
   });
 }
 
@@ -128,7 +142,14 @@ export function recordHumanDecisions(
       durationMs: waitedMs(entry.requestedAt, entry.decidedAt),
       status: "success",
       actor: { scope: "human", name: entry.decidedBy || "reviewer", role: "approver" },
-      sections,
+      sections: [...sections, idSection("Decision ids", {
+        approvalId: entry.id,
+        toolCallId: entry.toolCallId,
+        decision: entry.status,
+        requestedAt: entry.requestedAt,
+        decidedAt: entry.decidedAt,
+        ...(waitedMs(entry.requestedAt, entry.decidedAt) !== undefined ? { waitedMs: waitedMs(entry.requestedAt, entry.decidedAt) } : {}),
+      })],
     });
     entry.metadata = { ...(entry.metadata || {}), [TRACED_KEY]: true };
   }
@@ -174,7 +195,14 @@ export function recordHumanDecisions(
       durationMs: waitedMs(entry.requestedAt, entry.answeredAt),
       status: cancelled ? "skipped" : "success",
       actor: { scope: "human", name: entry.answeredBy || "user", role: "user" },
-      sections,
+      sections: [...sections, idSection("Answer ids", {
+        questionId: entry.id,
+        toolCallId: entry.toolCallId,
+        status: entry.status,
+        requestedAt: entry.requestedAt,
+        answeredAt: entry.answeredAt,
+        ...(waitedMs(entry.requestedAt, entry.answeredAt) !== undefined ? { waitedMs: waitedMs(entry.requestedAt, entry.answeredAt) } : {}),
+      })],
     });
     entry.metadata = { ...(entry.metadata || {}), [TRACED_KEY]: true };
   }
@@ -204,7 +232,7 @@ export function recordClientToolRequested(
     timestamp: entry.requestedAt,
     status: "pending",
     actor: { scope: "client", name: clientTool.name, role: "tool" },
-    sections,
+    sections: [...sections, idSection("Client tool ids", { questionId: entry.id, toolCallId: entry.toolCallId, status: "pending", requestedAt: entry.requestedAt })],
   });
 }
 
@@ -264,6 +292,13 @@ function recordClientToolResult(
     durationMs: waitedMs(entry.requestedAt, entry.answeredAt) ?? ranMs,
     status: failed ? "error" : "success",
     actor: { scope: "client", name: clientTool.name, role: "tool" },
-    sections,
+    sections: [...sections, idSection("Client tool ids", {
+      questionId: entry.id,
+      toolCallId: entry.toolCallId,
+      status: failed ? "error" : "answered",
+      requestedAt: entry.requestedAt,
+      answeredAt: entry.answeredAt,
+      ...(waitedMs(entry.requestedAt, entry.answeredAt) !== undefined ? { waitedMs: waitedMs(entry.requestedAt, entry.answeredAt) } : {}),
+    })],
   });
 }

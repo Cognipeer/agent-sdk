@@ -1,0 +1,201 @@
+{
+  "run-success": {
+    "resource": {
+      "cognipeer.session.id": "sess_fixture_success",
+      "cognipeer.thread.id": "thread_42",
+      "cognipeer.agent.model": "gpt-4o",
+      "cognipeer.agent.provider": "openai",
+      "cognipeer.metadata.tenant": "acme"
+    },
+    "root": {
+      "cognipeer.session.status": "success",
+      "cognipeer.session.duration_ms": 9000,
+      "cognipeer.session.total_input_tokens": "320",
+      "cognipeer.session.total_output_tokens": "90",
+      "cognipeer.session.total_cached_input_tokens": "40",
+      "cognipeer.session.total_bytes_in": "6184",
+      "cognipeer.session.total_bytes_out": "1632",
+      "cognipeer.session.event_count": "5",
+      "cognipeer.session.event_count.agent_iteration": "2",
+      "cognipeer.session.event_count.ai_call": "2",
+      "cognipeer.session.event_count.tool_call": "1"
+    },
+    "events": {
+      "a000000000000001": {
+        "cognipeer.event.type": "agent_iteration",
+        "cognipeer.event.label": "Iteration 1 #1",
+        "cognipeer.event.sequence": "1",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "orchestrator",
+        "cognipeer.event.id": "evt_0001_fx1"
+      },
+      "a000000000000002": {
+        "cognipeer.event.type": "ai_call",
+        "cognipeer.event.label": "Assistant Response #2",
+        "cognipeer.event.sequence": "2",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "assistant",
+        "cognipeer.model": "gpt-4o",
+        "cognipeer.tokens.reasoning": "5",
+        "cognipeer.finish_reason": "tool_calls",
+        "cognipeer.provider": "openai",
+        "cognipeer.tokens.input": "120",
+        "cognipeer.tokens.output": "30",
+        "cognipeer.tokens.total": "150",
+        "cognipeer.tokens.cached_input": "40",
+        "cognipeer.bytes.request": "2048",
+        "cognipeer.bytes.response": "512",
+        "cognipeer.event.id": "evt_0002_fx2",
+        "cognipeer.sections": "[{\"kind\":\"message\",\"label\":\"Assistant\",\"role\":\"assistant\",\"content\":\"Looking up the order.\"}]"
+      },
+      "a000000000000003": {
+        "cognipeer.event.type": "tool_call",
+        "cognipeer.event.label": "Tool Execution - lookup_order #3",
+        "cognipeer.event.sequence": "3",
+        "cognipeer.actor.scope": "tool",
+        "cognipeer.actor.name": "lookup_order",
+        "cognipeer.actor.role": "tool",
+        "cognipeer.tool.details": "{\"name\":\"lookup_order\",\"description\":\"Find an order\",\"source\":\"local\"}",
+        "cognipeer.bytes.request": "40",
+        "cognipeer.bytes.response": "220",
+        "cognipeer.tool.execution_id": "call_lookup_1",
+        "cognipeer.event.id": "evt_0003_fx3"
+      },
+      "a000000000000004": {
+        "cognipeer.event.type": "agent_iteration",
+        "cognipeer.event.label": "Iteration 2 #4",
+        "cognipeer.event.sequence": "4",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "orchestrator",
+        "cognipeer.event.id": "evt_0004_fx4"
+      },
+      "a000000000000005": {
+        "cognipeer.event.type": "ai_call",
+        "cognipeer.event.label": "Assistant Response #5",
+        "cognipeer.event.sequence": "5",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "assistant",
+        "cognipeer.model": "gpt-4o",
+        "cognipeer.finish_reason": "stop",
+        "cognipeer.provider": "openai",
+        "cognipeer.tokens.input": "200",
+        "cognipeer.tokens.output": "60",
+        "cognipeer.tokens.total": "260",
+        "cognipeer.tokens.cached_input": "0",
+        "cognipeer.bytes.request": "4096",
+        "cognipeer.bytes.response": "900",
+        "cognipeer.event.id": "evt_0005_fx5",
+        "cognipeer.sections": "[{\"kind\":\"message\",\"label\":\"Assistant\",\"role\":\"assistant\",\"content\":\"Your order shipped yesterday.\"}]"
+      }
+    }
+  },
+  "run-error": {
+    "resource": {
+      "cognipeer.session.id": "sess_fixture_error",
+      "cognipeer.thread.id": "thread_42",
+      "cognipeer.agent.model": "gpt-4o",
+      "cognipeer.agent.provider": "openai",
+      "cognipeer.metadata.tenant": "acme"
+    },
+    "root": {
+      "cognipeer.session.status": "error",
+      "cognipeer.session.duration_ms": 4100,
+      "cognipeer.session.total_input_tokens": "90",
+      "cognipeer.session.total_output_tokens": "20",
+      "cognipeer.session.total_cached_input_tokens": "0",
+      "cognipeer.session.total_bytes_in": "0",
+      "cognipeer.session.total_bytes_out": "0",
+      "cognipeer.session.event_count": "7",
+      "cognipeer.session.event_count.agent_iteration": "1",
+      "cognipeer.session.event_count.ai_call": "3",
+      "cognipeer.session.event_count.tool_call": "3"
+    },
+    "events": {
+      "a000000000000006": {
+        "cognipeer.event.type": "agent_iteration",
+        "cognipeer.event.label": "Iteration 1 #1",
+        "cognipeer.event.sequence": "1",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "orchestrator",
+        "cognipeer.event.id": "evt_0001_fx1"
+      },
+      "a000000000000007": {
+        "cognipeer.event.type": "ai_call",
+        "cognipeer.event.label": "Assistant Response #2",
+        "cognipeer.event.sequence": "2",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "assistant",
+        "cognipeer.model": "gpt-4o",
+        "cognipeer.finish_reason": "tool_calls",
+        "cognipeer.provider": "openai",
+        "cognipeer.tokens.input": "90",
+        "cognipeer.tokens.output": "20",
+        "cognipeer.tokens.total": "110",
+        "cognipeer.tokens.cached_input": "0",
+        "cognipeer.event.id": "evt_0002_fx2"
+      },
+      "a000000000000008": {
+        "cognipeer.event.type": "tool_call",
+        "cognipeer.event.label": "Tool Error - lookup_order #3",
+        "cognipeer.event.sequence": "3",
+        "cognipeer.actor.scope": "tool",
+        "cognipeer.actor.name": "lookup_order",
+        "cognipeer.actor.role": "tool",
+        "cognipeer.tool.execution_id": "call_lookup_1",
+        "cognipeer.event.id": "evt_0003_fx3"
+      },
+      "a000000000000009": {
+        "cognipeer.event.type": "tool_call",
+        "cognipeer.event.label": "Tool Denied - delete_user #4",
+        "cognipeer.event.sequence": "4",
+        "cognipeer.actor.scope": "tool",
+        "cognipeer.actor.name": "delete_user",
+        "cognipeer.actor.role": "tool",
+        "cognipeer.tool.execution_id": "call_delete_1",
+        "cognipeer.event.id": "evt_0004_fx4"
+      },
+      "a00000000000000a": {
+        "cognipeer.event.type": "tool_call",
+        "cognipeer.event.label": "Tool Execution - get_prices #5",
+        "cognipeer.event.sequence": "5",
+        "cognipeer.actor.scope": "tool",
+        "cognipeer.actor.name": "get_prices",
+        "cognipeer.actor.role": "tool",
+        "cognipeer.tool.execution_id": "call_prices_1",
+        "cognipeer.event.id": "evt_0005_fx5"
+      },
+      "a00000000000000b": {
+        "cognipeer.event.type": "ai_call",
+        "cognipeer.event.label": "Assistant Blocked (plugin) #6",
+        "cognipeer.event.sequence": "6",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "assistant",
+        "cognipeer.model": "gpt-4o",
+        "cognipeer.provider": "openai",
+        "cognipeer.event.id": "evt_0006_fx6"
+      },
+      "a00000000000000c": {
+        "cognipeer.event.type": "ai_call",
+        "cognipeer.event.label": "Assistant Error #7",
+        "cognipeer.event.sequence": "7",
+        "cognipeer.actor.scope": "agent",
+        "cognipeer.actor.name": "Support Agent",
+        "cognipeer.actor.role": "assistant",
+        "cognipeer.model": "gpt-4o",
+        "cognipeer.provider": "openai",
+        "cognipeer.tokens.input": "0",
+        "cognipeer.tokens.output": "0",
+        "cognipeer.tokens.total": "0",
+        "cognipeer.tokens.cached_input": "0",
+        "cognipeer.event.id": "evt_0007_fx7"
+      }
+    }
+  }
+}

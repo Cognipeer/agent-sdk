@@ -1,0 +1,131 @@
+{
+  "sessionId": "sess_fixture_legs",
+  "traceId": "0af7651916cd43dd8448eb211c80319c",
+  "rootSpanId": "b7ad6b7169203331",
+  "threadId": "thread_42",
+  "startedAt": "2026-10-19T12:00:00.000Z",
+  "endedAt": "2026-10-19T12:01:03.100Z",
+  "durationMs": 63100,
+  "agent": {
+    "name": "Support Agent",
+    "version": "1.2.0",
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+  "metadata": {
+    "tenant": "acme"
+  },
+  "config": {
+    "enabled": true,
+    "logData": true,
+    "sink": {
+      "type": "otlp",
+      "endpoint": "https://collector.example.test/v1/traces"
+    }
+  },
+  "summary": {
+    "totalDurationMs": 4700,
+    "totalInputTokens": 250,
+    "totalOutputTokens": 65,
+    "totalCachedInputTokens": 0,
+    "totalBytesIn": 0,
+    "totalBytesOut": 0,
+    "eventCounts": {
+      "agent_iteration": 2,
+      "ai_call": 2,
+      "tool_approval": 2,
+      "tool_call": 1
+    }
+  },
+  "events": [
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0004_fx4",
+      "sequence": 4,
+      "type": "tool_approval",
+      "label": "Tool approval decision - refund_order #4",
+      "spanId": "a000000000000013",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:01:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "refund_order",
+        "role": "approval"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0005_fx5",
+      "sequence": 5,
+      "type": "agent_iteration",
+      "label": "Iteration 2 #5",
+      "spanId": "a000000000000010",
+      "parentSpanId": "b7ad6b7169203331",
+      "timestamp": "2026-10-19T12:01:00.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "orchestrator"
+      },
+      "status": "success"
+    },
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0006_fx6",
+      "sequence": 6,
+      "type": "tool_call",
+      "label": "Tool Execution - refund_order #6",
+      "spanId": "a000000000000011",
+      "parentSpanId": "a000000000000010",
+      "timestamp": "2026-10-19T12:01:01.000Z",
+      "actor": {
+        "scope": "tool",
+        "name": "refund_order",
+        "role": "tool"
+      },
+      "status": "success",
+      "durationMs": 900,
+      "toolExecutionId": "call_refund_1"
+    },
+    {
+      "sessionId": "sess_fixture_legs",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "id": "evt_0007_fx7",
+      "sequence": 7,
+      "type": "ai_call",
+      "label": "Assistant Response #7",
+      "spanId": "a000000000000012",
+      "parentSpanId": "a000000000000010",
+      "timestamp": "2026-10-19T12:01:03.000Z",
+      "actor": {
+        "scope": "agent",
+        "name": "Support Agent",
+        "role": "assistant",
+        "version": "1.2.0"
+      },
+      "status": "success",
+      "durationMs": 2000,
+      "inputTokens": 150,
+      "outputTokens": 40,
+      "totalTokens": 190,
+      "cachedInputTokens": 0,
+      "finishReason": "stop",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "responseId": "chatcmpl-le007",
+      "responseModel": "gpt-4o-2024-08-06",
+      "rawFinishReason": "stop",
+      "outputType": "text"
+    }
+  ],
+  "status": "success",
+  "errors": [],
+  "continuation": {
+    "part": 2,
+    "firstSequence": 4
+  }
+}
