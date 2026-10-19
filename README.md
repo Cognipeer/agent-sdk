@@ -440,7 +440,7 @@ Enable tracing by passing `tracing: { enabled: true }`. Each invocation writes `
 
 You can disable payload capture with `logData: false` to keep only metrics, or configure sinks such as `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` to forward traces after each run. Sensitive headers/callbacks remain in-memory and are never written alongside the trace.
 
-Each session/event also carries OTel-compatible correlation identifiers (`traceId`, `rootSpanId`, `spanId`, `parentSpanId`) so you can stitch agent traces into distributed telemetry pipelines.
+Each session/event also carries OTel-compatible correlation identifiers (`traceId`, `rootSpanId`, `spanId`, `parentSpanId`). `otlpSink` and the `otelTracing` plugin export them as OpenTelemetry GenAI spans (`invoke_agent`, `chat`, `execute_tool`) over OTLP/HTTP JSON or protobuf, with the standard `OTEL_*` variables, optional prompt/response capture and W3C `traceparent` propagation. See the [OpenTelemetry guide](docs/guide/opentelemetry.md).
 
 Pass `tracing: { metadata: { ... } }` to attach arbitrary key-value tags (e.g. `{ complexity: "complex" }`) to every payload sent to the sink. The SDK does not interpret these tags itself — they're forwarded as-is so a downstream consumer (e.g. Console) can use them as reporting/attribution dimensions.
 

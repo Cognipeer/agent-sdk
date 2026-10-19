@@ -24,7 +24,7 @@ This section is meant to answer a practical question quickly: which public surfa
 | `Skill`, `SkillPolicy`, `DEFAULT_SKILL_POLICY`, `SMALL_TIER_SKILL_POLICY` | Progressive capability disclosure for tool-heavy smart agents. |
 | `fromLangchainModel(...)`, `fromLangchainTools(...)`, `withTools(...)` | Adapters for model and tool ecosystems. |
 | `buildSystemPrompt(...)` | Reuse the runtime prompt shape directly when needed. |
-| tracing sinks | Send runtime traces to file, HTTP, Cognipeer, OTLP, or custom sinks. |
+| tracing sinks | Send runtime traces to file, HTTP, Cognipeer, OTLP, or custom sinks. OTLP export is covered in the [OpenTelemetry guide](/guide/opentelemetry). |
 
 ## What this API reference is not
 

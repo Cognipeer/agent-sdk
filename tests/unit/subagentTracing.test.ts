@@ -322,6 +322,12 @@ describe("sub-agent tracing", () => {
     const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
     const spans = body.resourceSpans[0].scopeSpans[0].spans;
     expect(spans).toHaveLength(events.length + 1);
+    // One agent span for the worker with its children under it, and one root: the
+    // child's own sessionEnd did not export the parent's session a second time.
+    const worker = spans.filter((span: any) => span.name === "invoke_agent worker");
+    expect(worker).toHaveLength(1);
+    expect(spans.filter((span: any) => span.name === "invoke_agent parent")).toHaveLength(1);
+    expect(spans.filter((span: any) => span.parentSpanId === worker[0].spanId).length).toBeGreaterThan(0);
   });
 
   it("6. with parent tracing off nothing is scoped or recorded, and results are unchanged", async () => {
@@ -950,6 +956,18 @@ describe("OTLP export of a sub-agent that paused", () => {
 
     const spansOf = (body: any) => body.resourceSpans[0].scopeSpans[0].spans as any[];
     const agentSpansOf = (body: any) => spansOf(body).filter((s) => attr(s, "cognipeer.event.type") === "span");
+    // The approval-then-resume contract, as the plugin exports it: ONE invoke_agent
+    // span id for the child across both legs, one root, and every exported span's
+    // parent is another exported span (the collector can assemble the tree).
+    const all = bodies.flatMap(spansOf);
+    expect(all.filter((s) => s.name === "invoke_agent once")).toHaveLength(1);
+    expect(all.filter((s) => s.name === "invoke_agent parent")).toHaveLength(1);
+    const ids = new Set(all.map((s) => s.spanId));
+    expect(ids.size).toBe(all.length);
+    for (const s of all) {
+      if (s.name === "invoke_agent parent") continue;
+      expect(ids.has(s.parentSpanId), `${s.name} parent ${s.parentSpanId}`).toBe(true);
+    }
     expect(bodies.length).toBeGreaterThanOrEqual(1);
     const exported = bodies.flatMap(agentSpansOf);
     const [recorded] = agentSpans(cap.events).filter((e) => e.status === "success");

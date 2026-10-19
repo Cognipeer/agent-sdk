@@ -295,6 +295,17 @@ await agent.invoke(input, {
 Pass `pluginOptions: { debug: true }` to emit an event for every handler call,
 not only the interesting ones.
 
+### Exporting to a collector
+
+`otelTracing({ endpoint, headers?, protocol?, compression?, semconv?, content?, serviceName? })`
+ships the run's trace to an OTLP collector. It contributes an exporter
+(`AgentPlugin.traceExporters`) that the SDK runs when the trace session is
+finalized, so it sends the same spans as `otlpSink` and exports the root span once,
+with the leg that ends the run. The agent needs `tracing: { enabled: true }`; without
+it the plugin emits a `metadata` event and a warning. Leave `endpoint` out to use
+the `OTEL_EXPORTER_OTLP_*` variables. A sub-agent that inherits the plugin does not
+export; the parent exports the whole tree. See [OpenTelemetry Export](/guide/opentelemetry).
+
 ## Writing a guardrail integration
 
 Any policy service plugs in through one transport interface:
@@ -335,6 +346,6 @@ and auth convention filled in. Use `mode: "shadow"` to measure what a policy
 | `budgetGuard` · `rateLimit` | Spend ceilings and token buckets |
 | `responseCache` | Exact-match model response cache via `preModelCall` short-circuit |
 | `auditLog` · `sessionMetrics` | Attempt log and one structured record per run |
-| `langfuseTracing` · `otelTracing` | Observability exporters |
+| `langfuseTracing` · `otelTracing` | Observability exporters (`otelTracing` contributes an OTLP exporter run at trace finalize) |
 | `conversationHistory` · `checkpointing` · `webhookApproval` | Slot implementations: thread history, pause persistence, human approval |
 | `mcp` | Connect/discover/close lifecycle for an MCP server, with no added dependency |

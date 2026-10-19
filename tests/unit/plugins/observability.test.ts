@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginHost, langfuseTracing, otelTracing } from "../../../src/plugins/index.js";
 import type { AgentPlugin, PluginLogger, PluginRunHost } from "../../../src/plugins/index.js";
 import type { SmartAgentEvent, SmartState, TraceSessionRuntime } from "../../../src/types.js";
+import { createSubagentTraceScope, createTraceSession, customSink, finalizeTraceSession, recordTraceEvent } from "../../../src/utils/tracing.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -376,44 +377,23 @@ describe("langfuseTracing", () => {
 
 // ─── otelTracing ─────────────────────────────────────────────────────────────
 
-function fakeTraceSession(): TraceSessionRuntime {
-  return {
-    sessionId: "sess_1",
-    traceId: "0af7651916cd43dd8448eb211c80319c",
-    rootSpanId: "b7ad6b7169203331",
-    startedAt: Date.now() - 5_000,
-    resolvedConfig: { enabled: true, logData: true, mode: "batched", sink: { type: "file", baseDir: "logs" } },
-    events: [
-      {
-        sessionId: "sess_1",
-        traceId: "0af7651916cd43dd8448eb211c80319c",
-        spanId: "aaaaaaaaaaaaaaaa",
-        parentSpanId: "b7ad6b7169203331",
-        id: "evt_0001_ab",
-        type: "ai_call",
-        label: "Assistant Response #1",
-        sequence: 1,
-        timestamp: new Date().toISOString(),
-        status: "success",
-        durationMs: 120,
-        inputTokens: 10,
-        outputTokens: 4,
-        totalTokens: 14,
-        cachedInputTokens: 0,
-      },
-    ],
-    summary: {
-      totalDurationMs: 120,
-      totalInputTokens: 10,
-      totalOutputTokens: 4,
-      totalCachedInputTokens: 0,
-      totalBytesIn: 0,
-      totalBytesOut: 0,
-      eventCounts: { ai_call: 1 },
-    },
-    status: "in_progress",
-    errors: [],
-  } as TraceSessionRuntime;
+/**
+ * A traced run, finalized the way the SDK finalizes one: the plugin's exporter
+ * is handed to the session and `finalizeTraceSession` runs it. The plugin itself
+ * sends nothing, so this is where the POST happens.
+ */
+async function finalizedSession(
+  plugin: AgentPlugin,
+  opts: { status?: "paused" | "success" | "error"; cancelled?: boolean; parentScope?: boolean } = {},
+): Promise<TraceSessionRuntime> {
+  const session = createTraceSession(
+    { tracing: { enabled: true, sink: customSink(() => {}) } } as never,
+    undefined,
+    { exporters: plugin.traceExporters },
+  )!;
+  recordTraceEvent(session, { type: "ai_call", label: "Assistant Response", model: "gpt-4o", durationMs: 120, inputTokens: 10, outputTokens: 4, totalTokens: 14 });
+  await finalizeTraceSession(session, { agentRuntime: { name: "test-agent" } as never, status: opts.status ?? "success", cancelled: opts.cancelled });
+  return session;
 }
 
 describe("otelTracing", () => {
@@ -421,15 +401,25 @@ describe("otelTracing", () => {
     expect(() => otelTracing({ endpoint: "  " })).toThrow(/non-empty `endpoint`/);
   });
 
-  it("posts an OTLP body with the configured headers", async () => {
-    const fetchMock = stubFetch(async () => okResponse());
-    const { host, run, events } = harness(
-      [otelTracing({ endpoint: "https://collector.example.com/v1/traces", headers: { "x-api-key": "k" }, serviceName: "billing-agent" })],
-      { ctx: { __traceSession: fakeTraceSession() } },
-    );
-    await host.setup({ model: null });
+  it("rejects a missing endpoint when the environment names none", () => {
+    expect(() => otelTracing({})).toThrow(/non-empty `endpoint`/);
+  });
 
-    await run.runObservers("sessionEnd", sessionEndInput());
+  it("contributes an exporter and no hook that sends", () => {
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    expect(plugin.traceExporters).toHaveLength(1);
+    expect(plugin.traceExporters![0].endpoint).toBe("https://collector.example.com/v1/traces");
+    expect(plugin.name).toBe("otel-tracing");
+    expect(plugin.priority).toBe(950);
+    expect(plugin.failureMode).toBe("open");
+  });
+
+  it("posts an OTLP body with the configured headers when the session is finalized", async () => {
+    const fetchMock = stubFetch(async () => okResponse());
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces", headers: { "x-api-key": "k" }, serviceName: "billing-agent" });
+    const session = await finalizedSession(plugin);
+    const withSession = harness([plugin], { ctx: { __traceSession: session } });
+    await withSession.host.setup({ model: null });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -437,34 +427,45 @@ describe("otelTracing", () => {
     expect(init.headers?.["x-api-key"]).toBe("k");
     expect(init.headers?.["content-type"]).toBe("application/json");
 
-    const body = JSON.parse(init.body!);
-    const scope = body.resourceSpans[0].scopeSpans[0];
-    // Root span plus one child per trace event — the same conversion otlpSink uses.
-    expect(scope.spans).toHaveLength(2);
-    expect(scope.spans[0].traceId).toBe("0af7651916cd43dd8448eb211c80319c");
-    // GenAI span name (the record carries no model): `chat`, not the cognipeer label.
-    expect(scope.spans[1].name).toBe("chat");
-    expect(scope.spans[1].attributes.find((a: { key: string }) => a.key === "cognipeer.event.label").value.stringValue).toBe("Assistant Response #1");
-    const serviceName = body.resourceSpans[0].resource.attributes.find(
-      (attr: { key: string }) => attr.key === "service.name",
-    );
+    const body = JSON.parse(init.body as string);
+    const spans = body.resourceSpans[0].scopeSpans[0].spans;
+    // Root span plus one child per trace event.
+    expect(spans).toHaveLength(2);
+    const names = spans.map((span: { name: string }) => span.name);
+    // The root is `invoke_agent <agent>` (serviceName only sets the resource), the call `chat <model>`.
+    expect(names).toContain("invoke_agent test-agent");
+    expect(names).toContain("chat gpt-4o");
+    const chat = spans.find((span: { name: string }) => span.name === "chat gpt-4o");
+    expect(chat.attributes.find((a: { key: string }) => a.key === "cognipeer.event.label").value.stringValue).toBe("Assistant Response #1");
+    const serviceName = body.resourceSpans[0].resource.attributes.find((attr: { key: string }) => attr.key === "service.name");
     expect(serviceName.value.stringValue).toBe("billing-agent");
-    expect(metadataEvents(events)[0]).toMatchObject({ otelTracing: { exported: true, spans: 2 } });
+
+    await withSession.run.runObservers("sessionEnd", sessionEndInput());
+    expect(metadataEvents(withSession.events)[0]).toMatchObject({
+      otelTracing: { exported: true, endpoint: "https://collector.example.com/v1/traces", spans: 2, terminal: true },
+    });
+    await withSession.host.dispose();
   });
 
-  it("maps a cancelled run onto a partial session status", async () => {
+  it("exports a cancelled run's root as partial", async () => {
     const fetchMock = stubFetch(async () => okResponse());
-    const { host, run } = harness([otelTracing({ endpoint: "https://collector.example.com/v1/traces" })], {
-      ctx: { __traceSession: fakeTraceSession() },
-    });
-    await host.setup({ model: null });
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    await finalizedSession(plugin, { cancelled: true });
 
-    await run.runObservers("sessionEnd", { status: "cancelled", durationMs: 10 });
-
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body!);
-    const rootAttrs = body.resourceSpans[0].scopeSpans[0].spans[0].attributes;
-    const status = rootAttrs.find((attr: { key: string }) => attr.key === "cognipeer.session.status");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const root = body.resourceSpans[0].scopeSpans[0].spans.find((span: { parentSpanId: string }) => !span.parentSpanId);
+    const status = root.attributes.find((attr: { key: string }) => attr.key === "cognipeer.session.status");
     expect(status.value.stringValue).toBe("partial");
+  });
+
+  it("a paused leg exports its own spans without a root", async () => {
+    const fetchMock = stubFetch(async () => okResponse());
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    const session = await finalizedSession(plugin, { status: "paused" });
+
+    const spans = JSON.parse(fetchMock.mock.calls[0][1].body as string).resourceSpans[0].scopeSpans[0].spans;
+    expect(spans.map((span: { name: string }) => span.name)).toEqual(["chat gpt-4o"]);
+    expect(session.exportReports?.[0]).toMatchObject({ terminal: false, result: { ok: true, spans: 1 } });
   });
 
   it("warns instead of silently no-opping when tracing is not enabled", async () => {
@@ -482,29 +483,50 @@ describe("otelTracing", () => {
   });
 
   it("swallows a failing POST instead of failing the run", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fetchMock = stubFetch(async () => {
       throw new Error("collector unreachable");
     });
-    const { host, run, events } = harness([otelTracing({ endpoint: "https://collector.example.com/v1/traces" })], {
-      ctx: { __traceSession: fakeTraceSession() },
-    });
-    await host.setup({ model: null });
-
-    await expect(run.runObservers("sessionEnd", sessionEndInput())).resolves.toBeUndefined();
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces", retry: false });
+    const session = await finalizedSession(plugin);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(session.exportReports?.[0].result).toMatchObject({ ok: false, error: "collector unreachable" });
+
+    const { host, run, events } = harness([plugin], { ctx: { __traceSession: session } });
+    await host.setup({ model: null });
+    await expect(run.runObservers("sessionEnd", sessionEndInput())).resolves.toBeUndefined();
     // No "exported: true" event, and no error escaped either.
     expect(metadataEvents(events)).toHaveLength(0);
   });
 
-  it("swallows a non-2xx collector response", async () => {
-    const fetchMock = stubFetch(async () => errorResponse(503, "unavailable"));
-    const { host, run, events } = harness([otelTracing({ endpoint: "https://collector.example.com/v1/traces" })], {
-      ctx: { __traceSession: fakeTraceSession() },
-    });
+  it("swallows a non-2xx collector response (a 400 is final, not retried)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetchMock = stubFetch(async () => errorResponse(400, "bad"));
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    const session = await finalizedSession(plugin);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const { host, run, events } = harness([plugin], { ctx: { __traceSession: session } });
+    await host.setup({ model: null });
+    await expect(run.runObservers("sessionEnd", sessionEndInput())).resolves.toBeUndefined();
+    expect(metadataEvents(events)).toHaveLength(0);
+  });
+
+  it("a sub-agent run that inherited the plugin does not report or export the parent's session", async () => {
+    const fetchMock = stubFetch(async () => okResponse());
+    const plugin = otelTracing({ endpoint: "https://collector.example.com/v1/traces" });
+    const parent = createTraceSession(
+      { tracing: { enabled: true, sink: customSink(() => {}) } } as never,
+      undefined,
+      { exporters: plugin.traceExporters },
+    )!;
+    const scope = createSubagentTraceScope(parent, { agentSpanId: "abcdabcdabcdabcd", name: "helper" });
+    const { host, run, events } = harness([plugin], { ctx: { __traceSession: scope } });
     await host.setup({ model: null });
 
-    await expect(run.runObservers("sessionEnd", sessionEndInput())).resolves.toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await run.runObservers("sessionEnd", sessionEndInput());
+
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(metadataEvents(events)).toHaveLength(0);
   });
 });

@@ -20,7 +20,7 @@ import { captureSnapshot, restoreSnapshot } from "../../src/utils/stateSnapshot.
 import type { Message, SubagentDef } from "../../src/types.js";
 
 const ENABLED = process.env.OTLP_COLLECTOR_E2E === "1";
-const IMAGE = process.env.OTLP_COLLECTOR_IMAGE ?? "otel/opentelemetry-collector:0.130.0";
+const IMAGE = process.env.OTLP_COLLECTOR_IMAGE ?? "otel/opentelemetry-collector-contrib:0.130.0";
 const NAME = `agent-sdk-otlp-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
 const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

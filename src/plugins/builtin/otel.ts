@@ -1,68 +1,60 @@
 /**
- * OTLP/HTTP export of a finished run, driven by a hook instead of by a sink.
+ * OTLP export of a run to a collector, declared next to the other plugins.
  *
- * The SDK already ships `otlpSink(endpoint, headers)`, and when observability
- * is configured on its own that remains the right tool — it is wired straight
- * into `finalizeTraceSession` and needs no plugin at all. This plugin exists
- * for the product that wants one array: `plugins: [cognipeerGuardrail(),
- * otelTracing({ endpoint })]`, with tracing and policy declared side by side
- * rather than in two unrelated config blocks.
+ * `plugins: [cognipeerGuardrail(), otelTracing({ endpoint })]` keeps tracing and
+ * policy in one array instead of two unrelated config blocks. The plugin does
+ * not build or send anything itself: it contributes an exporter
+ * (`AgentPlugin.traceExporters`) and the SDK runs it inside
+ * `finalizeTraceSession`, the same path the `otlpSink` uses. That is what makes
+ * the output identical to the sink's: the SDK knows which leg ends the run (the
+ * root span goes out once, with that leg), the plugin never has to.
  *
- * It does NOT re-implement the sink. The conversion is `traceSessionToOtlp`,
- * the same function `otlpSink` uses, applied to the same session object — so a
- * span tree exported through this plugin and one exported through the sink are
- * the same spans. What the plugin adds is placement: it runs on the hook chain,
- * next to the guardrails, and can therefore be turned on and off with them.
+ * The `sessionEnd` observer only reports. It reads what the exporter did for
+ * this run and surfaces it (a `metadata` event, a warning on failure). It also
+ * says so out loud when there is no trace session at all: a silent no-op in an
+ * observability tool is discovered days later, when someone goes looking for
+ * the traces, so `tracing: { enabled: true }` is called out by name.
  *
- * Because it reads the SDK's trace session, it needs `tracing: { enabled: true }`
- * on the agent. Without it there is no session to export and the plugin says so
- * out loud (a `metadata` event plus a warning) rather than doing nothing: a
- * silent no-op in an observability tool is the failure that costs the most,
- * because it is discovered days later when someone goes looking for the traces.
+ * A sub-agent inherits this plugin but records into its parent's session, which
+ * is still being written. Only a root session finalizes and exports, so the
+ * observer returns early for a child run.
  */
 
 import type { AgentPlugin } from "../types.js";
-import type {
-  SmartState,
-  TraceSessionFile,
-  TraceSessionRuntime,
-  TraceSessionStatus,
-} from "../../types.js";
-import { isSubagentTraceScope, traceSessionToOtlp } from "../../utils/tracing.js";
+import type { SmartState, TraceSessionRuntime } from "../../types.js";
+import { createOtlpExporter } from "../../utils/otlp/exporter.js";
+import type { OtlpExportOptions } from "../../utils/otlp/types.js";
+import { isSubagentTraceScope } from "../../utils/tracing.js";
 
-export type OtelTracingConfig = {
-  /** OTLP/HTTP JSON traces endpoint, e.g. `https://collector.example.com/v1/traces`. */
-  endpoint: string;
-  /** Auth and tenancy headers for the collector. */
-  headers?: Record<string, string>;
-  /** `service.name` on the exported resource. Defaults to the agent's name. */
-  serviceName?: string;
-  /** Plugin name, when exporting to more than one collector at once. */
+export type OtelTracingConfig = OtlpExportOptions & {
+  /**
+   * Plugin name, when exporting to more than one collector at once. Defaults to
+   * `otel-tracing`.
+   */
   name?: string;
 };
 
-/**
- * A run can end in states the trace-session vocabulary has no word for.
- * `paused` is genuinely still open — the run continues on resume — so it stays
- * `in_progress`; `cancelled` produced a real but incomplete span tree, which is
- * exactly what `partial` means.
- */
-function toSessionStatus(status: "success" | "error" | "paused" | "cancelled"): TraceSessionStatus {
-  if (status === "success") return "success";
-  if (status === "error") return "error";
-  return status === "paused" ? "in_progress" : "partial";
-}
-
-export function otelTracing(config: OtelTracingConfig): AgentPlugin {
-  const endpoint = config.endpoint?.trim();
-  if (!endpoint) {
+export function otelTracing(config: OtelTracingConfig = {}): AgentPlugin {
+  // An endpoint that is given must say something. Leaving it out is allowed: the
+  // exporter then reads OTEL_EXPORTER_OTLP_* from the environment, and throws
+  // when those name no endpoint either.
+  if (config.endpoint !== undefined && !config.endpoint.trim()) {
     // A collector-less exporter is a configuration bug, and finding out at the
     // end of the first run is too late to be useful.
     throw new Error("[agent-sdk] otelTracing requires a non-empty `endpoint`.");
   }
+  const name = config.name ?? "otel-tracing";
+  let exporter;
+  try {
+    exporter = createOtlpExporter({ ...config, endpoint: config.endpoint?.trim(), name });
+  } catch {
+    throw new Error(
+      "[agent-sdk] otelTracing requires a non-empty `endpoint` (or OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT in the environment).",
+    );
+  }
 
   return {
-    name: config.name ?? "otel-tracing",
+    name,
     // Registers only the `sessionEnd` observer, and observers run concurrently,
     // so this number orders nothing at runtime. It is set above checkpointing
     // (900) to record intent: this plugin is the last thing interested in the
@@ -70,14 +62,13 @@ export function otelTracing(config: OtelTracingConfig): AgentPlugin {
     priority: 950,
     // Observability. A dropped export is a reporting gap, never a safety hole.
     failureMode: "open",
+    traceExporters: [exporter],
 
     hooks: {
-      sessionEnd: async ({ status, durationMs, error }, ctx) => {
+      sessionEnd: async (_event, ctx) => {
         const state = ctx.state as SmartState;
         const session = state.ctx?.__traceSession as TraceSessionRuntime | undefined;
 
-        // A sub-agent inherits this plugin but records into its parent's session,
-        // which is still being written; the parent exports the whole tree.
         if (isSubagentTraceScope(session)) return;
 
         if (!session) {
@@ -90,63 +81,25 @@ export function otelTracing(config: OtelTracingConfig): AgentPlugin {
           return;
         }
 
-        const endedAtMs = Date.now();
-        const startedAtIso = new Date(session.startedAt).toISOString();
-        const errors = error
-          ? [...session.errors, { eventId: "session", message: error.message, stack: error.stack, type: "session" }]
-          : session.errors;
+        // The export already ran, in finalizeTraceSession; this is its latest report.
+        const reports = (session.exportReports ?? []).filter((report) => !report.sink && report.exporter === name);
+        const report = reports[reports.length - 1];
+        if (!report) return;
+        const { result } = report;
 
-        const payload: TraceSessionFile = {
-          sessionId: session.sessionId,
-          traceId: session.traceId,
-          rootSpanId: session.rootSpanId,
-          threadId: session.threadId,
-          startedAt: startedAtIso,
-          endedAt: new Date(endedAtMs).toISOString(),
-          durationMs: durationMs ?? endedAtMs - session.startedAt,
-          // `service.name` is read off `agent.name` inside the conversion, so
-          // the override is applied here rather than by editing spans after.
-          agent: {
-            ...(session.agentInfo ?? {}),
-            name: config.serviceName ?? session.agentInfo?.name ?? session.configAgentName ?? ctx.agentName,
-          },
-          metadata: session.configMetadata,
-          // Carried only to satisfy the type: `traceSessionToOtlp` reads the
-          // events, summary and identifiers, never the sink snapshot.
-          config: { enabled: true, logData: session.resolvedConfig.logData, sink: { type: "otlp", endpoint } },
-          summary: session.summary,
-          events: session.events,
-          status: toSessionStatus(status),
-          errors,
-        };
-
-        try {
-          const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
-          if (!fetchFn) {
-            ctx.logger.warn("otelTracing needs fetch to be available in this runtime; export skipped.");
-            return;
-          }
-          const request = traceSessionToOtlp(payload) as { resourceSpans: Array<{ scopeSpans: Array<{ spans: unknown[] }> }> };
-          const response = await fetchFn(endpoint, {
-            method: "POST",
-            headers: { "content-type": "application/json", ...(config.headers ?? {}) },
-            body: JSON.stringify(request),
-            // The run is over, but a host that cancelled it should not be made
-            // to wait on a collector that is refusing to answer.
-            signal: ctx.signal,
-          });
-          if (!response.ok) {
-            ctx.logger.warn(`otelTracing export returned HTTP ${response.status}.`);
-            return;
-          }
-          ctx.emit({
-            type: "metadata",
-            otelTracing: { exported: true, endpoint, spans: request.resourceSpans[0].scopeSpans[0].spans.length },
-          } as never);
-        } catch (err) {
+        if (!result.ok) {
           // Swallowed: a collector outage must never surface as an agent error.
-          ctx.logger.warn("otelTracing export failed:", err instanceof Error ? err.message : err);
+          ctx.logger.warn(`otelTracing export failed: ${result.error ?? "unknown error"}`);
+          return;
         }
+        if (result.skipped) {
+          ctx.emit({ type: "metadata", otelTracing: { exported: false, reason: result.reason ?? "nothing to export" } } as never);
+          return;
+        }
+        ctx.emit({
+          type: "metadata",
+          otelTracing: { exported: true, endpoint: report.endpoint, spans: result.spans, terminal: report.terminal },
+        } as never);
       },
     },
   };

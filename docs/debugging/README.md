@@ -25,7 +25,7 @@ Each `invoke` creates a new session directory under `logs/<SESSION_ID>/` and wri
 |--------|-------------|
 | `enabled` | Required. Turn tracing on/off per agent. |
 | `logData` | When `true`, include prompt/response/tool payloads alongside metrics. Set to `false` to store only metadata. |
-| `sink` | Controls where finalized traces go. Defaults to `fileSink()` which writes `trace.session.json` under `[cwd]/logs/[session]/`. Swap in `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` for remote delivery or custom processing. |
+| `sink` | Controls where finalized traces go. Defaults to `fileSink()` which writes `trace.session.json` under `[cwd]/logs/[session]/`. Swap in `httpSink(url, headers?)`, `cognipeerSink(apiKey, url?)`, `otlpSink(endpoint, headers?)`, or `customSink({ onEvent, onSession })` for remote delivery or custom processing. `otlpSink` exports OpenTelemetry GenAI spans: see the [OpenTelemetry guide](/guide/opentelemetry). |
 
 Example with an HTTP sink:
 
@@ -140,4 +140,4 @@ logs/
 		trace.session.json
 ```
 
-Traces are safe to delete after ingestion. If you prefer remote storage, configure an `httpSink`/`cognipeerSink`/`otlpSink` and periodically clear the local directory.
+Traces are safe to delete after ingestion. If you prefer remote storage, configure an `httpSink`/`cognipeerSink`/`otlpSink` (see [OpenTelemetry Export](/guide/opentelemetry)) and periodically clear the local directory.

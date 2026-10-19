@@ -430,7 +430,8 @@ runReal("guard and observability plugins against a real model", () => {
     const spans = scopeSpans.spans as any[];
     // Root span plus at least the model call the run actually made.
     expect(spans.length).toBeGreaterThanOrEqual(2);
-    expect(spans[0].name).toBe("agent_session: traced-export-agent");
+    expect(spans.map((span) => span.name)).toContain("invoke_agent TracedExportAgent");
+    expect(spans.some((span) => span.name.startsWith("chat "))).toBe(true);
     expect(spans[0].traceId).toMatch(/^[0-9a-f]{32}$/);
     // Every child hangs off the same trace, which is what makes it one trace,
     // and every child's parent is a span that is actually in the export — a
@@ -438,7 +439,7 @@ runReal("guard and observability plugins against a real model", () => {
     expect(new Set(spans.map((span) => span.traceId)).size).toBe(1);
     const spanIds = new Set(spans.map((span) => span.spanId));
     expect(spanIds.size).toBe(spans.length);
-    expect(spans.slice(1).every((span) => spanIds.has(span.parentSpanId))).toBe(true);
+    expect(spans.filter((span) => span.parentSpanId).every((span) => spanIds.has(span.parentSpanId))).toBe(true);
     const serviceName = otlp.resourceSpans[0].resource.attributes.find(
       (attr: any) => attr.key === "service.name",
     );
