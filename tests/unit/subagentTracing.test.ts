@@ -39,7 +39,8 @@ const byId = (events: TraceEventRecord[]) => new Map(events.map((e) => [e.spanId
 /**
  * Sequences are unique and only rise. What a reader draws (the records after
  * `foldSupersededSpans`) has unique span ids and every parent resolves; a span id
- * may repeat in the file only as a `pending` record that a later one supersedes.
+ * may repeat in the file only as a `pending` or `running` record that a later one
+ * supersedes.
  */
 function assertTree({ events, sessions }: ReturnType<typeof capture>) {
   const rootSpanId = sessions[0]?.rootSpanId;
@@ -48,13 +49,16 @@ function assertTree({ events, sessions }: ReturnType<typeof capture>) {
   expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
   const drawn = foldSupersededSpans(events);
   const ids = new Set(drawn.map((e) => e.spanId));
-  expect(ids.size, "a span id repeats other than as a superseded pending record").toBe(drawn.length);
+  expect(ids.size, "a span id repeats other than as a superseded pending or running record").toBe(drawn.length);
   for (const e of drawn) {
     expect(ids.has(e.parentSpanId!) || e.parentSpanId === rootSpanId, `${e.label} parent ${e.parentSpanId}`).toBe(true);
   }
 }
 
-const agentSpans = (events: TraceEventRecord[]) => events.filter((e) => e.type === "span" && e.actor?.role === "subagent");
+/** Every record of a sub-agent's agent span, including the `running` one each segment opens with. */
+const agentSpanRecords = (events: TraceEventRecord[]) => events.filter((e) => e.type === "span" && e.actor?.role === "subagent");
+/** The records that end or pause a segment (what the tests below were written against). */
+const agentSpans = (events: TraceEventRecord[]) => agentSpanRecords(events).filter((e) => e.status !== "running");
 const metaOf = (e: TraceEventRecord) => (e.data?.sections as any[]).find((s) => s.kind === "metadata" && s.label === "Sub-agent").data;
 const ancestorsOf = (e: TraceEventRecord, events: TraceEventRecord[]) => {
   const map = byId(events);
@@ -321,7 +325,8 @@ describe("sub-agent tracing", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
     const spans = body.resourceSpans[0].scopeSpans[0].spans;
-    expect(spans).toHaveLength(events.length + 1);
+    // Every record a reader draws (a `running` record is superseded), plus the root.
+    expect(spans).toHaveLength(foldSupersededSpans(events).length + 1);
     // One agent span for the worker with its children under it, and one root: the
     // child's own sessionEnd did not export the parent's session a second time.
     const worker = spans.filter((span: any) => span.name === "invoke_agent worker");
@@ -601,9 +606,11 @@ describe("sub-agent tracing: one span across pauses", () => {
     expect(humans.map((e) => e.status)).toEqual(["pending", "success", "pending", "success"]);
     expect(humans.map((e) => e.sequence)).toEqual([...humans.map((e) => e.sequence)].sort((a, b) => a - b));
     for (const h of humans) expect(ancestorsOf(h, drawn).some((a) => a.spanId === spans[2].spanId)).toBe(true);
-    // The file still holds, and counts, every record that was written.
+    // The file still holds, and counts, every record that was written: each
+    // segment opens with a running record and ends with a pending or final one.
+    expect(agentSpanRecords(cap.events).map((s) => s.status)).toEqual(["running", "pending", "running", "pending", "running", "success"]);
     const summary = cap.sessions.at(-1)!.summary;
-    expect(summary.eventCounts.span).toBe(3);
+    expect(summary.eventCounts.span).toBe(6);
     expect(summary.subagentIterations).toBe(5);
   });
 
@@ -1015,7 +1022,7 @@ describe("sub-agent tracing: sinks carry both records of a paused span", () => {
     summarization: false, tracing,
   });
 
-  it("the file sink's continued file holds the pending and the final record, in sequence order, and the summary counts both", async () => {
+  it("the file sink's continued file holds every record of the span, in sequence order, and the summary counts them all", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-trace-"));
     try {
       const parent = agentFor({ enabled: true, sink: fileSink(dir) });
@@ -1030,17 +1037,17 @@ describe("sub-agent tracing: sinks carry both records of a paused span", () => {
       expect(file).toHaveLength(1);
       const session = JSON.parse(fs.readFileSync(file[0], "utf8")) as TraceSessionFile;
       const spans = session.events.filter((e) => e.type === "span");
-      expect(spans.map((s) => s.status)).toEqual(["pending", "success"]);
-      expect(spans[0].spanId).toBe(spans[1].spanId);
+      expect(spans.map((s) => s.status)).toEqual(["running", "pending", "running", "success"]);
+      expect(new Set(spans.map((s) => s.spanId)).size).toBe(1);
       expect(session.events.map((e) => e.sequence)).toEqual([...session.events.map((e) => e.sequence)].sort((a, b) => a - b));
-      expect(session.summary.eventCounts.span).toBe(2);
+      expect(session.summary.eventCounts.span).toBe(4);
       expect(foldSupersededSpans(session.events).filter((e) => e.type === "span")).toHaveLength(1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("streaming mode delivers the pending record in the first leg and the final one, same id, in the last", async () => {
+  it("streaming mode delivers a running and the pending record in the first leg and a running and the final one, same id, in the last", async () => {
     const seen: Array<{ leg: number; event: TraceEventRecord }> = [];
     let leg = 1;
     const tracing = { enabled: true, mode: "streaming" as const, sink: customSink({ onEvent: (event) => { seen.push({ leg, event }); }, onSession: () => {} }) };
@@ -1051,7 +1058,122 @@ describe("sub-agent tracing: sinks carry both records of a paused span", () => {
     const pending = state.pendingApprovals.find((x: any) => x.status === "pending");
     await parent.invoke(parent.resolveToolApproval(state, { id: pending.id, approved: true, decidedBy: "ops" }) as any);
     const spans = seen.filter((x) => x.event.type === "span");
-    expect(spans.map((x) => [x.leg, x.event.status])).toEqual([[1, "pending"], [2, "success"]]);
-    expect(spans[0].event.spanId).toBe(spans[1].event.spanId);
+    expect(spans.map((x) => [x.leg, x.event.status])).toEqual([[1, "running"], [1, "pending"], [2, "running"], [2, "success"]]);
+    expect(new Set(spans.map((x) => x.event.spanId)).size).toBe(1);
+  });
+});
+
+// A host that stores each event as it lands (a streamed trace, read while the run
+// goes) must find the group a child's steps point at before the child finishes.
+describe("sub-agent tracing: a child that is still running", () => {
+  const iterationsOf = (events: TraceEventRecord[], name: string) => events.filter((e) => e.type === "agent_iteration" && e.actor?.name === name);
+  /** A parent that delegates `n` tasks in one call; each child makes one tool call, then answers. */
+  function fanOut(names: string[], tracing: unknown, tool = "delegate_to") {
+    const calls = tool === "spawn_subagents_parallel"
+      ? [call("p1", tool, { tasks: names.map((name) => ({ subagent: name, input: `task ${name}` })) })]
+      : names.map((name, i) => call(`p${i}`, tool, { subagent: name, input: `task ${name}` }));
+    return createSmartAgent({
+      name: "parent",
+      model: scripted("parent", [{ tool_calls: calls }, { content: "parent-done" }]),
+      subagents: names.map((name) => ({
+        name, header: "h",
+        model: scripted(name, [{ tool_calls: [call(`${name}-c`, "child_tool")] }, { content: `${name}-done` }], 5),
+        tools: [childTool()],
+      })),
+      summarization: false,
+      tracing: tracing as any,
+    });
+  }
+
+  it("opens the agent span as running before the child's first step, under the iteration that started it", async () => {
+    const cap = capture({ logData: true });
+    await fanOut(["worker"], cap.tracing).invoke({ messages: [{ role: "user", content: "go" }] } as any);
+    assertTree(cap);
+
+    const [running, final] = agentSpanRecords(cap.events);
+    expect(running.status).toBe("running");
+    expect(final.status).toBe("success");
+    expect(running.spanId).toBe(final.spanId);
+    expect(running.durationMs).toBeUndefined();
+    expect(metaOf(running)).toMatchObject({ name: "worker", status: "running" });
+    expect((running.data?.sections as any[]).find((s) => s.label === "Task")?.content).toBe("task worker");
+
+    const parentIteration = iterationsOf(cap.events, "parent")[0];
+    expect(running.parentSpanId).toBe(parentIteration.spanId);
+    const firstChildStep = cap.events.find((e) => e.actor?.name === "worker" && e.type === "agent_iteration")!;
+    expect(running.sequence).toBeLessThan(firstChildStep.sequence);
+    // The finished record still hangs off the delegating tool call, and is the one drawn.
+    const delegate = cap.events.find((e) => e.type === "tool_call" && e.label?.startsWith("Tool Execution - delegate_to"))!;
+    expect(final.parentSpanId).toBe(delegate.spanId);
+    expect(agentSpanRecords(foldSupersededSpans(cap.events))).toEqual([final]);
+  });
+
+  for (const tool of ["delegate_to", "spawn_subagents_parallel"]) {
+    it(`${tool}: at every point of the stream, each child step's group is already there`, async () => {
+      const seen: TraceEventRecord[] = [];
+      const tracing = { enabled: true, mode: "streaming" as const, sink: customSink({ onEvent: (e) => { seen.push(e); }, onSession: () => {} }) };
+      const res = await fanOut(["alpha", "beta"], tracing, tool).invoke({ messages: [{ role: "user", content: "go" }] } as any);
+      expect(res.content).toBe("parent-done");
+
+      const isSpanRecord = (e: TraceEventRecord) => e.type === "span" && e.actor?.role === "subagent";
+      for (let n = 1; n <= seen.length; n++) {
+        const drawn = foldSupersededSpans(seen.slice(0, n));
+        const ids = new Set(drawn.map((e) => e.spanId));
+        for (const e of drawn) {
+          // A finished span hangs off its delegating tool call, which is written right after it.
+          if (isSpanRecord(e) && e.status !== "running") continue;
+          if (e.actor?.name === "parent" && e.type === "agent_iteration") continue;
+          expect(ids.has(e.parentSpanId!), `after ${n} records: ${e.label} has no parent`).toBe(true);
+        }
+      }
+      // Each child is its own group, opened under the parent's first iteration.
+      const running = seen.filter((e) => isSpanRecord(e) && e.status === "running");
+      expect(running.map((e) => e.actor?.name).sort()).toEqual(["alpha", "beta"]);
+      expect(new Set(running.map((e) => e.spanId)).size).toBe(2);
+      const parentIteration = seen.find((e) => e.actor?.name === "parent" && e.type === "agent_iteration")!;
+      for (const e of running) expect(e.parentSpanId).toBe(parentIteration.spanId);
+    });
+  }
+
+  it("asTool: the child's span is running while it works, then finished", async () => {
+    const cap = capture();
+    const worker = createAgent({ name: "worker", model: scripted("child", [{ content: "child-done" }]), tools: [] });
+    const parent = createAgent({
+      name: "parent",
+      model: scripted("parent", [{ tool_calls: [call("p1", "ask_worker", { input: "x" })] }, { content: "parent-done" }]),
+      tools: [worker.asTool({ toolName: "ask_worker" })],
+      tracing: cap.tracing,
+    });
+    await parent.invoke({ messages: [{ role: "user", content: "go" }] } as any);
+    assertTree(cap);
+
+    const records = agentSpanRecords(cap.events);
+    expect(records.map((e) => e.status)).toEqual(["running", "success"]);
+    expect(records[0].spanId).toBe(records[1].spanId);
+    expect(records[0].parentSpanId).toBe(iterationsOf(cap.events, "parent")[0].spanId);
+    const childIteration = cap.events.find((e) => e.actor?.name === "worker" && e.type === "agent_iteration")!;
+    expect(records[0].sequence).toBeLessThan(childIteration.sequence);
+  });
+
+  it("traceSessionToOtlp exports the finished record only", () => {
+    const base = (over: Partial<TraceEventRecord>): TraceEventRecord => ({
+      id: `evt_${over.sequence}`, sessionId: "s", traceId: "t".repeat(32), type: "span", label: "Sub-agent x", status: "success",
+      timestamp: "2026-01-01T00:00:00.000Z", durationMs: 5, actor: { scope: "agent", name: "x", role: "subagent" }, ...over,
+    } as TraceEventRecord);
+    const session = {
+      sessionId: "s", traceId: "t".repeat(32), rootSpanId: "r".repeat(16), startedAt: "2026-01-01T00:00:00.000Z", status: "success",
+      errors: [], summary: { eventCounts: { span: 2 }, totalInputTokens: 0, totalOutputTokens: 0, totalCachedInputTokens: 0, totalBytesIn: 0, totalBytesOut: 0, totalDurationMs: 0 },
+      events: [
+        base({ sequence: 1, spanId: "i".repeat(16), type: "agent_iteration", parentSpanId: "r".repeat(16), actor: { scope: "agent", name: "p", role: "orchestrator" } }),
+        base({ sequence: 2, spanId: "a".repeat(16), status: "running", durationMs: undefined, parentSpanId: "i".repeat(16) }),
+        base({ sequence: 3, spanId: "b".repeat(16), type: "tool_call", parentSpanId: "i".repeat(16), actor: undefined }),
+        base({ sequence: 4, spanId: "a".repeat(16), parentSpanId: "b".repeat(16) }),
+      ],
+    } as unknown as TraceSessionFile;
+    const spans = (traceSessionToOtlp(session) as any).resourceSpans[0].scopeSpans[0].spans as any[];
+    const agent = spans.filter((s) => s.spanId === "a".repeat(16));
+    expect(agent).toHaveLength(1);
+    expect(agent[0].parentSpanId).toBe("b".repeat(16));
+    expect(spans).toHaveLength(1 + 3);
   });
 });

@@ -1689,7 +1689,8 @@ export function recordSubagentSpan(
     parentSpanId?: string;
     name: string;
     status: TraceEventRecord["status"];
-    durationMs: number;
+    /** Absent on a `running` record: the run has no extent yet. */
+    durationMs?: number;
     error?: string;
     /** Identity and outcome of the run, always recorded. */
     info: Record<string, any>;
@@ -1726,11 +1727,13 @@ export function recordSubagentSpan(
  * segments, and records are append-only: each pause records the run's agent span
  * `pending`, and the segment that ends the run records it again under the SAME
  * `spanId`, finished, with `durationMs` covering the run from its first segment
- * (so the span is drawn over its children from every segment, the wait included). The rule for a
- * reader: for each `spanId` the record with the highest `sequence` wins, and an
- * earlier record of that id is dropped only when it is `pending`. Nothing else is
- * ever dropped, so a repeated id on records that are not `pending` comes back
- * untouched. Order is preserved.
+ * (so the span is drawn over its children from every segment, the wait included).
+ * Each segment also opens with a `running` record of the span, so a trace read
+ * while the run goes (a streamed one) has the group the child's steps point at
+ * before the run ends. The rule for a reader: for each `spanId` the record with
+ * the highest `sequence` wins, and an earlier record of that id is dropped only
+ * when it is `pending` or `running`. Nothing else is ever dropped, so a repeated
+ * id on records that are neither comes back untouched. Order is preserved.
  *
  * The session summary is not rewritten: `eventCounts` keeps counting every record
  * that was written, which is what the file holds.
@@ -1747,7 +1750,9 @@ export function foldSupersededSpans<T extends { spanId?: string; sequence?: numb
     const current = winner.get(id);
     if (current === undefined || rank(events[i], i) >= rank(events[current], current)) winner.set(id, i);
   }
-  return events.filter((event, i) => !(event.spanId && event.status === "pending" && winner.get(event.spanId) !== i));
+  return events.filter(
+    (event, i) => !(event.spanId && (event.status === "pending" || event.status === "running") && winner.get(event.spanId) !== i),
+  );
 }
 
 /**

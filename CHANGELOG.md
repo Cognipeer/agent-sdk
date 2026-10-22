@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-10-22
+
+### Added
+- **A sub-agent's span is recorded `running` when it starts.** The agent span of a child (`delegate_to`, `spawn_subagent`, `spawn_subagents_parallel`, `asTool`) was recorded only when the child finished or paused, while its iterations and calls pointed at that `spanId` from the start. A host that stores events as they land (a `customSink` `onEvent`, `mode: "streaming"`) and draws the trace while the run goes found steps whose parent did not exist yet, and drew a child's iterations as if they were the parent's. Each segment of a child's run now opens with a record of the span, same `spanId`, `status: "running"`, under the parent's current iteration (the delegating tool call is written when it returns), without `durationMs`, with the `Sub-agent` section (`status: "running"`) and, under `logData`, the `Task`. The record that ends or pauses the segment supersedes it.
+
+### Changed
+- **`TraceEventRecord.status` gains `"running"`.** `foldSupersededSpans` drops an earlier `running` record of a span id as it drops a `pending` one. `summary.eventCounts.span` / `totalEvents` count the new records (one more per child segment). OTLP exports are unchanged: a `running` record is folded away (or held back like a `pending` one).
+- **Compatibility.** A reader that draws every record without `foldSupersededSpans` shows an extra `Sub-agent` record per child segment; fold first (the Cognipeer Console folds `running` from the release that adds this).
+
 ## [0.18.0] - 2026-10-19
 
 ### Fixed

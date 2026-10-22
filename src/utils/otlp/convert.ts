@@ -176,10 +176,12 @@ export function sessionToOtlp(file: TraceSessionFile, options: OtlpConvertOption
   // the segment that ends its run (see foldSupersededSpans) - unless this is the
   // terminal export: no later segment will finish it, and its children, already
   // exported or exported now, need a parent. It then goes out as it stands
-  // (status UNSET, `cognipeer.event.status` pending).
+  // (status UNSET, `cognipeer.event.status` pending). A `running` record is
+  // superseded by the record that ends or pauses its segment; one left standing
+  // is treated like a pending one.
   const everyEvent = file.events as EventView[];
   const exportedEvents = foldSupersededSpans(everyEvent).filter(
-    (event) => options.terminal || !(event.type === "span" && event.status === "pending"),
+    (event) => options.terminal || !(event.type === "span" && (event.status === "pending" || event.status === "running")),
   );
 
   const startMs = parseMs(file.startedAt);
