@@ -1048,9 +1048,12 @@ export type TraceEventRecord = {
    * A sub-agent's span (type span, actor.role subagent) is also pending while its
    * run waits; the segment that ends the run records it again under the SAME
    * spanId, finished. Draw one record per spanId: the highest sequence, dropping
-   * earlier pending ones (foldSupersededSpans).
+   * earlier pending and running ones (foldSupersededSpans).
+   * `running`: a sub-agent's span recorded when a segment of its run starts, so a
+   * reader of a trace streamed while the run goes has the group its steps point
+   * at. The record that ends (or pauses) the segment supersedes it.
    */
-  status: "success" | "error" | "skipped" | "retry" | "pending";
+  status: "success" | "error" | "skipped" | "retry" | "pending" | "running";
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;

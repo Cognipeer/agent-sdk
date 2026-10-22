@@ -1382,16 +1382,20 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             });
           }
           const startedAt = Date.now();
-          const recordSpan = (status: "success" | "error", extra: { error?: string; result?: string }) => {
+          // `running` when the child starts (a streamed trace has the group its steps
+          // point at), then the finished record, which supersedes it.
+          const recordSpan = (status: "running" | "success" | "error", extra: { error?: string; result?: string }) => {
             if (!traced || !isTraceSessionOpen(parentSession)) return;
+            const running = status === "running";
             recordSubagentSpan(parentSession, {
               spanId: agentSpanId,
-              parentSpanId: context?.traceSpanId ?? parentIterationSpanId,
+              // The delegating tool_call span only exists once the tool returns.
+              parentSpanId: running ? parentIterationSpanId : (context?.traceSpanId ?? parentIterationSpanId),
               name: opts.name || "agent",
               status,
-              durationMs: Date.now() - startedAt,
+              durationMs: running ? undefined : Date.now() - startedAt,
               error: extra.error,
-              info: { name: opts.name || "agent", mode: "asTool", depth: currentDepth + 1, parentToolCallId: context?.toolCallId, status: status === "success" ? "ok" : "error" },
+              info: { name: opts.name || "agent", mode: "asTool", depth: currentDepth + 1, parentToolCallId: context?.toolCallId, status: running ? "running" : status === "success" ? "ok" : "error" },
               task: input,
               result: extra.result,
             });
@@ -1413,6 +1417,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
             stream: Boolean(parentCtx.__streaming),
             cancellationToken: parentCtx.__cancellationToken ?? parentCtx.__abortSignal,
           };
+          recordSpan("running", {});
           let res;
           try {
             res = await instance.invoke({ messages: childMessages, ctx: childCtx } as any, childConfig as any);

@@ -332,9 +332,11 @@ async function runChild(
   // The child records into the parent's trace session, under an agent span of
   // its own. The span id belongs to the RUN, not to a segment of it: a child that
   // pauses and resumes records every segment under the same id (the pending record
-  // says so in `agentSpanId`), so the trace shows one group. A paused child records
-  // the span `pending`; the run's last segment records it again, finished, and the
-  // later record supersedes the earlier one (see `foldSupersededSpans`).
+  // says so in `agentSpanId`), so the trace shows one group. Each segment opens
+  // with the span `running` (a streamed trace has the group the child's steps
+  // point at while it works), a paused child records it `pending`, the run's last
+  // segment records it again, finished, and a later record supersedes an earlier
+  // one (see `foldSupersededSpans`).
   const parentSession = parentCtx.__traceSession as TraceSessionRuntime | undefined;
   const traced = isTraceSessionOpen(parentSession);
   // The record comes back from host-persisted state, so each field is checked and
@@ -358,18 +360,20 @@ async function runChild(
     ? createSubagentTraceScope(parentSession, { agentSpanId, name: spec.name, spawnId, mode: spec.mode, hitl: opts.allowHITL, iterations: opts.record?.iterations })
     : undefined;
   const recordSegment = (
-    status: "success" | "skipped" | "error" | "pending",
-    info: { subagentStatus: SubagentStatus | "paused"; input: string; error?: string; note?: string; content?: string },
+    status: "success" | "skipped" | "error" | "pending" | "running",
+    info: { subagentStatus: SubagentStatus | "paused" | "running"; input: string; error?: string; note?: string; content?: string },
   ) => {
     if (!traced || !isTraceSessionOpen(parentSession)) return;
+    const unfinished = status === "pending" || status === "running";
     recordSubagentSpan(parentSession, {
       spanId: agentSpanId,
-      // The tool_call span only exists once the tool returns; a paused child
-      // has not returned, so its span hangs off the iteration.
-      parentSpanId: status === "pending" ? parentIterationSpanId : (opts.parentSpanId ?? parentIterationSpanId),
+      // The tool_call span only exists once the tool returns; a running or
+      // paused child has not returned, so its span hangs off the iteration.
+      parentSpanId: unfinished ? parentIterationSpanId : (opts.parentSpanId ?? parentIterationSpanId),
       name: spec.name,
       status,
-      durationMs: elapsedMs(),
+      // A starting segment has no extent yet; a reader draws it over its children.
+      durationMs: status === "running" ? undefined : elapsedMs(),
       error: info.error,
       info: {
         id: spawnId,
@@ -380,7 +384,7 @@ async function runChild(
         parentToolCallId: opts.parentToolCallId,
         status: info.subagentStatus,
         // Only a run that paused has more than one segment to tell about.
-        ...(segment > 1 || status === "pending" ? { segments: segment } : {}),
+        ...(segment > 1 || unfinished ? { segments: segment } : {}),
         ...(info.note ? { note: info.note } : {}),
         ...(spec.metadata ? { metadata: spec.metadata } : {}),
       },
@@ -520,6 +524,7 @@ async function runChild(
   // before it paused, and those were merged into the parent back then.
   const usageBaseline = childInput.usage?.perRequest?.length ?? 0;
 
+  recordSegment("running", { subagentStatus: "running", input });
   let res: AgentInvokeResult<any>;
   try {
     res = await child.invoke(childInput, childConfig);
