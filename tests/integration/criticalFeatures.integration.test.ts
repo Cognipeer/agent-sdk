@@ -261,7 +261,7 @@ runReal('2. Summarization', () => {
     }, {
       onEvent: (e) => {
         allEvents.push(e);
-        if (e.type === 'summarization') {
+        if (e.type === 'summarization' && (e.phase === undefined || e.phase === 'done')) {
           summarizationEvents.push(e);
         }
       },

@@ -15,6 +15,7 @@ import { okResponse, spansOf } from "./helpers.js";
 
 vi.mock("../../../src/nodes/contextSummarize.js", () => ({
   LAST_SUMMARIZATION_CALL_KEY: "__lastSummarizationCall",
+  SUMMARIZATION_TRIGGER_KEY: "__summarizationTrigger",
   createContextSummarizeNode: () => async () => ({ ctx: {} }),
 }));
 

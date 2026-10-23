@@ -7,7 +7,7 @@ import { openPluginSession } from "../plugins/session.js";
 import { createPluginTraceRecorder } from "../plugins/trace.js";
 import { createContextTools, createGetToolResponseTool, hasToolResponseRecoveryReference } from "../contextTools.js";
 import { createAskUserQuestionTool } from "../humanLoop.js";
-import { createContextSummarizeNode, LAST_SUMMARIZATION_CALL_KEY } from "../nodes/contextSummarize.js";
+import { createContextSummarizeNode, LAST_SUMMARIZATION_CALL_KEY, SUMMARIZATION_TRIGGER_KEY } from "../nodes/contextSummarize.js";
 import { DEFERRED_TRACE_EVENTS_KEY, closeTraceContinuation } from "../utils/tracing.js";
 import { buildSystemPrompt } from "../prompts.js";
 import { resolverDecisionFactory, toolsDecisionFactory } from "../graph/decisions.js";
@@ -441,11 +441,16 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     return toolCalls.length === 0;
   }
 
-  /** Runs the summarizer and applies the result to state. Returns updated state and whether summarization succeeded. */
+  /**
+   * Runs the summarizer and applies the result to state. Returns updated state and whether summarization succeeded.
+   * `trigger` says which point of the run loop asked for the pass; it is reported on the
+   * pass's `summarization` events and never stored.
+   */
   async function trySummarize(
     currentState: SmartState,
     currentRawMessages: any[],
     ref: any,
+    trigger: "pre_leg" | "mid_leg" | "post_tools",
   ): Promise<{ state: SmartState; rawMessages: any[]; compressed: boolean }> {
     if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
 
@@ -477,7 +482,13 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       }
     }
 
-    const delta = await summarizer(currentState);
+    // The trigger rides on the ctx of the state the node sees, not on the state the
+    // driver keeps: the node hands that ctx back, so it is removed below.
+    const nodeState = { ...currentState, ctx: { ...(currentState.ctx || {}), [SUMMARIZATION_TRIGGER_KEY]: trigger } } as SmartState;
+    const delta = await summarizer(nodeState);
+    // The node books the summarizer's own spend on the state it is given. It was
+    // given a copy, so hand that bookkeeping back to the state the driver keeps.
+    if ((nodeState as any).usage !== (currentState as any).usage) (currentState as any).usage = (nodeState as any).usage;
     if (!delta || Object.keys(delta).length === 0) {
       // Stamp the tool-history size: the summarizer could not reclaim anything at
       // THIS point, which is not the same as never. A pass deferred because the
@@ -496,6 +507,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     const ctx = { ...(currentState.ctx || {}), ...(((delta as any).ctx as Record<string, any> | undefined) || {}) };
     const summarizationCall = (ctx as any)[LAST_SUMMARIZATION_CALL_KEY];
     delete (ctx as any)[LAST_SUMMARIZATION_CALL_KEY];
+    delete (ctx as any)[SUMMARIZATION_TRIGGER_KEY];
     delete ctx.__summarizationExhausted;
     delete (ctx as any).__summarizationExhaustedAtToolCount;
     const updated = await persistLatestSummary(syncPlanStateWith(ref, { ...currentState, ...delta, ctx } as SmartState));
@@ -810,7 +822,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         // Pre-agent summarization decision
         const next = summarizationEnabled ? decideBefore(state) : 'agent';
         if (next === 'contextSummarize' && summarizer) {
-          const result = await trySummarize(state, rawMessages, stateRef);
+          const result = await trySummarize(state, rawMessages, stateRef, 'pre_leg');
           state = result.state;
           rawMessages = result.rawMessages;
           noteTraceHandoff(state);
@@ -854,7 +866,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
           const ctx = { ...(state.ctx || {}) };
           delete ctx.__needsSummarization;
           state = { ...state, ctx } as SmartState;
-          const result = await trySummarize(state, rawMessages, stateRef);
+          const result = await trySummarize(state, rawMessages, stateRef, 'mid_leg');
           state = result.state;
           rawMessages = result.rawMessages;
           noteTraceHandoff(state);
@@ -878,7 +890,7 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
         if (summarizationEnabled) {
           const after = decideAfter(state);
           if (after === 'contextSummarize' && summarizer) {
-            const result = await trySummarize(state, rawMessages, stateRef);
+            const result = await trySummarize(state, rawMessages, stateRef, 'post_tools');
             state = result.state;
             rawMessages = result.rawMessages;
             noteTraceHandoff(state);

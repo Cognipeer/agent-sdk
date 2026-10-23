@@ -1429,10 +1429,55 @@ export type PlanEvent = {
   todoList?: PlanStepRecord[];
   version?: number;
   adherenceScore?: number;
+  /** Number of steps in the snapshot. */
+  count?: number;
+  /**
+   * The model tool call that produced this snapshot, so a consumer can place the
+   * plan in the transcript next to the call. Per call, not per tool object: two
+   * plan calls in one turn each carry their own id.
+   */
+  toolCallId?: string;
 };
 
 export type SummarizationEvent = {
   type: "summarization";
+  /**
+   * The identity of the pass: its synthetic `summarize_context` tool-call id
+   * (`call_summary_<ts>_<suffix>`, unique to the pass), the same id the
+   * transcript marker message carries. Shared by the `start` and the terminal
+   * event of one pass, so a consumer pairs events by `id` (not by `pass`).
+   */
+  id?: string;
+  /**
+   * `start` is emitted just before the summarizer model call, `done` when the pass
+   * replaced context, `skipped` when a pass that started ended without replacing
+   * anything (or failed, see `status`). Absent means `done` (events from before
+   * this field existed). A consumer that counts passes must count only
+   * `done`/absent.
+   */
+  phase?: "start" | "done" | "skipped";
+  /**
+   * Summaries so far + 1 (1-based). A pass that ends `skipped` makes no summary,
+   * so the next pass has the same number: `pass` is for display, `id` is the
+   * identity.
+   */
+  pass?: number;
+  /** Where in the run loop the pass was triggered. */
+  trigger?: "pre_leg" | "mid_leg" | "post_tools";
+  /**
+   * `ok`; `fallback` when the summarizer failed and a deterministic fallback
+   * summary was used; `error` when the pass itself failed unexpectedly (not the
+   * model call) and ended `skipped` just before the failure was rethrown.
+   */
+  status?: "ok" | "fallback" | "error";
+  /**
+   * The failure's message when `status` is `fallback` or `error`, clipped to 300
+   * characters. It is provider text for operators and logs, not for end users;
+   * the trace keeps the whole message.
+   */
+  error?: string;
+  /** The tool results THIS pass replaced (not those of earlier passes). */
+  compactedTools?: Array<{ toolCallId: string; toolName: string }>;
   summary: string;
   /** Number of messages that were compressed/summarized */
   messagesCompressed?: number;

@@ -239,9 +239,14 @@ function createPlanTool(
       expectedVersion: z.number().int().min(0).optional(),
       todoList: z.array(todoItemWireSchema).optional()
     }),
-    func: async ({ operation, expectedVersion, todoList }) => {
-      const toolStateRef = (manageTodo as any)._stateRef as undefined | { __onEvent?: (e: any) => void; ctx?: { __traceSession?: any } };
+    func: async ({ operation, expectedVersion, todoList }, context) => {
+      const toolStateRef = (manageTodo as any)._stateRef as undefined | { __onEvent?: (e: any) => void; __currentToolCallId?: string; ctx?: { __traceSession?: any } };
       const onEvent = toolStateRef?.__onEvent;
+      // The id of THIS call. The tools node passes it per call; the shared
+      // `_stateRef.__currentToolCallId` is overwritten by every sibling call in
+      // the turn, so it is only a fallback for a caller that invokes `func`
+      // directly without a call context.
+      const toolCallId: string | undefined = context?.toolCallId || toolStateRef?.__currentToolCallId || undefined;
       const emitPlanEvent = (list: any[]) => {
         const version = stateRef.planVersion || 1;
         const adherenceScore = stateRef.adherenceScore || 0;
@@ -251,6 +256,7 @@ function createPlanTool(
           version,
           adherenceScore,
           count: Array.isArray(list) ? list.length : 0,
+          ...(toolCallId ? { toolCallId } : {}),
         };
         onEvent?.({ type: "plan", todoList: list, ...planData });
 

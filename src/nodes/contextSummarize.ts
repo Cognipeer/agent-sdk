@@ -1,4 +1,5 @@
 // Lightweight message helpers to avoid hard dependency on LangChain
+import { nanoid } from "nanoid";
 import type {
     SmartAgentOptions,
     SmartState,
@@ -33,6 +34,48 @@ const humanMessage = (content: string) => ({ role: 'user', content });
 
 /** ctx key: the last pass's model call, read (and removed) by the smart driver for `postCompact`. */
 export const LAST_SUMMARIZATION_CALL_KEY = "__lastSummarizationCall";
+
+/**
+ * ctx key the smart driver sets, on the state it hands the node, to say where in
+ * the run loop the pass was triggered. It is input only: the driver removes it
+ * from the ctx the node returns, so it never reaches persisted state.
+ */
+export const SUMMARIZATION_TRIGGER_KEY = "__summarizationTrigger";
+
+const SUMMARIZATION_TRIGGERS = ["pre_leg", "mid_leg", "post_tools"] as const;
+
+/**
+ * Longest `error` a `summarization` event carries. It is the provider's own text
+ * and hosts relay events onward, so the event gets a clipped copy; the trace
+ * keeps the whole message.
+ */
+const MAX_EVENT_ERROR_CHARS = 300;
+
+function eventErrorText(message: string | undefined): string | undefined {
+    if (!message) return undefined;
+    return message.length > MAX_EVENT_ERROR_CHARS
+        ? `${message.slice(0, MAX_EVENT_ERROR_CHARS - 3)}...`
+        : message;
+}
+
+/** What every `summarization` event of one pass repeats, so a consumer can tie them together. */
+type PassIdentity = {
+    id: string;
+    pass: number;
+    trigger?: SummarizationEvent["trigger"];
+};
+
+/**
+ * What a pass has told its consumer so far, shared with the node's guard: a pass
+ * that announced itself with `start` ends with exactly one `done` or `skipped`,
+ * also when something in it throws.
+ */
+type PassEvents = {
+    /** Set once `start` went out. */
+    started?: PassIdentity;
+    /** Set just before the terminal event goes out, so a consumer that throws cannot cause a second one. */
+    ended?: boolean;
+};
 
 /** Per-message cap in the summarizer prompt (~500 tokens). */
 const MAX_MESSAGE_CHARS = 2000;
@@ -515,7 +558,7 @@ function repairStructuredSummary(previous: StructuredSummary | undefined, curren
  *    - A new tool message with the summary content is appended.
  */
 export function createContextSummarizeNode(opts: SmartAgentOptions) {
-  return async (state: SmartState): Promise<Partial<SmartState>> => {
+  const summarizePass = async (state: SmartState, events: PassEvents): Promise<Partial<SmartState>> => {
         const resolved = getResolvedSmartConfig(opts, state.agent as any);
         const config = resolved.summarization;
         if (!config.enable) return {};
@@ -792,10 +835,40 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         ...(rawModelOutput !== undefined ? [{ role: "assistant", content: rawModelOutput, name: "summarization_result" }] : []),
     ]));
 
+    // Identity of this pass, fixed before the model call so the `start` event, the
+    // terminal event and the transcript marker all name the same pass. The id is
+    // the identity: the timestamp keeps passes in order and the suffix keeps two
+    // of them in the same millisecond (parallel sub-agents, a fast mocked model)
+    // from sharing one. `pass` is only "summaries so far + 1": a pass that ends
+    // `skipped` makes no summary, so the next one repeats its number.
+    const summaryToolCallId = `call_summary_${Date.now()}_${nanoid(6)}`;
+    const passNumber = (Array.isArray(state.summaries) ? state.summaries.length : 0) + 1;
+    const rawTrigger = (state.ctx as any)?.[SUMMARIZATION_TRIGGER_KEY];
+    const trigger = (SUMMARIZATION_TRIGGERS as readonly string[]).includes(rawTrigger)
+        ? rawTrigger as SummarizationEvent["trigger"]
+        : undefined;
+    const passIdentity: PassIdentity = {
+        id: summaryToolCallId,
+        pass: passNumber,
+        ...(trigger ? { trigger } : {}),
+    };
+
     const startTime = Date.now();
         try {
                 if (!model || typeof model.invoke !== "function") {
                     throw new Error("Summarization model is unavailable.");
+                }
+                // A model call is about to happen: let a live consumer show the pass
+                // in progress. It is announced here, not earlier, so a pass with no
+                // model to call (it falls back locally) never says it started. The
+                // pass ends with exactly one `done` or `skipped` event. A consumer
+                // that throws on this marker must not be taken for a summarizer
+                // failure by the catch below.
+                events.started = passIdentity;
+                try {
+                    onEvent?.({ type: "summarization", phase: "start", ...passIdentity, summary: "" } as SummarizationEvent);
+                } catch {
+                    // A host callback; the pass goes on without it.
                 }
                 // A LangChain model reports this call to its own callbacks
                 // (LangSmith…) as a named run instead of an anonymous chat call.
@@ -868,29 +941,14 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
                 integrity = noteDroppedDirectives({ passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: ["Fallback summary generated locally."] });
                 summaryText = renderStructuredSummary(structuredSummary);
         
-        // Emit error event for onEvent
-        const errorEvent: SummarizationEvent = {
-          type: "summarization",
-                    summary: summaryText,
-                    messagesCompressed: compressableMessages.length,
-          inputTokens: inputTokensEstimate,
-                    outputTokens: countApproxTokens(summaryText),
-          durationMs,
-          previousSummary: previousSummary || undefined,
-          tokenCountBefore,
-                    tokenCountAfter: tokenCountBefore,
-                    structuredSummary,
-                    integrity,
-                    ...(modelName ? { model: modelName } : {}),
-                    ...(droppedDirectives.length > 0 ? { droppedDirectives } : {}),
-        };
-        onEvent?.(errorEvent);
-        
         // Traced once, below, with the rest of the pass: as an error event
         // carrying the failure and the summary the fallback put in its place.
         summarizerError = traceErrorOf(err);
                 // Continue with local fallback summary to avoid losing the compaction step.
     }
+    // What the pass's events say about a failed summarizer: a clipped copy of the
+    // provider's message (hosts relay events onward). The trace keeps it whole.
+    const eventError = eventErrorText(summarizerError?.message);
 
     // 2. Build a map of tool_call_id -> assistant message index
     // This ensures we only keep tool messages that have a matching assistant with tool_calls
@@ -1041,6 +1099,18 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     if (actuallyCompressed.length === 0) {
         // All compressable messages were protected (recent). Skip summarization to avoid
         // injecting a summary + synthetic messages without actually reducing context.
+        // A pass that announced itself with a `start` must also say it ended. One
+        // that never did (no model to call) stays as silent as it always was.
+        if (events.started) {
+            events.ended = true;
+            onEvent?.({
+                type: "summarization",
+                phase: "skipped",
+                ...passIdentity,
+                summary: "",
+                ...(fallback ? { status: "fallback", ...(eventError ? { error: eventError } : {}) } : {}),
+            } as SummarizationEvent);
+        }
         return {};
     }
 
@@ -1049,8 +1119,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
 
     // 5. Append the summarization interaction
     // We inject a fake tool call and response to represent the summarization event in the history.
-    const summaryToolCallId = `call_summary_${Date.now()}`;
-    
+    // (summaryToolCallId was fixed at the start of the pass.)
     // The assistant "calls" the summarizer
     const assistantSummaryCall: BaseMessage = {
         role: "assistant", // "assistant"
@@ -1084,9 +1153,18 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     const finalMessages = [...validatedMessages, assistantSummaryCall, toolSummaryResponse];
     const tokenCountAfter = countMessagesTokens(finalMessages);
 
-    // Emit successful summarization event (use actual values from model response if available, fallback to estimates)
+    // Emit the pass's terminal event (use actual values from model response if available, fallback to estimates).
+    // A failed summarizer is reported here too, as `status: "fallback"`, rather than
+    // by an event of its own: one pass, one terminal event.
     const summarizationEvent: SummarizationEvent = {
       type: "summarization",
+      phase: "done",
+      ...passIdentity,
+      status: fallback ? "fallback" : "ok",
+      ...(fallback && eventError ? { error: eventError } : {}),
+      compactedTools: actuallyCompressed
+        .filter((m) => typeof m.tool_call_id === "string" && m.tool_call_id)
+        .map((m) => ({ toolCallId: m.tool_call_id as string, toolName: m.name || "" })),
       summary: summaryText,
       messagesCompressed: compressableMessages.length,
       inputTokens: inputTokensActual ?? inputTokensEstimate,
@@ -1103,6 +1181,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
       ...(modelName ? { model: modelName } : {}),
       ...(droppedDirectives.length > 0 ? { droppedDirectives } : {}),
     };
+    events.ended = true;
     onEvent?.(summarizationEvent);
 
     // One trace event per pass. It used to be recorded straight into the
@@ -1172,6 +1251,9 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
       },
     });
 
+    // The trigger was input for this pass only; it must not outlive it on ctx.
+    const { [SUMMARIZATION_TRIGGER_KEY]: _passTrigger, ...carriedCtx } = (ctxWithDeferredTrace ?? (state.ctx as Record<string, any> | undefined) ?? {}) as Record<string, any>;
+
     return {
         messages: finalMessages as any,
                 summaries,
@@ -1181,7 +1263,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         // held for the next leg. The smart driver merges ctx and removes the
         // call record once the hook has seen it.
         ctx: {
-            ...(ctxWithDeferredTrace ?? (state.ctx as Record<string, any> | undefined) ?? {}),
+            ...carriedCtx,
             [LAST_SUMMARIZATION_CALL_KEY]: {
                 ...(modelName ? { model: modelName } : {}),
                 durationMs,
@@ -1198,5 +1280,34 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
             },
         } as any,
     };
+  };
+
+  return async (state: SmartState): Promise<Partial<SmartState>> => {
+    const events: PassEvents = {};
+    try {
+      return await summarizePass(state, events);
+    } catch (err) {
+      // The pass told its consumer it started. A throw from here on would leave a
+      // live UI showing it in progress until the run's own failure arrives, so the
+      // pass ends first, with the one terminal event it still owes, and then fails.
+      if (events.started && !events.ended) {
+        events.ended = true;
+        const onEvent = (state.ctx as any)?.__onEvent as ((e: SmartAgentEvent) => void) | undefined;
+        const error = eventErrorText(traceErrorOf(err).message);
+        try {
+          onEvent?.({
+            type: "summarization",
+            phase: "skipped",
+            ...events.started,
+            summary: "",
+            status: "error",
+            ...(error ? { error } : {}),
+          } as SummarizationEvent);
+        } catch {
+          // The pass's own failure is the one to report.
+        }
+      }
+      throw err;
+    }
   };
 }
