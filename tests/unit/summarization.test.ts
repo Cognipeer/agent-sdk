@@ -177,7 +177,8 @@ async function runRepeatedSummarizationScenario() {
     }],
   }, {
     onEvent: (event: any) => {
-      if (event.type === 'summarization') {
+      // Count passes, not progress markers: `start`/`skipped` carry no token counts.
+      if (event.type === 'summarization' && (event.phase === undefined || event.phase === 'done')) {
         summarizationEvents.push(event as SummarizationEvent);
       }
 
@@ -245,7 +246,7 @@ describe('Summarization with deterministic mock models', () => {
       }],
     }, {
       onEvent: (event: any) => {
-        if (event.type === 'summarization') {
+        if (event.type === 'summarization' && (event.phase === undefined || event.phase === 'done')) {
           summarizationEvents.push(event as SummarizationEvent);
         }
 

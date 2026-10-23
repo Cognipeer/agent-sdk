@@ -117,6 +117,24 @@ budget is filled with user messages first (up to 60% of it; the first message
 and the newest win when they do not all fit), then with the newest assistant
 and tool messages. An oversized message keeps its start and its end.
 
+## Events
+
+`onEvent` receives `summarization` events that follow a pass from beginning to
+end, so a UI can show it where it happened:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The identity of the pass: its `summarize_context` tool-call id (`call_summary_<timestamp>_<suffix>`). The transcript marker carries the same one; pair a pass's events by `id`. |
+| `phase` | `start` (just before the summarizer model call, empty `summary`), `done`, or `skipped` (a started pass that replaced nothing, or that failed: see `status`). Absent means `done`. |
+| `pass` | Summaries so far + 1 (1-based). A `skipped` pass makes no summary, so the next pass repeats its number: use it for display, not as a key. |
+| `trigger` | `pre_leg`, `mid_leg` or `post_tools`: where in the run loop the pass was asked for. |
+| `status` / `error` | `ok`; `fallback` when the summarizer failed and the local fallback summary was used; `error` when the pass itself failed unexpectedly (the failure is then rethrown). `error` is the failure's message, clipped to 300 characters: provider text for operators and logs, not for end users. The trace keeps the whole message. |
+| `compactedTools` | `{ toolCallId, toolName }` of the tool results this pass replaced. |
+
+A pass that started ends with exactly one `done` or `skipped` event, a failed
+summarizer included (and a pass that throws, with `skipped` and `status: error`).
+Count passes by counting events whose `phase` is absent or `done`.
+
 ## Observability
 
 Every pass is one `summarization` trace event, in the same session as the turn

@@ -79,6 +79,8 @@ For product integrations, this rule keeps your autonomous agent stable across re
 
 > `state.plan` is authoritative. `plan` events are just signals.
 
+A `plan` event carries `toolCallId`, the id of the `manage_plan` call that produced the snapshot, so a UI can show the plan next to that call in the transcript. Two plan calls in one turn each carry their own id.
+
 ## How planning behaves in practice
 
 Planning is adaptive, not mandatory.

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-10-23
+
+### Added
+- **`PlanEvent.toolCallId`.** The `plan` event now names the model tool call that produced the snapshot (`manage_plan` / `manage_todo_list`), so a UI can place the plan next to the call in the transcript. The id is the one the tools node passes to the tool with each call, so two plan calls in the same turn each carry their own; the shared per-tool field is only a fallback for a tool invoked directly, without a call context. It is also on the trace record's `Plan Metadata`. `PlanEvent.count` (the number of steps, already sent) is now declared.
+- **`SummarizationEvent` describes the pass it belongs to.** New optional fields: `id` (the pass's identity: its `summarize_context` tool-call id, the same one the transcript marker message carries), `phase` (`"start"`, `"done"` or `"skipped"`; absent means `"done"`), `pass` (summaries so far + 1, 1-based; a pass that ends `"skipped"` makes no summary, so the next pass repeats its number: pair a pass's events by `id`, not by `pass`), `trigger` (`"pre_leg"`, `"mid_leg"` or `"post_tools"`: which point of the run loop asked for the pass), `status` (`"ok"`, `"fallback"` or `"error"`), `error` (the failure's message when `status` is not `"ok"`) and `compactedTools` (`{ toolCallId, toolName }` of the tool results THIS pass replaced). `error` is provider text for operators and logs, not for end users: it is clipped to 300 characters on the event, and the trace keeps the whole message.
+- **A pass announces itself.** A `summarization` event with `phase: "start"` (empty `summary`) is emitted right before the summarizer model call, so a live UI can show the pass while it runs. A pass that started ends with exactly one terminal event: `phase: "done"`, or `phase: "skipped"` when it replaced nothing. A started pass that throws also ends with `phase: "skipped"`, with `status: "error"` and the failure in `error`, and then the error is rethrown. Passes that never reach the model call (nothing compressible, only the newest turn compressible) emit nothing, as before; a pass with no summarizer model to call falls back locally and emits only its `done` event.
+
+### Changed
+- **A failed summarizer is one terminal event, not two.** It used to emit an event from the failure itself and another when the pass finished. The pass now emits exactly one terminal event (`phase: "done"`, `status: "fallback"`, `error`; `phase: "skipped"` instead when it then replaced nothing). The trace is unchanged: still one `error` event per pass.
+- **Counting passes.** A consumer that counts or sums `summarization` events must count only those with `phase` absent or `"done"`; `"start"` and `"skipped"` are progress markers that carry no token counts.
+- **The pass's tool-call id is unique.** The synthetic `summarize_context` tool-call id is now `call_summary_<timestamp>_<suffix>` (33 characters) instead of `call_summary_<timestamp>`, so two passes in the same millisecond no longer share one. Nothing in the SDK reads its shape; a consumer that matched the old one exactly has to accept the suffix.
+- The `summarization` events a pass emits now carry the fields above in addition to everything they carried before; no existing field changed meaning.
+
 ## [0.19.0] - 2026-10-22
 
 ### Added
