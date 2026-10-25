@@ -4,7 +4,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@cognipeer/agent-sdk)](https://www.npmjs.com/package/@cognipeer/agent-sdk) [![npm downloads](https://img.shields.io/npm/dm/@cognipeer/agent-sdk)](https://www.npmjs.com/package/@cognipeer/agent-sdk) [![license](https://img.shields.io/github/license/Cognipeer/agent-sdk)](LICENSE) [![docs](https://img.shields.io/badge/docs-docs.cognipeer.com-0A7CFF)](https://docs.cognipeer.com/agent-sdk/) [![GitHub stars](https://img.shields.io/github/stars/Cognipeer/agent-sdk?style=social)](https://github.com/Cognipeer/agent-sdk)
 
-[Docs](https://docs.cognipeer.com/agent-sdk/) · [Quick start](#quick-start) · [Examples](examples/) · [Changelog](CHANGELOG.md)
+[Docs](https://docs.cognipeer.com/agent-sdk/) · [Quick start](#quick-start) · [Examples](examples/) · [Changelog](CHANGELOG.md) · [Contact](mailto:developer@cognipeer.com)
+
+**Adoption:** in active use at close to 20 companies that Cognipeer supports as enterprise customers. Open-source users are not included in this count.
 
 Lightweight, message-first agent runtime that keeps tool calls transparent, supports provider-native reasoning plus post-tool reflection, automatically summarizes long histories, and ships with planning, multi-agent handoffs, and structured tracing.
 
@@ -521,3 +523,5 @@ Contributions welcome! Open issues or PRs against `main` with reproduction detai
 | [cognipeer-observability](https://github.com/Cognipeer/cognipeer-observability) | Drop-in agent tracing for LangChain, LangGraph, OpenAI Agents and OpenTelemetry |
 
 If this project is useful to you, a ⭐ on GitHub helps other developers find it.
+
+Questions or enterprise support: [developer@cognipeer.com](mailto:developer@cognipeer.com).
