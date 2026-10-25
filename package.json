@@ -54,7 +54,12 @@
     "anthropic",
     "sdk",
     "typescript",
-    "cognipeer"
+    "cognipeer",
+    "ai-agent",
+    "agents",
+    "tool-calling",
+    "mcp",
+    "multi-agent"
   ],
   "author": "cognipeer",
   "repository": {
@@ -64,7 +69,7 @@
   "bugs": {
     "url": "https://github.com/Cognipeer/agent-sdk/issues"
   },
-  "homepage": "https://github.com/Cognipeer/agent-sdk#readme",
+  "homepage": "https://docs.cognipeer.com/agent-sdk/",
   "peerDependencies": {
     "@langchain/core": "^0.3.0 || ^1.0.0",
     "@langchain/openai": "^0.3.0 || ^1.0.0",
