@@ -26,6 +26,12 @@ export const ANTHROPIC_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   ...MODEL_RULES.budgets,
 };
 
+// Adaptive thinking has no budget: `max_tokens` is one hard cap over thinking
+// plus the visible answer, so a small value is spent on thinking alone.
+export const ANTHROPIC_ADAPTIVE_MAX_TOKENS: Record<Exclude<ReasoningEffort, "none">, number> = {
+  ...MODEL_RULES.adaptiveMaxTokens,
+};
+
 export const GEMINI_EFFORT_BUDGET: Record<ReasoningEffort, number> = {
   // 0 is Gemini's own documented spelling for "do not think", and unlike
   // Anthropic it has to be SENT — hence `applyGeminiReasoning` testing for null
@@ -40,6 +46,8 @@ const THINKING_OUTPUT_RESERVE = 1024;
 const MIN_THINKING_BUDGET = 1024;
 /** Floor for `max_tokens` once thinking is enabled (budget + reserve at least this). */
 const THINKING_MIN_MAX_TOKENS = 4096;
+/** Gemini counts thinking tokens against `maxOutputTokens`; keep this much for the answer. */
+const GEMINI_OUTPUT_RESERVE = 2048;
 
 /** Maps a unified reasoning config onto the OpenAI Chat Completions body.
  *
@@ -92,7 +100,13 @@ export function resolveThinkingForm(model: unknown, mode: ThinkingMode | undefin
   return supportsAdaptiveThinking(model) ? "adaptive" : "budget";
 }
 
-type ThinkingOpts = { model?: string; mode?: ThinkingMode; rule?: ModelRule };
+type ThinkingOpts = {
+  model?: string;
+  mode?: ThinkingMode;
+  rule?: ModelRule;
+  /** max_tokens on the body is the provider's own default, not the caller's: adaptive thinking may raise it. */
+  defaultedMaxTokens?: boolean;
+};
 
 /** Drops the sampling params the rule does not allow (all of them for Claude 5.x; while thinking for older Claude). */
 export function enforceAnthropicSampling(target: Record<string, any>, rule: ModelRule, thinkingOn: boolean, bedrock = false): void {
@@ -110,6 +124,7 @@ function applyAdaptiveThinking(
   rule: ModelRule,
   setThinking: (v: Record<string, any>) => void,
   setOutputConfig: (o: Record<string, any>) => void,
+  raiseMaxTokens: (floor: number) => void,
 ): boolean {
   let requested = normalizeEffort(reasoning.effort);
   if (!requested && typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
@@ -130,6 +145,8 @@ function applyAdaptiveThinking(
   if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
   setThinking(thinking);
   setOutputConfig({ effort: mapped.effort });
+  const floor = ANTHROPIC_ADAPTIVE_MAX_TOKENS[mapped.effort as Exclude<ReasoningEffort, "none">];
+  if (floor) raiseMaxTokens(floor);
   return true;
 }
 
@@ -154,7 +171,10 @@ export function applyAnthropicReasoning(
     return;
   }
   if (resolveThinkingForm(opts?.model ?? body.model, opts?.mode, rule) === "adaptive") {
-    const on = applyAdaptiveThinking(reasoning, rule, (t) => (body.thinking = t), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }));
+    const on = applyAdaptiveThinking(reasoning, rule, (t) => (body.thinking = t), (o) => (body.output_config = { ...(body.output_config ?? {}), ...o }),
+      // Only the provider's own default: a caller's max_tokens is a hard cap and stays
+      // (adaptive thinking, unlike a budget, does not require room above it).
+      (floor) => { if (opts?.defaultedMaxTokens && typeof body.max_tokens === "number" && body.max_tokens < floor) body.max_tokens = floor; });
     enforceAnthropicSampling(body, rule, on);
     return;
   }
@@ -198,7 +218,8 @@ export function applyBedrockReasoning(
   }
   if (resolveThinkingForm(opts?.model ?? body.modelId, opts?.mode, rule) === "adaptive") {
     const fields = () => (body.additionalModelRequestFields ??= {});
-    const on = applyAdaptiveThinking(reasoning, rule, (t) => (fields().thinking = t), (o) => (fields().output_config = { ...(fields().output_config ?? {}), ...o }));
+    // No raise here: an unset maxTokens is the model maximum on Converse, and a set one is the caller's cap.
+    const on = applyAdaptiveThinking(reasoning, rule, (t) => (fields().thinking = t), (o) => (fields().output_config = { ...(fields().output_config ?? {}), ...o }), () => {});
     if (body.inferenceConfig) enforceAnthropicSampling(body.inferenceConfig, rule, on, true);
     return;
   }
@@ -240,6 +261,13 @@ export function applyGeminiReasoning(
   if (reasoning.includeThoughts) thinkingConfig.includeThoughts = true;
   if (reasoning.providerExtras) Object.assign(thinkingConfig, reasoning.providerExtras);
   generationConfig.thinkingConfig = thinkingConfig;
+  // Thinking tokens come out of maxOutputTokens: keep room for the answer.
+  // Dynamic (-1), 0 and levels have no known size, so they are left alone.
+  const tb = thinkingConfig.thinkingBudget;
+  const cap = generationConfig.maxOutputTokens;
+  if (typeof tb === "number" && tb > 0 && typeof cap === "number" && cap < tb + GEMINI_OUTPUT_RESERVE) {
+    generationConfig.maxOutputTokens = tb + GEMINI_OUTPUT_RESERVE;
+  }
 }
 
 function clampBudget(budget: number, maxTokens: number | undefined): number {

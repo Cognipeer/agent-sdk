@@ -298,6 +298,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return next;
     };
     publish(state);
+    // Consumed like `__paused`: a limit ended the previous run, not this one
+    // (a budget is re-checked at the top of every iteration anyway).
+    if (state.ctx?.__limitBreached) {
+      const nextCtx = { ...state.ctx };
+      delete nextCtx.__limitBreached;
+      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
+    }
     if (state.ctx?.__paused) {
       const nextCtx = { ...state.ctx };
       delete nextCtx.__paused;
@@ -382,6 +389,18 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return { breached: false };
     };
     let iterations = 0;
+    const announceLimit = async (reason: string) => {
+      emit?.({ type: "metadata", limitBreached: reason });
+      const limitHost = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
+      if (limitHost?.has("notification")) {
+        // Observation only: a throwing handler must not turn a graceful
+        // limit exit into a thrown run.
+        await limitHost.runObservers("notification", {
+          kind: "limit",
+          detail: { reason, iteration: iterations },
+        });
+      }
+    };
     // Run-scoped reflection counter. `state.reflections` accumulates across the
     // whole (possibly resumed) conversation, so it cannot back `maxPerRun`.
     let reflectionsThisRun = 0;
@@ -468,16 +487,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       // tokens after the cap has been hit.
       const budget = checkBudgetBreached();
       if (budget.breached) {
-        emit?.({ type: "metadata", limitBreached: budget.reason });
-        const limitHost = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
-        if (limitHost?.has("notification")) {
-          // Observation only: a throwing handler must not turn a graceful
-          // budget exit into a thrown run.
-          await limitHost.runObservers("notification", {
-            kind: "limit",
-            detail: { reason: budget.reason, iteration: iterations },
-          });
-        }
+        await announceLimit(budget.reason);
         // The reviewer's answer that resumed this run is still owed to the trace:
         // no iteration opens below to record it.
         recordHumanDecisions(state.ctx?.__traceSession, state);
@@ -634,6 +644,14 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
       } else {
         resumeStage = null;
+      }
+
+      // The model call itself ended the run: its reply hit the output limit
+      // mid tool call (agentCore dropped the call). Nothing is routed to the
+      // tools node, and the structured-output nudge below must not fire either.
+      if (!skippingAgent && state.ctx?.__limitBreached) {
+        await announceLimit(String(state.ctx.__limitBreached));
+        break;
       }
 
       const lastMsg: any = state.messages[state.messages.length - 1];

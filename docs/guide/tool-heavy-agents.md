@@ -23,7 +23,7 @@ const provider = createProvider({
 });
 ```
 
-This places cache breakpoints on the stable prefix `[system + tools]`. Anthropic charges roughly 10% of normal input pricing for cache hits; Bedrock applies the same model via `cachePoint` blocks.
+This places cache breakpoints on the stable prefix `[system + tools]` and, with the default `strategy: "auto"`, on the growing conversation tail as well (Anthropic's automatic caching; a rolling `cachePoint` on Bedrock), so every step of a tool loop reads the earlier turns from cache. Cache reads cost a fraction of the input price (0.1x on most Claude models, less on some); writes cost more than plain input (1.25x for the 5-minute TTL). See [Native providers](./native-providers.md) for the options.
 
 OpenAI / Azure cache automatically once the prompt exceeds the provider's threshold — no breakpoint configuration needed.
 

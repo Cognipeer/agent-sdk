@@ -20,6 +20,8 @@ The SDK has several budget surfaces. Configure them together for production agen
 
 Budget breaches emit a `metadata` event with `limitBreached: string` and exit the loop cleanly. Partial results stay on `result.content` and `result.state`.
 
+The same event ends a run whose reply stopped on the per-call output limit (finish reason `length`) in the middle of a tool call: `limitBreached` then starts with `maxOutputTokens`. The cut-off call is not run (its arguments are incomplete); it is dropped from the transcript and recorded as a skipped `tool_call` in the trace. A `length` reply without tool calls is returned as it is. A per-call `maxTokens` (invoke options `maxTokens` / `max_tokens` / `maxOutputTokens`) wins over the model's default.
+
 ```ts
 const agent = createSmartAgent({
   model,

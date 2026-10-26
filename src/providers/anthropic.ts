@@ -4,7 +4,7 @@
 import { supportsForcedToolChoice, forcedToolChoiceRejected } from "./utils/toolChoice.js";
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
-import { applyAnthropicReasoning, enforceAnthropicSampling, type ThinkingMode } from "./utils/reasoning.js";
+import { applyAnthropicReasoning, enforceAnthropicSampling, supportsAdaptiveThinking, type ThinkingMode } from "./utils/reasoning.js";
 import { resolveModelRule, applyDropParams, type RulePatch } from "../models/rules.js";
 import { runWithModelAdjustments } from "../models/adjust.js";
 import {
@@ -17,11 +17,31 @@ import {
   type ToolDefinition,
   type ReasoningBlock,
   type AnthropicProviderConfig,
+  type PromptCachingConfig,
   type ProviderType,
   ProviderError,
 } from "./types.js";
 
 const DEFAULT_MAX_TOKENS = 4096;
+/** Adaptive-thinking models think by default, and 4096 truncates mid-thought. */
+const DEFAULT_MAX_TOKENS_ADAPTIVE = 16384;
+/** The Messages API accepts at most this many cache breakpoints per request. */
+const MAX_CACHE_BREAKPOINTS = 4;
+
+function defaultMaxTokens(model: unknown): number {
+  return supportsAdaptiveThinking(model) ? DEFAULT_MAX_TOKENS_ADAPTIVE : DEFAULT_MAX_TOKENS;
+}
+
+/** Counts explicit `cache_control` markers in system, tools and messages. */
+function countCacheMarkers(node: unknown): number {
+  if (Array.isArray(node)) return node.reduce((n: number, v) => n + countCacheMarkers(v), 0);
+  if (!node || typeof node !== "object") return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    n += k === "cache_control" ? (v != null ? 1 : 0) : countCacheMarkers(v);
+  }
+  return n;
+}
 
 /** Enforces the Anthropic rules around a caller-supplied `thinking` block
  * without altering the caller's choice: enabled thinking needs
@@ -51,6 +71,7 @@ export class AnthropicProvider extends BaseProvider {
   private readonly anthropicVersion: string;
 
   private readonly promptCachingEnabled: boolean;
+  private readonly promptCaching: Required<Omit<PromptCachingConfig, "enabled">>;
   private readonly thinkingMode: ThinkingMode;
 
   constructor(config: AnthropicProviderConfig) {
@@ -63,6 +84,10 @@ export class AnthropicProvider extends BaseProvider {
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
     this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
+    this.promptCaching = {
+      strategy: config.prompt_caching?.strategy ?? "auto",
+      ttl: config.prompt_caching?.ttl ?? "5m",
+    };
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
   }
 
@@ -240,7 +265,7 @@ export class AnthropicProvider extends BaseProvider {
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
       messages: this.toAnthropicMessages(messages),
-      max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: request.maxTokens ?? defaultMaxTokens(request.model || this.defaultModel),
       stream,
     };
 
@@ -248,7 +273,7 @@ export class AnthropicProvider extends BaseProvider {
       // When prompt caching is on, ship `system` as a block array with a
       // cache_control breakpoint so the static system prompt is reused.
       if (this.promptCachingEnabled) {
-        body.system = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+        body.system = [{ type: "text", text: system, cache_control: this.cacheControl() }];
       } else {
         body.system = system;
       }
@@ -264,7 +289,7 @@ export class AnthropicProvider extends BaseProvider {
       // Cache the entire tools block by placing the breakpoint on the final
       // tool definition – everything above it in the request is cached too.
       if (this.promptCachingEnabled && tools.length > 0) {
-        tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+        tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: this.cacheControl() };
       }
       body.tools = tools;
     }
@@ -293,16 +318,29 @@ export class AnthropicProvider extends BaseProvider {
       normalizeExplicitThinking(body);
       enforceAnthropicSampling(body, rule, body.thinking?.type === "enabled" || body.thinking?.type === "adaptive");
     } else {
-      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: this.thinkingMode, rule });
+      applyAnthropicReasoning(body, request.reasoning, { model: body.model, mode: this.thinkingMode, rule, defaultedMaxTokens: request.maxTokens == null });
     }
     applyDropParams(body, rule);
 
     // max_tokens is mandatory on the Messages API; `extra` may have nulled it.
     if (typeof body.max_tokens !== "number" || !(body.max_tokens > 0)) {
-      body.max_tokens = DEFAULT_MAX_TOKENS;
+      body.max_tokens = defaultMaxTokens(body.model);
+    }
+
+    // Automatic caching for the conversation tail. Applied last so the explicit
+    // markers of `extra` are counted; the server answers 400 when the 4 slots
+    // are full, and a caller-set top-level key is left alone (null included).
+    if (this.promptCachingEnabled && this.promptCaching.strategy === "auto" && !("cache_control" in body)) {
+      const explicit = countCacheMarkers(body.system) + countCacheMarkers(body.tools) + countCacheMarkers(body.messages);
+      if (explicit < MAX_CACHE_BREAKPOINTS) body.cache_control = this.cacheControl();
     }
 
     return body;
+  }
+
+  /** `ttl` is sent only for 1h; the 5-minute default is the API's own. */
+  private cacheControl(): Record<string, any> {
+    return this.promptCaching.ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
   }
 
   private splitSystemMessages(messages: UnifiedMessage[]): { system: string | undefined; messages: UnifiedMessage[] } {
@@ -575,6 +613,7 @@ function mapAnthropicStopReason(reason: string | null | undefined): ChatCompleti
     case "tool_use":
       return "tool_calls";
     case "max_tokens":
+    case "model_context_window_exceeded":
       return "length";
     default:
       return "stop";

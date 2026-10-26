@@ -157,6 +157,7 @@ export type {
   AzureProviderConfig,
   OpenAICompatibleProviderConfig,
   BedrockProviderConfig,
+  PromptCachingConfig,
   VertexProviderConfig,
   JevProviderConfig,
   JevQuestion,

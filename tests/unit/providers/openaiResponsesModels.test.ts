@@ -430,7 +430,7 @@ describe("responsesStreaming on a listed model", () => {
     stubFetch([{
       sse: sseOf([
         { type: "response.output_text.delta", delta: "partial" },
-        { type: "response.incomplete", response: { id: "r", status: "incomplete", output: [
+        { type: "response.incomplete", response: { id: "r", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [
           { type: "message", content: [{ type: "output_text", text: "partial" }] },
         ] } },
       ]),

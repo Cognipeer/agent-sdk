@@ -433,7 +433,7 @@ Exported helpers (`agent-sdk/src/index.ts`):
 
 **Provider-level controls** (`createProvider`):
 - `retry` – automatic 429 / 5xx retry with exponential backoff and `Retry-After` support
-- `prompt_caching: { enabled: true }` – Anthropic `cache_control` and Bedrock `cachePoint` breakpoints for ~90% input-token savings on long tool-heavy runs
+- `prompt_caching: { enabled: true, strategy?, ttl? }` – Anthropic `cache_control` and Bedrock `cachePoint` breakpoints on the system prompt and tools; the default `strategy: "auto"` also caches the growing conversation (Anthropic automatic caching, a rolling Bedrock checkpoint), `"static"` keeps only the fixed prefix; `ttl: "1h"` for long pauses between calls. Cache reads cost a fraction of the input price on long tool-heavy runs
 
 ## Tracing & observability
 

@@ -35,6 +35,7 @@ export type {
   AzureProviderConfig,
   OpenAICompatibleProviderConfig,
   BedrockProviderConfig,
+  PromptCachingConfig,
   VertexProviderConfig,
   JevProviderConfig,
 } from "./types.js";

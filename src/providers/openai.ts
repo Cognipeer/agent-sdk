@@ -132,6 +132,7 @@ export class OpenAIProvider extends BaseProvider {
         },
         usage: response.usage,
         finishReason: response.finishReason,
+        ...(response.rawFinishReason ? { rawFinishReason: response.rawFinishReason } : {}),
       };
       return;
     }
@@ -495,6 +496,7 @@ export class OpenAIProvider extends BaseProvider {
       delta: final?.reasoning && !streamedSummary ? { reasoning: final.reasoning } : {},
       usage: final?.usage,
       finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
+      ...(final?.rawFinishReason ? { rawFinishReason: final.rawFinishReason } : {}),
     };
   }
 
@@ -671,9 +673,18 @@ export class OpenAIProvider extends BaseProvider {
 
     const tokenUsage = usageFromOpenAIShape(json.usage);
 
-    const finishReason: ChatCompletionResponse["finishReason"] = toolCalls.length > 0
-      ? "tool_calls"
-      : json.status === "incomplete" ? "length" : "stop";
+    // A limit hit is status "incomplete" + a reason; "incomplete" alone says
+    // nothing about the cause, so it is not "length". A cut-off call's
+    // arguments are unusable, so a limit outranks the tool calls.
+    const incompleteReason = json.status === "incomplete"
+      ? (typeof json.incomplete_details?.reason === "string" ? json.incomplete_details.reason : "incomplete")
+      : undefined;
+    const finishReason: ChatCompletionResponse["finishReason"] = incompleteReason === "max_output_tokens"
+      ? "length"
+      : incompleteReason === "content_filter"
+        ? "content_filter"
+        : toolCalls.length > 0 ? "tool_calls" : "stop";
+    const rawFinishReason = incompleteReason ?? (typeof json.status === "string" ? json.status : undefined);
 
     return {
       id: json.id ?? "",
@@ -682,6 +693,7 @@ export class OpenAIProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason,
+      ...(rawFinishReason ? { rawFinishReason } : {}),
       reasoning: summaryParts.length > 0 ? { summary: summaryParts.join("\n").trim() || undefined } : undefined,
       raw: json,
     };
@@ -990,9 +1002,14 @@ function mapFinishReason(reason: string | null | undefined): ChatCompletionRespo
     case "tool_calls":
       return "tool_calls";
     case "length":
+    case "max_tokens":
+    case "model_length":
+    case "max_output_tokens":
       return "length";
     case "content_filter":
       return "content_filter";
+    case "insufficient_system_resource":
+      return "error";
     default:
       return "stop";
   }

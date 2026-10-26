@@ -175,6 +175,17 @@ export function fromNativeProvider(
         const toolCallBuffers = new Map<string, ToolCall>();
 
         for await (const chunk of provider.completeStream(request)) {
+          // A restart: the final message must hold only the new attempt, its
+          // thinking blocks included (they are replayed to the model next turn).
+          if (chunk.reset) {
+            fullContent = "";
+            toolCallBuffers.clear();
+            reasoningBlocks = undefined;
+            reasoningText = "";
+            finishReason = undefined;
+            rawFinishReason = undefined;
+          }
+
           // Yield text deltas as strings for streaming
           if (chunk.delta.content) {
             fullContent += chunk.delta.content;
@@ -286,7 +297,12 @@ export function fromNativeProvider(
     };
 
     if (opts?.temperature != null) req.temperature = opts.temperature;
-    if (opts?.maxTokens != null) req.maxTokens = opts.maxTokens;
+    // A positive per-call limit (the reflection pass sends `max_tokens`) wins
+    // over the adapter default; anything else falls back to the default.
+    const callMaxTokens = [invokeOptions?.maxTokens, invokeOptions?.max_tokens, invokeOptions?.maxOutputTokens]
+      .find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
+    if (callMaxTokens != null) req.maxTokens = callMaxTokens;
+    else if (opts?.maxTokens != null) req.maxTokens = opts.maxTokens;
     if (opts?.topP != null) req.topP = opts.topP;
     if (opts?.stop?.length) req.stop = opts.stop;
     if (opts?.presencePenalty != null) req.presencePenalty = opts.presencePenalty;

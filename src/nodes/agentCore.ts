@@ -12,6 +12,15 @@ import type { PluginRunHost } from "../plugins/host.js";
 import { prepareStrictToolMenu, restoreToolCalls, type StrictRestorers } from "../smart/strictToolSchema.js";
 
 // Minimal agent node: no system prompt injection. Invokes model with messages as-is.
+/** Stands in for a reply that was nothing but a tool call cut off by the output limit. */
+const CUT_OFF_TOOL_CALL_TEXT = "[The reply hit the output token limit inside a tool call; the call was not run.]";
+
+function hasVisibleText(content: unknown): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return Array.isArray(content)
+    && content.some((part: any) => part?.type === "text" && typeof part.text === "string" && part.text.trim().length > 0);
+}
+
 export function createAgentCoreNode(opts: SmartAgentOptions) {
   return async (state: SmartState): Promise<Partial<SmartState>> => {
     const runtime: any = state.agent || {
@@ -631,9 +640,39 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
       }
       break;
     }
+    // Why the model stopped. `length` is the single most common explanation for
+    // a truncated or unparseable structured response — without it that failure
+    // is indistinguishable from a model that simply answered badly.
+    const finishReason = (response as any)?.response_metadata?.finish_reason
+      ?? (response as any)?.response_metadata?.finishReason
+      ?? (response as any)?.finishReason;
+
+    // A reply cut off by the output limit may end inside a tool call. The
+    // adapter's lenient parser turns such half-written arguments into `{}`, so
+    // running the call would execute the tool with the wrong input. The calls
+    // are dropped from the transcript (their text stays, and an assistant turn
+    // with tool_calls but no results would break the next request) and the run
+    // ends as a limit outcome instead.
+    const cutOffToolCalls: any[] = finishReason === "length" && Array.isArray((response as any)?.tool_calls)
+      ? (response as any).tool_calls
+      : [];
+    let keptResponse: any = response;
+    if (cutOffToolCalls.length > 0) {
+      keptResponse = { ...(response as any) };
+      delete keptResponse.tool_calls;
+      if (Array.isArray(keptResponse.additional_kwargs?.tool_calls)) {
+        keptResponse.additional_kwargs = { ...keptResponse.additional_kwargs };
+        delete keptResponse.additional_kwargs.tool_calls;
+      }
+      // A call-only reply leaves an empty assistant turn, which Anthropic and
+      // Bedrock reject when the conversation continues: say what happened instead.
+      // (Text after the reply's thinking blocks does not touch their signatures.)
+      if (!hasVisibleText(keptResponse.content)) keptResponse.content = CUT_OFF_TOOL_CALL_TEXT;
+    }
+
     const messagesWithResponse: Message[] = [
       ...state.messages,
-      response as any,
+      keptResponse,
     ];
 
     // Usage tracking (per-request, aggregated by model)
@@ -651,13 +690,6 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     const shouldLogResponse = !!traceSession && traceSession.resolvedConfig.logData;
     const responsePayload = shouldLogResponse ? sanitizeTracePayload(response) : undefined;
     const responseBytes = responsePayload !== undefined ? estimatePayloadBytes(responsePayload) : undefined;
-
-    // Why the model stopped. `length` is the single most common explanation for
-    // a truncated or unparseable structured response — without it that failure
-    // is indistinguishable from a model that simply answered badly.
-    const finishReason = (response as any)?.response_metadata?.finish_reason
-      ?? (response as any)?.response_metadata?.finishReason
-      ?? (response as any)?.finishReason;
 
     const facts = traceResponseFacts((runtime as any).model || (opts as any).model, response, rawUsage, streamedCall);
     const jsonOutput = Boolean(responseFormat) && (responseFormat as any)?.response_format?.type !== "text" && (responseFormat as any)?.type !== "text";
@@ -688,6 +720,31 @@ export function createAgentCoreNode(opts: SmartAgentOptions) {
     });
     if (normalized) {
       recordUsage(state, modelName, normalized);
+    }
+
+    if (cutOffToolCalls.length > 0) {
+      const names = cutOffToolCalls.map((tc) => tc?.function?.name ?? tc?.name ?? "unknown");
+      // One skipped tool_call per dropped call: the trace shows what the model
+      // tried to do and that it never ran.
+      for (const tc of cutOffToolCalls) {
+        const name = tc?.function?.name ?? tc?.name ?? "unknown";
+        onEvent?.({ type: "tool_call", phase: "skipped", name, id: tc?.id });
+        recordTraceEvent(traceSession, {
+          type: "tool_call",
+          label: `Tool Skipped - ${name}`,
+          actor: { scope: "tool", name, role: "tool" },
+          status: "skipped",
+          skipReason: "skipped",
+          toolCallId: typeof tc?.id === "string" && !tc?.idSynthesized ? tc.id : undefined,
+          toolExecutionId: tc?.id,
+        });
+      }
+      const ctx = {
+        ...(state.ctx || {}),
+        // Same key and shape as the budget limits; the agent loop ends the run on it.
+        __limitBreached: `maxOutputTokens (response hit the output token limit; ${names.length} cut-off tool call(s) not run: ${names.join(", ")})`,
+      } as any;
+      return { messages: messagesWithResponse, usage: (state as any).usage, ctx };
     }
 
     return { messages: messagesWithResponse, usage: (state as any).usage };
