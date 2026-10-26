@@ -17,7 +17,7 @@ import type {
 } from "./types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { linkAbortSignal } from "../utils/abort.js";
-import { attachWireInfo } from "./wireInfo.js";
+import { attachWireInfo, usageBasisOf, type WireUsageBasis } from "./wireInfo.js";
 
 export type NativeModelOptions = {
   /** Override the model ID per adapter instance */
@@ -58,9 +58,14 @@ export type NativeModelOptions = {
  *   completion_tokens_details: { reasoning_tokens },
  * }
  * ```
- * `completion_tokens` INCLUDES `reasoning_tokens`; `prompt_tokens` INCLUDES
- * `cached_tokens`. `response_metadata.token_usage` additionally keeps the flat
- * legacy `cached_tokens` / `cache_write_tokens` keys.
+ * The shape is INCLUSIVE, and the adapter enforces it: `prompt_tokens` INCLUDES
+ * `cached_tokens` and `cache_write_tokens`, `completion_tokens` INCLUDES
+ * `reasoning_tokens`, and `total_tokens = prompt_tokens + completion_tokens`
+ * (cached tokens are never added on top). The providers' own `TokenUsage` keeps
+ * its native basis (Anthropic / Bedrock `inputTokens` exclude the cache, Vertex
+ * `outputTokens` excludes the reasoning); `fromNativeProvider` converts it.
+ * `response_metadata.token_usage` additionally keeps the flat legacy
+ * `cached_tokens` / `cache_write_tokens` keys.
  */
 export type MessageUsage = {
   prompt_tokens: number;
@@ -70,11 +75,27 @@ export type MessageUsage = {
   completion_tokens_details: { reasoning_tokens: number };
 };
 
-export function toMessageUsage(u: TokenUsage): MessageUsage {
+/**
+ * Converts a provider `TokenUsage` to the inclusive `MessageUsage`. `basis` says
+ * how `u` counts tokens: `inputExcludesCache` adds the cache read + write to
+ * the prompt, `outputExcludesReasoning` adds the reasoning to the completion.
+ * Omitted (or `{}`) = `u` is already inclusive and is copied as it is. When a
+ * basis adjusts anything the total is recomputed as prompt + completion (the
+ * provider's own total is not trusted to include the same parts); otherwise the
+ * provider's total is kept.
+ */
+export function toMessageUsage(u: TokenUsage, basis?: WireUsageBasis): MessageUsage {
+  const cached = Number(u.cachedInputTokens) || 0;
+  const written = Number(u.cachedWriteTokens) || 0;
+  const reasoning = Number(u.reasoningTokens) || 0;
+  const adjustInput = !!basis?.inputExcludesCache;
+  const adjustOutput = !!basis?.outputExcludesReasoning;
+  const prompt = adjustInput ? u.inputTokens + cached + written : u.inputTokens;
+  const completion = adjustOutput ? u.outputTokens + reasoning : u.outputTokens;
   return {
-    prompt_tokens: u.inputTokens,
-    completion_tokens: u.outputTokens,
-    total_tokens: u.totalTokens,
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: adjustInput || adjustOutput ? prompt + completion : u.totalTokens,
     prompt_tokens_details: { cached_tokens: u.cachedInputTokens, cache_write_tokens: u.cachedWriteTokens },
     completion_tokens_details: { reasoning_tokens: u.reasoningTokens },
   };
@@ -97,6 +118,9 @@ export function fromNativeProvider(
   let boundTools: ToolDefinition[] | undefined = (options as any)?.__tools;
 
   const modelName = options?.model ?? (provider as any).defaultModel ?? provider.providerName;
+  // How the provider's TokenUsage counts tokens: an explicit `usageBasis` (even
+  // `{}` = inclusive) wins, otherwise the provider type decides.
+  const basis = provider.usageBasis ?? usageBasisOf(provider.providerName);
 
   const adapted: BaseChatModel = {
     modelName,
@@ -115,11 +139,13 @@ export function fromNativeProvider(
         if (link.signal) request.signal = link.signal;
         request = await applyTransform(request);
         const response = await provider.complete(request);
-        return attachWireInfo(toBaseChatMessage(response), {
+        return attachWireInfo(toBaseChatMessage(response, basis), {
           provider: provider.providerName,
           responseId: response.id,
           responseModel: response.model,
           rawFinishReason: response.rawFinishReason,
+          // The message's usage was converted to the inclusive shape: no basis to claim.
+          usageBasis: {},
         });
       } finally {
         link.dispose();
@@ -203,7 +229,7 @@ export function fromNativeProvider(
 
         // Yield final assembled message
         allToolCalls = [...toolCallBuffers.values()];
-        const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage);
+        const finalMessage = assembleMessage(fullContent, allToolCalls, lastUsage, basis);
         if (reasoningBlocks?.length || reasoningText) {
           (finalMessage as any).reasoning = {
             ...(reasoningBlocks?.length ? { blocks: reasoningBlocks } : {}),
@@ -223,6 +249,7 @@ export function fromNativeProvider(
           responseModel,
           rawFinishReason,
           streaming: true,
+          usageBasis: {},
         });
       } finally {
         link.dispose();
@@ -738,17 +765,17 @@ export function toToolDefinition(tool: any, strict?: boolean): ToolDefinition {
 }
 
 /** `token_usage` = the unified usage plus the flat legacy cache keys. */
-function legacyTokenUsage(u: TokenUsage) {
-  return { ...toMessageUsage(u), cached_tokens: u.cachedInputTokens, cache_write_tokens: u.cachedWriteTokens };
+function legacyTokenUsage(u: TokenUsage, basis?: WireUsageBasis) {
+  return { ...toMessageUsage(u, basis), cached_tokens: u.cachedInputTokens, cache_write_tokens: u.cachedWriteTokens };
 }
 
-function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
+function toBaseChatMessage(response: ChatCompletionResponse, basis?: WireUsageBasis): BaseChatMessage {
   const msg: BaseChatMessage = {
     role: "assistant",
     content: response.content ?? "",
-    usage: toMessageUsage(response.usage),
+    usage: toMessageUsage(response.usage, basis),
     response_metadata: {
-      token_usage: legacyTokenUsage(response.usage),
+      token_usage: legacyTokenUsage(response.usage, basis),
       finish_reason: response.finishReason,
       model_name: response.model,
     },
@@ -771,15 +798,15 @@ function toBaseChatMessage(response: ChatCompletionResponse): BaseChatMessage {
   return msg;
 }
 
-function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUsage): BaseChatMessage {
+function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUsage, basis?: WireUsageBasis): BaseChatMessage {
   const msg: BaseChatMessage = {
     role: "assistant",
     content,
   };
 
   if (usage) {
-    msg.usage = toMessageUsage(usage);
-    msg.response_metadata = { token_usage: legacyTokenUsage(usage) };
+    msg.usage = toMessageUsage(usage, basis);
+    msg.response_metadata = { token_usage: legacyTokenUsage(usage, basis) };
   }
 
   if (toolCalls.length > 0) {

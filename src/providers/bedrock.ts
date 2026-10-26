@@ -152,11 +152,18 @@ export class BedrockProvider extends BaseProvider {
           if (typeof data.stopReason === "string") rawFinishReason = data.stopReason;
           break;
         case "metadata": {
+          // The ONLY usage event of a Converse stream (`messageStart` carries none), so a
+          // stream cut before it reports no usage: unlike Anthropic's `message_start`
+          // there is no early input count to capture. A host that must bill a cancelled
+          // Bedrock stream estimates the input itself.
+          // Native basis: `inputTokens` leaves out the cache read + write (the adapter
+          // adds them); `totalTokens` is input + output, not the service's own figure,
+          // which is not documented to cover the same parts.
           const u = data.usage ?? {};
           usage = {
             inputTokens: u.inputTokens ?? 0,
             outputTokens: u.outputTokens ?? 0,
-            totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+            totalTokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
             cachedInputTokens: u.cacheReadInputTokens ?? u.cacheReadInputTokenCount ?? 0,
             cachedWriteTokens: u.cacheWriteInputTokens ?? u.cacheWriteInputTokenCount ?? 0,
             cachedOutputTokens: 0,
@@ -582,11 +589,12 @@ export class BedrockProvider extends BaseProvider {
     const tokenUsage: TokenUsage = {
       inputTokens: usage.inputTokens ?? 0,
       outputTokens: usage.outputTokens ?? 0,
-      totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+      // Native basis (see the stream's `metadata`): input leaves out the cache, total = input + output.
+      totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
       cachedInputTokens: usage.cacheReadInputTokens ?? usage.cacheReadInputTokenCount ?? 0,
       cachedWriteTokens: usage.cacheWriteInputTokens ?? usage.cacheWriteInputTokenCount ?? 0,
       cachedOutputTokens: 0,
-      // Bedrock bills thinking tokens inside outputTokens; no separate count.
+      // Bedrock bills thinking tokens inside outputTokens and reports no separate count: 0 = not reported.
       reasoningTokens: 0,
     };
 

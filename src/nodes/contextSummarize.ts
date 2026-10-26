@@ -889,24 +889,9 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         rawModelOutput = summaryText;
         outputTokensEstimate = countApproxTokens(summaryText);
 
-                const jsonText = extractJsonObject(summaryText);
-                const parsed = jsonText ? JSON.parse(jsonText) : undefined;
-                structuredSummary = normalizeStructuredSummary(parsed, summaryText);
-                structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
-                integrity = config.integrityCheck
-                    ? runIntegrityCheck(previousStructuredSummary, structuredSummary)
-                    : { passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: [] };
-                if (integrity && !integrity.passed) {
-                    structuredSummary = repairStructuredSummary(previousStructuredSummary, structuredSummary, integrity);
-                    integrity = { ...integrity, passed: true };
-                }
-                // After the repair: it merges the previous summary's directives
-                // forward, and an ungrounded one must not ride along.
-                structuredSummary = groundDirectives(structuredSummary);
-                integrity = noteDroppedDirectives(integrity);
-                summaryText = renderStructuredSummary(structuredSummary);
-        
-        // Extract actual token usage from model response if available
+        // Extract actual token usage from model response if available. Read before
+        // the reply is parsed: a reply that does not parse (truncated, not JSON) still
+        // cost real tokens, and the fallback below must not hide that spend.
         const rawUsage = (response as any)?.usage 
           || (response as any)?.response_metadata?.token_usage 
           || (response as any)?.response_metadata?.tokenUsage
@@ -926,6 +911,23 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
           // spend on exactly the longest, most expensive runs.
           recordUsage(state, modelName || "unknown_model", normalized);
         }
+
+                const jsonText = extractJsonObject(summaryText);
+                const parsed = jsonText ? JSON.parse(jsonText) : undefined;
+                structuredSummary = normalizeStructuredSummary(parsed, summaryText);
+                structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
+                integrity = config.integrityCheck
+                    ? runIntegrityCheck(previousStructuredSummary, structuredSummary)
+                    : { passed: true, criticalFactLoss: false, obsoleteFactRevived: false, notes: [] };
+                if (integrity && !integrity.passed) {
+                    structuredSummary = repairStructuredSummary(previousStructuredSummary, structuredSummary, integrity);
+                    integrity = { ...integrity, passed: true };
+                }
+                // After the repair: it merges the previous summary's directives
+                // forward, and an ungrounded one must not ride along.
+                structuredSummary = groundDirectives(structuredSummary);
+                integrity = noteDroppedDirectives(integrity);
+                summaryText = renderStructuredSummary(structuredSummary);
     } catch (err: any) {
         durationMs = Date.now() - startTime;
         fallback = true;
@@ -1195,9 +1197,11 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
       actor: { scope: "system", name: "summarizer", role: "summarization" },
       status: fallback ? "error" : "success",
       durationMs,
-      // A failed call reports no usage and bills nothing; an estimate here
-      // would be summed into the session totals as if it had.
-      ...(fallback ? {} : {
+      // A call that failed before any reply reports no usage and bills nothing; an
+      // estimate here would be summed into the session totals as if it had. A
+      // reply that did not parse is a fallback too, but it cost the tokens the
+      // provider reported (recorded in state.usage above), so they are reported.
+      ...(!fallback || inputTokensActual !== undefined ? {
         inputTokens: inputTokensActual ?? inputTokensEstimate,
         outputTokens: outputTokensActual ?? outputTokensEstimate,
         cachedInputTokens: cachedInputTokens,
@@ -1206,7 +1210,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
         // Which counting rules the usage above follows (only when the provider reported it).
         ...(inputTokensActual !== undefined && responseFacts?.usageBasis ? { usageBasis: responseFacts.usageBasis } : {}),
         ...(inputTokensActual !== undefined && responseFacts?.cacheWriteTokens ? { cacheWriteTokens: responseFacts.cacheWriteTokens } : {}),
-      }),
+      } : {}),
       ...(responseFacts?.responseId ? { responseId: responseFacts.responseId } : {}),
       ...(responseFacts?.responseModel ? { responseModel: responseFacts.responseModel } : {}),
       ...(responseFacts?.rawFinishReason ? { rawFinishReason: responseFacts.rawFinishReason } : {}),
@@ -1269,14 +1273,14 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
                 durationMs,
                 messagesCompressed: compressableMessages.length,
                 fallback,
-                ...(fallback ? {} : {
+                ...(!fallback || inputTokensActual !== undefined ? {
                     usage: {
                         inputTokens: inputTokensActual ?? inputTokensEstimate,
                         outputTokens: outputTokensActual ?? outputTokensEstimate,
                         ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
                         ...(totalTokensActual !== undefined ? { totalTokens: totalTokensActual } : {}),
                     },
-                }),
+                } : {}),
             },
         } as any,
     };

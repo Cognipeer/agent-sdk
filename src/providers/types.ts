@@ -194,6 +194,15 @@ export type ReasoningRequestConfig = {
 
 // ─── Token Usage ─────────────────────────────────────────────────────────────
 
+/**
+ * A provider's own usage counters, on the provider's NATIVE basis: Anthropic and
+ * Bedrock `inputTokens` leave out the cache read + write, Vertex `outputTokens`
+ * leaves out the reasoning; OpenAI-style providers are inclusive. `cachedInputTokens`
+ * / `cachedWriteTokens` / `reasoningTokens` are 0 when the provider does not report
+ * them (never an estimate). `fromNativeProvider` converts to the inclusive
+ * `MessageUsage` (see `BaseProvider.usageBasis`). A streaming provider may yield
+ * several usage chunks; each one is CUMULATIVE, so a consumer keeps the last.
+ */
 export type TokenUsage = {
   inputTokens: number;
   outputTokens: number;

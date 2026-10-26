@@ -18,7 +18,7 @@
 
 import type { AgentPlugin, CostEstimator, MaybePromise } from "../types.js";
 import type { SmartState } from "../../types.js";
-import { splitUsage } from "../../utils/usage.js";
+import { costEstimatorArgsOf, splitUsage } from "../../utils/usage.js";
 
 export type SessionMetrics = {
   runId: string;
@@ -88,17 +88,7 @@ function sumTotals(byModel: Record<string, { input: number; output: number; tota
 function estimateCost(requests: NonNullable<SmartState["usage"]>["perRequest"], estimator: CostEstimator): number {
   let usd = 0;
   for (const request of requests) {
-    const raw = (request.usage ?? {}) as Record<string, unknown>;
-    const promptDetails = (raw.prompt_tokens_details ?? {}) as Record<string, unknown>;
-    const completionDetails = (raw.completion_tokens_details ?? {}) as Record<string, unknown>;
-    usd +=
-      estimator({
-        modelName: request.modelName,
-        inputTokens: Number(raw.prompt_tokens) || 0,
-        outputTokens: Number(raw.completion_tokens) || 0,
-        cachedInputTokens: Number(promptDetails.cached_tokens) || 0,
-        reasoningTokens: Number(completionDetails.reasoning_tokens) || 0,
-      }) || 0;
+    usd += estimator(costEstimatorArgsOf(request)) || 0;
   }
   return usd;
 }

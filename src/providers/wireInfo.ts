@@ -13,6 +13,13 @@
 
 export const WIRE_INFO = Symbol.for("cognipeer.agent-sdk.wireInfo");
 
+/**
+ * How a set of usage counters counts tokens. `usageBasisOf` answers it for a
+ * provider's native `TokenUsage`; on a wire message it describes the numbers
+ * the message carries. `fromNativeProvider` converts to the inclusive shape, so
+ * the messages it makes declare no basis (an empty `{}` is "no claim"); a
+ * hand-built or LangChain message can still declare one.
+ */
 export type WireUsageBasis = {
   /** `inputTokens` leaves out the cache read / write tokens (Anthropic, Bedrock). */
   inputExcludesCache?: true;
@@ -51,8 +58,10 @@ export function attachWireInfo<T extends object>(message: T, info: WireInfo): T 
   if (info.responseModel) clean.responseModel = info.responseModel;
   if (info.rawFinishReason) clean.rawFinishReason = info.rawFinishReason;
   if (info.streaming) clean.streaming = true;
+  // An explicit `{}` (what the adapter passes after it converted the usage to
+  // the inclusive shape) is "no claim": the key is left out.
   const basis = info.usageBasis ?? usageBasisOf(info.provider);
-  if (basis) clean.usageBasis = basis;
+  if (basis && (basis.inputExcludesCache || basis.outputExcludesReasoning)) clean.usageBasis = basis;
   (message as any)[WIRE_INFO] = clean;
   return message;
 }

@@ -305,12 +305,15 @@ export type AgentOptions = {
    * Pluggable cost estimator: returns USD cost for a single model call's
    * usage. Used by the `maxCostUsd` budget limit. When omitted the SDK has
    * no built-in pricing table and the cost limit is a no-op.
+   * `inputTokens` is inclusive (uncached + cache read + cache write);
+   * `cachedInputTokens` and `cacheWriteTokens` are subsets of it.
    */
   costEstimator?: (args: {
     modelName?: string;
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens?: number;
+    cacheWriteTokens?: number;
     reasoningTokens?: number;
   }) => number;
   /**
@@ -1345,11 +1348,14 @@ export type AgentState = {
       usage: any;            // raw provider usage object (unmodified)
       timestamp: string;     // ISO time of capture
       turn: number;          // 1-based index of agent turn producing this response
-      cachedInput?: number;  // cached / reused prompt tokens (provider specific)
+      cachedInput?: number;  // cached / reused prompt tokens (cache READ subset of the prompt tokens)
+      cacheWrite?: number;   // prompt tokens written to the provider's cache (subset of the prompt tokens)
       /** Present when a sub-agent made this call; it was merged in from the child's run. */
       subagent?: { name: string; id: string; mode: "registry" | "adhoc" };
     }>;
-    totals: Record<string, { input: number; output: number; total: number; cachedInput: number }>;
+    // `input` is inclusive (cachedInput and cacheWriteInput are subsets of it). `cacheWriteInput` is
+    // optional so a ledger persisted by an older SDK (or built by a host) still type-checks; read it as `|| 0`.
+    totals: Record<string, { input: number; output: number; total: number; cachedInput: number; cacheWriteInput?: number }>;
   };
   guardrailResult?: GuardrailOutcome;
 };

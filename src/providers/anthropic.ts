@@ -84,6 +84,15 @@ export class AnthropicProvider extends BaseProvider {
     let thinkingTokens = 0;
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
+    const streamUsage = (): TokenUsage => ({
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cachedInputTokens: cacheReadInputTokens,
+      cachedWriteTokens: cacheCreationInputTokens,
+      cachedOutputTokens: 0,
+      reasoningTokens: thinkingTokens,
+    });
     const currentToolCalls = new Map<number, { id: string; name: string; arguments: string; ordinal: number }>();
     let toolOrdinal = 0;
     // Accumulate thinking blocks by content-block index so we can replay them.
@@ -108,6 +117,12 @@ export class AnthropicProvider extends BaseProvider {
             inputTokens = msg.usage.input_tokens ?? 0;
             cacheReadInputTokens = msg.usage.cache_read_input_tokens ?? 0;
             cacheCreationInputTokens = msg.usage.cache_creation_input_tokens ?? 0;
+            outputTokens = msg.usage.output_tokens ?? 0;
+            // The input side of the bill is known here: report it now, so a stream
+            // that is cut or cancelled before `message_delta` still carries what the
+            // prompt cost. Every usage chunk is CUMULATIVE (the last one wins, a
+            // consumer never adds them); this one has no finish reason.
+            yield { id, model, delta: {}, usage: streamUsage() };
           }
           break;
         }
@@ -180,20 +195,17 @@ export class AnthropicProvider extends BaseProvider {
         case "message_delta": {
           const delta = data.delta;
           if (data.usage) {
+            // Cumulative counters: newer API versions repeat the input side here, so a
+            // value that is present replaces the one from `message_start`.
+            inputTokens = data.usage.input_tokens ?? inputTokens;
+            cacheReadInputTokens = data.usage.cache_read_input_tokens ?? cacheReadInputTokens;
+            cacheCreationInputTokens = data.usage.cache_creation_input_tokens ?? cacheCreationInputTokens;
             outputTokens = data.usage.output_tokens ?? outputTokens;
             thinkingTokens = data.usage.output_tokens_details?.thinking_tokens ?? thinkingTokens;
           }
           const finishReason = mapAnthropicStopReason(delta?.stop_reason);
           const rawFinishReason = typeof delta?.stop_reason === "string" ? delta.stop_reason : undefined;
-          const usage: TokenUsage = {
-            inputTokens,
-            outputTokens,
-            totalTokens: inputTokens + outputTokens,
-            cachedInputTokens: cacheReadInputTokens,
-            cachedWriteTokens: cacheCreationInputTokens,
-            cachedOutputTokens: 0,
-            reasoningTokens: thinkingTokens,
-          };
+          const usage = streamUsage();
           const blocks = [...reasoningBlocks.values()].filter(
             (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
           );

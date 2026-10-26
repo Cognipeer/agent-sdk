@@ -309,13 +309,14 @@ type AgentOptions = {
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens?: number;
+    cacheWriteTokens?: number;
     reasoningTokens?: number;
   }) => number;
 };
 ```
 
 - `tokenCounter` swaps the built-in character heuristic for a real tokenizer (tiktoken, `@anthropic-ai/tokenizer`, …) for the duration of a single `invoke(...)`.
-- `costEstimator` is required for `maxCostUsd` to take effect. The SDK has no built-in pricing table.
+- `costEstimator` is required for `maxCostUsd` to take effect. The SDK has no built-in pricing table. `inputTokens` is inclusive (uncached + cache read + cache write); `cachedInputTokens` and `cacheWriteTokens` are subsets of it and `reasoningTokens` is a subset of `outputTokens`, so bill `(input - cached - cacheWrite) * in + cached * read + cacheWrite * write + output * out`.
 
 If you are building a configurable product, these are usually the first types you expose to your own application config layer.
 
