@@ -9,7 +9,8 @@ import type { ReasoningEffort } from "../providers/types.js";
 export type { ReasoningEffort };
 
 export type RuleFamily = "openai" | "anthropic" | "gemini" | "other";
-export type ReasoningStyle = "effort" | "adaptive" | "budget" | "toggle" | "none";
+/** `level` = a discrete thinking level instead of a token budget (Gemini 3 `thinkingConfig.thinkingLevel`). */
+export type ReasoningStyle = "effort" | "adaptive" | "budget" | "toggle" | "level" | "none";
 /** How "reasoning off" is spelled on the wire (`none` = the effort value itself). */
 export type OffMechanism = "none" | "disabled" | "between_tools";
 export type TemperatureRule = "any" | "default-only" | "unsupported" | "thinking-requires-1";
@@ -28,6 +29,12 @@ export type ModelRule = {
     /** Efforts the OpenAI Responses endpoint accepts, when they differ from `efforts`. */
     responsesEfforts?: ReasoningEffort[];
     off: OffMechanism | null;
+    /**
+     * Budget style only: the smallest thinking budget the model accepts, used for
+     * effort `none` when `efforts` has no `none` (the model cannot turn thinking off,
+     * e.g. Gemini 2.5 Pro: 128).
+     */
+    minBudget?: number;
   };
   sampling: {
     temperature: TemperatureRule;

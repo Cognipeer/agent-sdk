@@ -534,6 +534,196 @@
       "note": "Permissive default for unknown Anthropic-wire models: budget style (the long-standing form); the provider flips the thinking form when the API says so."
     },
     {
+      "id": "gemini-3-pro-image",
+      "family": "gemini",
+      "match": "^gemini-3(?:\\.\\d+)?-pro-image",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3 Pro Image accepts only thinkingLevel high. thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-3-image",
+      "family": "gemini",
+      "match": "^gemini-3(?:\\.\\d+)?-.*image",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "minimal",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3.x Flash / Flash-Lite image models accept thinkingLevel minimal or high. thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-3-pro",
+      "family": "gemini",
+      "match": "^gemini-3(?:\\.0)?-pro",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "low",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3 Pro accepts thinkingLevel low or high (no minimal, no medium; default high). thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-3x-pro",
+      "family": "gemini",
+      "match": "^gemini-3\\.\\d+-pro",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3.x Pro (3.1 and later) accepts thinkingLevel low, medium or high (no minimal; default high). thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-3x-flash-no-minimal",
+      "family": "gemini",
+      "match": "^gemini-3\\.[78]-flash",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3.7 / 3.8 Flash accept thinkingLevel low, medium or high (no minimal). thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-3-level",
+      "family": "gemini",
+      "match": "^gemini-3",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 3 Flash / Flash-Lite and other gemini-3 models accept thinkingLevel minimal, low, medium or high. thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "family": "gemini",
+      "match": "^gemini-2\\.5-pro",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null,
+        "minBudget": 128
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 2.5 Pro: thinkingBudget 128-32768 and thinking cannot be turned off, so effort none maps to minBudget (128) instead of 0."
+    },
+    {
       "id": "gemini-budget",
       "family": "gemini",
       "match": "^gemini",

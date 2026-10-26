@@ -70,6 +70,17 @@ export class AnthropicProvider extends BaseProvider {
   private readonly defaultHeaders: Record<string, string>;
   private readonly anthropicVersion: string;
 
+  // Hooks for a subclass that talks to Claude through another front door
+  // (Vertex AI `rawPredict`): where the model-rule family and learned
+  // adjustments come from, the name used in error messages, and (see the
+  // protected methods below) the URL, the headers and the body.
+  /** Provider name the model rules are looked up under (the Messages wire shape). */
+  protected readonly rulesProvider: string = "anthropic";
+  /** Keeps what a 400 taught apart from the direct API's (same model id, other backend). */
+  protected readonly rulesScope?: string;
+  /** Names the API in error messages: "<apiName> API error 400: ...". */
+  protected readonly apiName: string = "Anthropic";
+
   private readonly promptCachingEnabled: boolean;
   private readonly promptCaching: Required<Omit<PromptCachingConfig, "enabled">>;
   private readonly thinkingMode: ThinkingMode;
@@ -109,7 +120,7 @@ export class AnthropicProvider extends BaseProvider {
     let thinkingTokens = 0;
     let cacheReadInputTokens = 0;
     let cacheCreationInputTokens = 0;
-    const streamUsage = (): TokenUsage => ({
+    const streamUsage = (): TokenUsage => this.normalizeUsage({
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
@@ -279,7 +290,7 @@ export class AnthropicProvider extends BaseProvider {
       }
     }
     // Which sampling params and thinking form the model takes comes from its rule.
-    const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay });
+    const rule = resolveModelRule({ provider: this.rulesProvider, model: String(body.model), patch: overlay, scope: this.rulesScope });
     if (request.temperature != null) body.temperature = request.temperature;
     if (request.topP != null) body.top_p = request.topP;
     if (request.stop) body.stop_sequences = request.stop;
@@ -499,7 +510,8 @@ export class AnthropicProvider extends BaseProvider {
   private send(request: ChatCompletionRequest, stream: boolean): Promise<Response> {
     let downgrade = false;
     return runWithModelAdjustments({
-      provider: this.providerName,
+      provider: this.rulesProvider,
+      scope: this.rulesScope,
       model: request.model || this.defaultModel,
       endpoint: "messages",
       callerParams: request.extra ? Object.keys(request.extra) : undefined,
@@ -509,7 +521,7 @@ export class AnthropicProvider extends BaseProvider {
           const body = this.buildRequestBody(request, stream, overlay, downgrade);
           guard(body);
           try {
-            return await this.doFetch(body, request.signal);
+            return await this.doFetch(body, stream, request.signal);
           } catch (err) {
             // Model refuses forced tool use: retry once with tool_choice auto.
             const rejected = err instanceof ProviderError && err.statusCode === 400 && !downgrade
@@ -523,21 +535,46 @@ export class AnthropicProvider extends BaseProvider {
     });
   }
 
-  private async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
-    const url = `${this.baseURL}/v1/messages`;
-    const headers = {
+  // ─── Transport hooks ─────────────────────────────────────────────────────
+  // The defaults are the direct Anthropic API. A subclass overrides them to change
+  // only the transport; body building, caching, thinking, tools, finish reasons
+  // and stream parsing stay shared.
+
+  /** The URL a request for `model` is posted to. */
+  protected requestUrl(_model: string, _stream: boolean): string {
+    return `${this.baseURL}/v1/messages`;
+  }
+
+  /** Auth and version headers, plus the configured `defaultHeaders`. Called once per request, before any retry. */
+  protected async requestHeaders(): Promise<Record<string, string>> {
+    return {
       "Content-Type": "application/json",
       "x-api-key": this.apiKey,
       "anthropic-version": this.anthropicVersion,
       ...this.defaultHeaders,
     };
-    const payload = JSON.stringify(body);
+  }
+
+  /** The JSON that goes on the wire for a built request body (the body itself is left as it is). */
+  protected wireBody(body: Record<string, any>): Record<string, any> {
+    return body;
+  }
+
+  /** Puts the usage counters on the basis this provider reports. The default keeps the Messages API's own. */
+  protected normalizeUsage(usage: TokenUsage): TokenUsage {
+    return usage;
+  }
+
+  private async doFetch(body: Record<string, any>, stream: boolean, signal?: AbortSignal): Promise<Response> {
+    const url = this.requestUrl(String(body.model), stream);
+    const headers = await this.requestHeaders();
+    const payload = JSON.stringify(this.wireBody(body));
     const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new ProviderError(
-        `Anthropic API error ${res.status}: ${text}`,
+        `${this.apiName} API error ${res.status}: ${text}`,
         this.providerName,
         res.status,
         text,
@@ -592,7 +629,7 @@ export class AnthropicProvider extends BaseProvider {
       model: json.model ?? "",
       content: textParts.join("") || null,
       toolCalls,
-      usage: tokenUsage,
+      usage: this.normalizeUsage(tokenUsage),
       finishReason: mapAnthropicStopReason(json.stop_reason),
       ...(typeof json.stop_reason === "string" ? { rawFinishReason: json.stop_reason } : {}),
       reasoning: reasoningBlocks.length > 0

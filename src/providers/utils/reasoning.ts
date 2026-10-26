@@ -246,20 +246,71 @@ export function applyBedrockReasoning(
   enforceAnthropicSampling(inference, rule, true, true);
 }
 
-/** Maps onto Google Vertex / Gemini generationConfig. */
+/** Optional model context for {@link applyGeminiReasoning}; without it the budget style is used. */
+type GeminiReasoningOpts = {
+  /** Model id (`gemini-3-pro-preview`, `publishers/google/models/gemini-2.5-pro`, ...) used to pick the rule. */
+  model?: string;
+  /** A rule already resolved by the caller; wins over `model`. */
+  rule?: ModelRule;
+};
+
+/**
+ * Maps onto Google Vertex / Gemini generationConfig.
+ *
+ * Two thinking styles, picked by the model's rule: `budget` (Gemini 2.5 and
+ * unknown models: `thinkingBudget`) and `level` (Gemini 3: `thinkingLevel`).
+ * Google rejects both fields in one request, so only one is ever sent: a caller's
+ * explicit value (`thinkingLevel`, `budgetTokens`, `providerExtras`) wins over
+ * the one derived from `effort`. A model that cannot disable thinking never gets
+ * `thinkingBudget: 0`: `effort: none` becomes its lowest level (Gemini 3) or
+ * minimum budget (Gemini 2.5 Pro).
+ */
 export function applyGeminiReasoning(
   generationConfig: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
+  opts?: GeminiReasoningOpts,
 ): void {
   if (!reasoning) return;
-  const budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
+  const rule = opts?.rule ?? resolveModelRule({ provider: "vertex", model: opts?.model });
   const level = typeof reasoning.thinkingLevel === "string" && reasoning.thinkingLevel ? reasoning.thinkingLevel : undefined;
-  // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
-  if (budget == null && !level) return;
-  const thinkingConfig: Record<string, any> =
-    level && budget !== 0 ? { thinkingLevel: level } : { thinkingBudget: budget ?? 0 };
+  const effort = normalizeEffort(reasoning.effort);
+  const thinkingConfig: Record<string, any> = {};
+
+  if (rule.reasoning.style === "level") {
+    // An explicit budget still wins over `effort`, but `none` is the later, more specific intent (as in resolveBudget).
+    const explicitBudget =
+      effort !== "none" && typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0
+        ? Math.floor(reasoning.budgetTokens)
+        : undefined;
+    if (level) thinkingConfig.thinkingLevel = level;
+    else if (explicitBudget != null) thinkingConfig.thinkingBudget = explicitBudget;
+    else if (effort) {
+      // Thinking cannot be switched off here, so `none` is the lowest allowed level.
+      const mapped = mapReasoningEffort(rule, effort).effort;
+      if (mapped && mapped !== "none") thinkingConfig.thinkingLevel = mapped;
+    }
+  } else {
+    let budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
+    // A model whose rule has no `none` (Gemini 2.5 Pro) cannot be told "do not think".
+    if (effort === "none" && !rule.reasoning.efforts.includes("none")) {
+      budget = rule.reasoning.minBudget ?? GEMINI_EFFORT_BUDGET.minimal;
+    }
+    // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
+    if (budget != null || level) {
+      if (level && budget !== 0 && effort !== "none") thinkingConfig.thinkingLevel = level;
+      else thinkingConfig.thinkingBudget = budget ?? 0;
+    }
+  }
+  if (Object.keys(thinkingConfig).length === 0) return;
+
   if (reasoning.includeThoughts) thinkingConfig.includeThoughts = true;
-  if (reasoning.providerExtras) Object.assign(thinkingConfig, reasoning.providerExtras);
+  if (reasoning.providerExtras) {
+    const extras = reasoning.providerExtras;
+    Object.assign(thinkingConfig, extras);
+    // The API rejects both fields together: the caller's own field replaces the derived one.
+    if ("thinkingLevel" in extras && !("thinkingBudget" in extras)) delete thinkingConfig.thinkingBudget;
+    else if ("thinkingBudget" in extras && !("thinkingLevel" in extras)) delete thinkingConfig.thinkingLevel;
+  }
   generationConfig.thinkingConfig = thinkingConfig;
   // Thinking tokens come out of maxOutputTokens: keep room for the answer.
   // Dynamic (-1), 0 and levels have no known size, so they are left alone.

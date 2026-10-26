@@ -76,7 +76,7 @@ describe("rule matching", () => {
     ["bedrock", "anthropic.claude-3-7-sonnet-20250219-v1:0", "claude-legacy-budget"],
     ["anthropic", "claude-3-5-haiku-20241022", "claude-legacy-budget"],
     ["vertex", "gemini-2.5-flash", "gemini-budget"],
-    ["gemini", "models/gemini-2.5-pro", "gemini-budget"],
+    ["gemini", "models/gemini-2.5-pro", "gemini-2.5-pro"],
   ])("%s / %s -> %s", (provider, model, id) => {
     const r = rule(provider, model);
     expect(r.matchedRuleId).toBe(id);
