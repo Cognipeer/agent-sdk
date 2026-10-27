@@ -22,15 +22,11 @@ function fakeProvider(providerName: string, response: Partial<ChatCompletionResp
 const user = [{ role: "user", content: "hello" }];
 
 describe("native adapters attach wire info", () => {
-  it.each([
-    ["anthropic", { inputExcludesCache: true }],
-    ["bedrock", { inputExcludesCache: true }],
-    ["vertex", { outputExcludesReasoning: true }],
-    ["openai", undefined],
-    ["azure", undefined],
-    ["openai-compatible", undefined],
-    ["jev", undefined],
-  ])("invoke on %s: provider, response id, response model, raw stop reason, usage basis", async (providerName, basis) => {
+  // The adapter converts the usage to the inclusive shape, so none of the messages
+  // it makes declare an exclusive basis (a second consumer would add the cache again).
+  it.each(["anthropic", "bedrock", "vertex", "openai", "azure", "openai-compatible", "jev"])(
+    "invoke on %s: provider, response id, response model, raw stop reason, no usage basis",
+    async (providerName) => {
     const model = fromNativeProvider(fakeProvider(providerName, { rawFinishReason: "end_turn" }), { model: "model-v1" });
     const message = await model.invoke(user);
     expect(wireInfoOf(message)).toEqual({
@@ -38,9 +34,9 @@ describe("native adapters attach wire info", () => {
       responseId: "resp_1",
       responseModel: "model-v1",
       rawFinishReason: "end_turn",
-      ...(basis ? { usageBasis: basis } : {}),
     });
-  });
+    },
+  );
 
   it("stream: the assembled message carries the facts the chunks gave, and says it was streamed", async () => {
     const chunks: ChatCompletionChunk[] = [
@@ -57,7 +53,6 @@ describe("native adapters attach wire info", () => {
       responseModel: "model-s",
       rawFinishReason: "STOP",
       streaming: true,
-      usageBasis: { outputExcludesReasoning: true },
     });
   });
 
@@ -80,6 +75,14 @@ describe("native adapters attach wire info", () => {
 
     const wrapped = fromLangchainModel({ invoke: async () => message, modelName: "lc" });
     expect(wireInfoOf(await wrapped.invoke(user))).toMatchObject({ provider: "bedrock", responseId: "r1" });
+  });
+
+  it("an explicit empty usageBasis is no claim; a declared one is kept; the default is the provider's own", () => {
+    expect(wireInfoOf(attachWireInfo({}, { provider: "anthropic", usageBasis: {} }))).not.toHaveProperty("usageBasis");
+    expect(wireInfoOf(attachWireInfo({}, { provider: "openai", usageBasis: { inputExcludesCache: true } }))).toMatchObject({
+      usageBasis: { inputExcludesCache: true },
+    });
+    expect(wireInfoOf(attachWireInfo({}, { provider: "anthropic" }))).toMatchObject({ usageBasis: { inputExcludesCache: true } });
   });
 
   it("usageBasisOf knows each provider's counting", () => {

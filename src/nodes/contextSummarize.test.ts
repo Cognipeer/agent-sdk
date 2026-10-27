@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createContextSummarizeNode } from "./contextSummarize.js";
+import { createContextSummarizeNode, LAST_SUMMARIZATION_CALL_KEY } from "./contextSummarize.js";
 
 /**
  * A trailing assistant→tool exchange. The summarizer never compacts the newest
@@ -191,6 +191,69 @@ describe('contextSummarize', () => {
         expect.objectContaining({ key: 'project_fact.orbit.milestone', value: 'design' }),
       ]),
     );
+  });
+
+  // A reply that does not parse still cost the tokens the provider reported: the
+  // fallback summary replaces its text, not its bill.
+  function failureFixture(model: any) {
+    const summarizer = createContextSummarizeNode({ summarization: true, tracing: { enabled: true }, model } as any);
+    const state: any = {
+      messages: [
+        { role: 'user', content: 'summarize this' },
+        { role: 'assistant', content: 'calling tool', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'fetch', arguments: '{}' } }] },
+        { role: 'tool', name: 'fetch', tool_call_id: 'call_1', content: 'a long tool response' },
+        ...latestTurn('call_2', 'fetch', 'another tool response'),
+      ],
+      summaries: [],
+      summaryRecords: [],
+      usage: { perRequest: [], totals: {} },
+      ctx: {},
+    };
+    return { summarizer, state };
+  }
+
+  it('books the tokens of a summarizer reply that does not parse (fallback) in state.usage and the trace', async () => {
+    const { summarizer, state } = failureFixture({
+      modelName: 'gpt-5.4-mini',
+      async invoke() {
+        return {
+          role: 'assistant',
+          content: 'Sure, here you go: {this is not valid json} hope that helps',
+          usage: { prompt_tokens: 900, completion_tokens: 120, total_tokens: 1020, prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 30 } },
+        };
+      },
+    });
+
+    const result: any = await summarizer(state);
+
+    expect(state.usage.perRequest).toHaveLength(1);
+    expect(state.usage.totals['gpt-5.4-mini']).toMatchObject({ input: 900, output: 120, total: 1020, cachedInput: 100, cacheWriteInput: 30 });
+
+    const call = result.ctx[LAST_SUMMARIZATION_CALL_KEY];
+    expect(call.fallback).toBe(true);
+    expect(call.usage).toMatchObject({ inputTokens: 900, outputTokens: 120, totalTokens: 1020, cachedInputTokens: 100 });
+
+    const trace = (result.ctx.__deferredTraceEvents as any[]).find((e) => e.type === 'summarization');
+    expect(trace).toMatchObject({ status: 'error', inputTokens: 900, outputTokens: 120, totalTokens: 1020, cachedInputTokens: 100 });
+  });
+
+  it('a summarizer call that throws before any reply books and reports nothing', async () => {
+    const { summarizer, state } = failureFixture({
+      modelName: 'gpt-5.4-mini',
+      async invoke() {
+        throw new Error('network down');
+      },
+    });
+
+    const result: any = await summarizer(state);
+
+    expect(state.usage.perRequest).toHaveLength(0);
+    const call = result.ctx[LAST_SUMMARIZATION_CALL_KEY];
+    expect(call.fallback).toBe(true);
+    expect(call).not.toHaveProperty('usage');
+    const trace = (result.ctx.__deferredTraceEvents as any[]).find((e) => e.type === 'summarization');
+    expect(trace.status).toBe('error');
+    expect(trace).not.toHaveProperty('inputTokens');
   });
 
   it('records the summarization call in state.usage so hosts can bill it', async () => {

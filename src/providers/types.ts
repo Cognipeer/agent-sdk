@@ -194,6 +194,15 @@ export type ReasoningRequestConfig = {
 
 // ─── Token Usage ─────────────────────────────────────────────────────────────
 
+/**
+ * A provider's own usage counters, on the provider's NATIVE basis: Anthropic and
+ * Bedrock `inputTokens` leave out the cache read + write, Vertex `outputTokens`
+ * leaves out the reasoning; OpenAI-style providers are inclusive. `cachedInputTokens`
+ * / `cachedWriteTokens` / `reasoningTokens` are 0 when the provider does not report
+ * them (never an estimate). `fromNativeProvider` converts to the inclusive
+ * `MessageUsage` (see `BaseProvider.usageBasis`). A streaming provider may yield
+ * several usage chunks; each one is CUMULATIVE, so a consumer keeps the last.
+ */
 export type TokenUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -265,6 +274,14 @@ export type ChatCompletionChunk = {
   rawFinishReason?: string;
   /** See ChatCompletionResponse.providerFields; per-chunk (fingerprint, tier, delta refusal/annotations, logprobs). */
   providerFields?: ProviderResponseFields;
+  /**
+   * The provider is starting the answer over (for example a host that retries a
+   * call cut off by its output limit inside one stream): `fromNativeProvider`
+   * drops the text, tool calls, reasoning and finish reason gathered so far. Text
+   * and reasoning deltas already yielded to the consumer cannot be taken back.
+   * Usage is not reset: usage chunks are cumulative, the last one wins.
+   */
+  reset?: boolean;
 };
 
 // ─── Embeddings ──────────────────────────────────────────────────────────────
@@ -438,6 +455,20 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   responsesStreaming?: boolean;
 };
 
+/** Prompt caching options shared by the Anthropic and Bedrock providers. */
+export type PromptCachingConfig = {
+  /** Turns caching on. Off (or omitted) sends no cache markers. */
+  enabled: boolean;
+  /**
+   * `"auto"` (default): cache the static prefix (system + tools) AND the moving
+   * conversation tail (Anthropic: top-level automatic `cache_control`; Bedrock:
+   * a `cachePoint` after the last user message). `"static"`: system + tools only.
+   */
+  strategy?: "auto" | "static";
+  /** Cache lifetime: `"5m"` (default) or `"1h"`. Bedrock Nova is always 5 minutes. */
+  ttl?: "5m" | "1h";
+};
+
 export type AnthropicProviderConfig = ProviderTransportConfig & {
   provider: "anthropic";
   apiKey: string;
@@ -447,11 +478,13 @@ export type AnthropicProviderConfig = ProviderTransportConfig & {
   anthropicVersion?: string;
   retry?: ProviderRetryConfig;
   /**
-   * Prompt caching configuration. When enabled, places cache_control:
-   * ephemeral breakpoints on the system prompt and the final tool definition,
-   * which is the recommended Anthropic recipe for static system + tools.
+   * Prompt caching configuration. When enabled, places explicit cache_control
+   * breakpoints on the system prompt and the final tool definition (the static
+   * prefix) and, with the default `strategy: "auto"`, also sets the top-level
+   * automatic `cache_control` so the breakpoint follows the conversation tail.
+   * See {@link PromptCachingConfig}.
    */
-  prompt_caching?: { enabled: boolean };
+  prompt_caching?: PromptCachingConfig;
   /**
    * Thinking request shape. `auto` (default) picks per model id: Claude 5.x
    * and newer use `thinking:{type:"adaptive"}` + `output_config.effort`, older
@@ -512,10 +545,12 @@ export type BedrockProviderConfig = ProviderTransportConfig & {
   retry?: ProviderRetryConfig;
   /**
    * Insert Bedrock Converse `cachePoint` blocks at the end of the system
-   * prompt and tools list. Only supported by models that implement Converse
-   * prompt caching (most Anthropic Claude variants on Bedrock).
+   * prompt and tools list and, with the default `strategy: "auto"`, at the end
+   * of the last user message. Applies to Claude and Amazon Nova (Nova: no tools
+   * checkpoint, 5-minute only); models of families without explicit caching get
+   * no checkpoints. See {@link PromptCachingConfig}.
    */
-  prompt_caching?: { enabled: boolean };
+  prompt_caching?: PromptCachingConfig;
 };
 
 export type VertexProviderConfig = ProviderTransportConfig & {

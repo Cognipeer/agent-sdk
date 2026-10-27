@@ -4,4 +4,4 @@
  * package.json to read at run time); a unit test fails when it drifts from
  * package.json, so a release bump cannot forget it.
  */
-export const SDK_VERSION = "0.20.0";
+export const SDK_VERSION = "0.21.0";

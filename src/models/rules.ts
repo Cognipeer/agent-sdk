@@ -49,6 +49,8 @@ export type ModelRules = {
   effortLadder: ReasoningEffort[];
   /** Thinking-token budgets for budget-style engines (Anthropic 3.7/4.x, Bedrock). */
   budgets: Record<Exclude<ReasoningEffort, "none">, number>;
+  /** `max_tokens` floor per effort for adaptive thinking, where thinking and the answer share the cap. */
+  adaptiveMaxTokens: Record<Exclude<ReasoningEffort, "none">, number>;
   geminiBudgets: Record<Exclude<ReasoningEffort, "none">, number>;
   rules: ModelRule[];
 };

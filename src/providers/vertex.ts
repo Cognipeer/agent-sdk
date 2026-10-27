@@ -526,6 +526,8 @@ export class VertexProvider extends BaseProvider {
       }
     }
 
+    const finish = geminiFinish(json, candidate);
+
     const usageMeta = json.usageMetadata ?? {};
     const tokenUsage: TokenUsage = {
       inputTokens: usageMeta.promptTokenCount ?? 0,
@@ -543,8 +545,8 @@ export class VertexProvider extends BaseProvider {
       content: textParts.join("") || null,
       toolCalls,
       usage: tokenUsage,
-      finishReason: mapGeminiFinishReason(candidate?.finishReason),
-      ...(typeof candidate?.finishReason === "string" ? { rawFinishReason: candidate.finishReason } : {}),
+      finishReason: finish.finishReason ?? "stop",
+      ...(finish.rawFinishReason ? { rawFinishReason: finish.rawFinishReason } : {}),
       reasoning: thoughtParts.length > 0 ? { summary: thoughtParts.join("\n").trim() || undefined } : undefined,
       raw: json,
     };
@@ -592,13 +594,16 @@ export class VertexProvider extends BaseProvider {
       };
     }
 
+    // Mid-stream chunks carry no finishReason: leave it unset rather than
+    // reporting "stop" on every one of them.
+    const finish = geminiFinish(chunk, candidate);
     return {
       id: chunk.responseId ?? "",
       model: modelId,
       delta,
       usage,
-      finishReason: mapGeminiFinishReason(candidate?.finishReason),
-      ...(typeof candidate?.finishReason === "string" ? { rawFinishReason: candidate.finishReason } : {}),
+      ...(finish.finishReason ? { finishReason: finish.finishReason } : {}),
+      ...(finish.rawFinishReason ? { rawFinishReason: finish.rawFinishReason } : {}),
     };
   }
 }
@@ -624,12 +629,36 @@ function mapGeminiFinishReason(reason: string | null | undefined): ChatCompletio
       return "length";
     case "SAFETY":
     case "RECITATION":
+    case "PROHIBITED_CONTENT":
+    case "BLOCKLIST":
+    case "SPII":
+    case "IMAGE_SAFETY":
       return "content_filter";
+    case "MALFORMED_FUNCTION_CALL":
+    case "UNEXPECTED_TOOL_CALL":
+      return "error";
     case "TOOL_CALLS":
       return "tool_calls";
     default:
       return "stop";
   }
+}
+
+/** The finish facts of a Gemini response or stream chunk. A prompt refused
+ * before generation has no candidate, only promptFeedback.blockReason. A
+ * missing reason leaves both fields unset (the caller decides the fallback). */
+function geminiFinish(
+  json: any,
+  candidate: any,
+): { finishReason?: ChatCompletionResponse["finishReason"]; rawFinishReason?: string } {
+  if (typeof candidate?.finishReason === "string") {
+    return { finishReason: mapGeminiFinishReason(candidate.finishReason), rawFinishReason: candidate.finishReason };
+  }
+  const blockReason = json?.promptFeedback?.blockReason;
+  if (!candidate && typeof blockReason === "string" && blockReason) {
+    return { finishReason: "content_filter", rawFinishReason: blockReason };
+  }
+  return {};
 }
 
 function base64url(str: string): string {

@@ -147,6 +147,7 @@ describe("Bedrock Claude 5.x", () => {
     await p.complete({ model: "global.anthropic.claude-sonnet-5-5-v1:0", messages: msgs, maxTokens: 50, temperature: 0.3, topP: 0.9, reasoning: { effort: "max" } });
     expect(bodies[0].additionalModelRequestFields.thinking.type).toBe("adaptive");
     expect(bodies[0].additionalModelRequestFields.output_config).toEqual({ effort: "max" });
+    // a caller's maxTokens is a hard cap: adaptive thinking does not raise it
     expect(bodies[0].inferenceConfig).toEqual({ maxTokens: 50 });
   });
 });

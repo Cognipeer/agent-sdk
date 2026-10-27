@@ -20,11 +20,34 @@ import {
   type ToolDefinition,
   type ReasoningBlock,
   type BedrockProviderConfig,
+  type PromptCachingConfig,
   type EmbeddingRequest,
   type EmbeddingResponse,
   type ProviderType,
   ProviderError,
 } from "./types.js";
+
+type BedrockCacheFamily = "claude" | "nova" | "none" | "unknown";
+
+// Converse families without explicit prompt caching (checkpoints raise a ValidationException).
+const NON_CACHING_FAMILIES = /^(meta|mistral|cohere|ai21|deepseek|openai|qwen|writer|stability|luma|twelvelabs|amazon\.titan)\b/;
+
+/**
+ * Classifies a Converse model id for prompt caching. A region / inference-profile
+ * prefix (`us.`, `eu.`, `apac.`, `global.`, `us-gov.`, ...) is ignored. ARNs and
+ * application inference profiles hide the family, so they are "unknown".
+ */
+function bedrockCacheFamily(modelId: string): BedrockCacheFamily {
+  const id = String(modelId ?? "").toLowerCase();
+  if (id.startsWith("arn:")) return "unknown";
+  const bare = id.replace(/^(?:us-gov|us|eu|apac|jp|au|ca|global)\./, "");
+  if (bare.startsWith("anthropic.claude")) return "claude";
+  if (bare.startsWith("amazon.nova")) return "nova";
+  if (NON_CACHING_FAMILIES.test(bare)) return "none";
+  return "unknown";
+}
+
+const MAX_CACHE_CHECKPOINTS = 4;
 
 export class BedrockProvider extends BaseProvider {
   readonly providerName: ProviderType = "bedrock";
@@ -35,6 +58,7 @@ export class BedrockProvider extends BaseProvider {
   private readonly defaultHeaders: Record<string, string>;
 
   private readonly promptCachingEnabled: boolean;
+  private readonly promptCaching: Required<Omit<PromptCachingConfig, "enabled">>;
 
   private readonly thinkingMode: ThinkingMode;
 
@@ -46,6 +70,10 @@ export class BedrockProvider extends BaseProvider {
     this.defaultHeaders = config.defaultHeaders ?? {};
     this.thinkingMode = config.thinkingMode ?? "auto";
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
+    this.promptCaching = {
+      strategy: config.prompt_caching?.strategy ?? "auto",
+      ttl: config.prompt_caching?.ttl ?? "5m",
+    };
     if (config.retry) this.retryPolicy = { ...this.retryPolicy, ...config.retry };
 
     this.credentials = {
@@ -152,11 +180,18 @@ export class BedrockProvider extends BaseProvider {
           if (typeof data.stopReason === "string") rawFinishReason = data.stopReason;
           break;
         case "metadata": {
+          // The ONLY usage event of a Converse stream (`messageStart` carries none), so a
+          // stream cut before it reports no usage: unlike Anthropic's `message_start`
+          // there is no early input count to capture. A host that must bill a cancelled
+          // Bedrock stream estimates the input itself.
+          // Native basis: `inputTokens` leaves out the cache read + write (the adapter
+          // adds them); `totalTokens` is input + output, not the service's own figure,
+          // which is not documented to cover the same parts.
           const u = data.usage ?? {};
           usage = {
             inputTokens: u.inputTokens ?? 0,
             outputTokens: u.outputTokens ?? 0,
-            totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+            totalTokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
             cachedInputTokens: u.cacheReadInputTokens ?? u.cacheReadInputTokenCount ?? 0,
             cachedWriteTokens: u.cacheWriteInputTokens ?? u.cacheWriteInputTokenCount ?? 0,
             cachedOutputTokens: 0,
@@ -278,9 +313,22 @@ export class BedrockProvider extends BaseProvider {
       messages: this.toBedrockMessages(messages),
     };
 
+    // "unknown" families (ARNs, application profiles) keep the 0.20 behaviour:
+    // the caller opted in, so checkpoints are sent.
+    const family = bedrockCacheFamily(request.model || this.defaultModel);
+    const caching = this.promptCachingEnabled && family !== "none";
+    // Nova is 5-minute only; a ttl there can raise a ValidationException.
+    const cachePoint = (): Record<string, any> => ({
+      cachePoint: this.promptCaching.ttl === "1h" && family !== "nova" ? { type: "default", ttl: "1h" } : { type: "default" },
+    });
+    let checkpoints = 0;
+
     if (system.length > 0) {
       const systemBlocks = system.map((s) => ({ text: s }) as Record<string, any>);
-      if (this.promptCachingEnabled) systemBlocks.push({ cachePoint: { type: "default" } });
+      if (caching) {
+        systemBlocks.push(cachePoint());
+        checkpoints++;
+      }
       body.system = systemBlocks;
     }
 
@@ -295,9 +343,11 @@ export class BedrockProvider extends BaseProvider {
     // Tools
     if (request.tools?.length) {
       const tools = request.tools.map((t) => this.toBedrockTool(t)) as Array<Record<string, any>>;
-      if (this.promptCachingEnabled && tools.length > 0) {
+      // Nova takes checkpoints in system and messages only, not in tools.
+      if (caching && family !== "nova" && tools.length > 0) {
         // Converse uses a {cachePoint} block at the end of the tools array.
-        tools.push({ cachePoint: { type: "default" } });
+        tools.push(cachePoint());
+        checkpoints++;
       }
       body.toolConfig = {
         tools,
@@ -312,6 +362,16 @@ export class BedrockProvider extends BaseProvider {
         } else if (typeof request.toolChoice === "object") {
           body.toolConfig.toolChoice = { tool: { name: request.toolChoice.name } };
         }
+      }
+    }
+
+    // Rolling breakpoint: each request writes at the new tail and reads the
+    // previous prefix (Bedrock looks back ~20 content blocks).
+    if (caching && this.promptCaching.strategy === "auto" && checkpoints < MAX_CACHE_CHECKPOINTS) {
+      const last = body.messages[body.messages.length - 1];
+      const content = last?.role === "user" ? last.content : undefined;
+      if (Array.isArray(content) && content.length > 0 && !content[content.length - 1].cachePoint) {
+        content.push(cachePoint());
       }
     }
 
@@ -582,11 +642,12 @@ export class BedrockProvider extends BaseProvider {
     const tokenUsage: TokenUsage = {
       inputTokens: usage.inputTokens ?? 0,
       outputTokens: usage.outputTokens ?? 0,
-      totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+      // Native basis (see the stream's `metadata`): input leaves out the cache, total = input + output.
+      totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
       cachedInputTokens: usage.cacheReadInputTokens ?? usage.cacheReadInputTokenCount ?? 0,
       cachedWriteTokens: usage.cacheWriteInputTokens ?? usage.cacheWriteInputTokenCount ?? 0,
       cachedOutputTokens: 0,
-      // Bedrock bills thinking tokens inside outputTokens; no separate count.
+      // Bedrock bills thinking tokens inside outputTokens and reports no separate count: 0 = not reported.
       reasoningTokens: 0,
     };
 

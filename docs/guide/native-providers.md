@@ -248,11 +248,15 @@ createProvider({
 });
 ```
 
+`prompt_caching` is a `PromptCachingConfig`: `{ enabled, strategy?: "auto" | "static", ttl?: "5m" | "1h" }`. The default strategy is `"auto"` and the default TTL is 5 minutes. `"1h"` costs more per write and suits runs that wait longer than 5 minutes between calls (human-in-the-loop, background runs). The TTL is sent on every marker of the request, so the vendors' "longer TTL first" rule always holds.
+
 When enabled:
 
-- **Anthropic** — the provider wraps the system prompt as a `[{ type: "text", text, cache_control: { type: "ephemeral" } }]` block and places a `cache_control: ephemeral` marker on the last tool definition. The cumulative effect caches `[system + all tool definitions]`, which is the largest stable prefix in a tool-heavy run.
-- **Bedrock** — the provider appends `{ cachePoint: { type: "default" } }` blocks at the end of the `system` and `toolConfig.tools` arrays (Converse-API native shape).
+- **Anthropic** — the provider wraps the system prompt as a `[{ type: "text", text, cache_control: { type: "ephemeral" } }]` block and places a `cache_control` marker on the last tool definition. That caches `[tools + system]`, the stable prefix shared by every conversation. With `strategy: "auto"` the request also carries a top-level `cache_control` (automatic caching): the server puts a breakpoint on the last cacheable block and moves it forward as the conversation grows, so earlier turns are read from cache. It is left out when `extra` sets `cache_control` itself or when 4 explicit markers are already in use (the API allows 4). `"static"` keeps only the system and tool markers.
+- **Bedrock** — the provider appends `{ cachePoint: { type: "default" } }` blocks at the end of the `system` and `toolConfig.tools` arrays (Converse-API native shape). Converse has no automatic caching, so with `strategy: "auto"` it also appends a `cachePoint` to the last user message (text or tool results) on every request: a rolling checkpoint that writes the new tail and reads the previous prefix. Amazon Nova never gets a tools checkpoint or a `ttl`. Families without explicit caching on Converse (meta, mistral, cohere, ai21, deepseek, openai, qwen, writer, amazon.titan, ...) get no checkpoints.
 - **OpenAI / Azure** — caching is automatic for prompts over the provider's threshold; no breakpoint configuration needed.
+
+A prompt below the model's minimum cacheable size (for example 512 tokens on Claude 5.5 models) is simply not cached; the request still succeeds.
 
 Cache hit/miss tokens flow back through `response.usage.cachedInputTokens` and `response.usage.cachedWriteTokens` regardless of which provider you use, so you can verify the cache is working from telemetry without provider-specific code.
 

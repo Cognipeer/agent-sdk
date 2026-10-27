@@ -17,6 +17,14 @@
     "xhigh": 24576,
     "max": 32768
   },
+  "adaptiveMaxTokens": {
+    "minimal": 4096,
+    "low": 8192,
+    "medium": 16384,
+    "high": 32768,
+    "xhigh": 64000,
+    "max": 64000
+  },
   "geminiBudgets": {
     "minimal": 512,
     "low": 1024,

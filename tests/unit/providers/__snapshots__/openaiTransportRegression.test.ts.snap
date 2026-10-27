@@ -303,6 +303,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -353,6 +354,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -573,6 +575,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -623,6 +626,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1323,6 +1327,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1373,6 +1378,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1401,6 +1407,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1451,6 +1458,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1479,6 +1487,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1529,6 +1538,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1557,6 +1567,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1607,6 +1618,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1635,6 +1647,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1685,6 +1698,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1713,6 +1727,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1763,6 +1778,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -1791,6 +1807,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -1841,6 +1858,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -2157,6 +2175,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -2207,6 +2226,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -2427,6 +2447,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -2477,6 +2498,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -2793,6 +2815,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -2843,6 +2866,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -3063,6 +3087,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -3113,6 +3138,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -3429,6 +3455,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -3479,6 +3506,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,
@@ -3699,6 +3727,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
   "finishReason": "tool_calls",
   "id": "resp_1",
   "model": "m",
+  "rawFinishReason": "completed",
   "reasoning": {
     "summary": "thought",
   },
@@ -3749,6 +3778,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "finishReason": "tool_calls",
     "id": "resp_1",
     "model": "m",
+    "rawFinishReason": "completed",
     "usage": {
       "cachedInputTokens": 0,
       "cachedOutputTokens": 0,

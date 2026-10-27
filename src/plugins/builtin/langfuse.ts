@@ -34,7 +34,8 @@
 
 import type { AgentPlugin, HookContext, PluginLogger } from "../types.js";
 import type { AIMessage, SmartState } from "../../types.js";
-import { splitUsage } from "../../utils/usage.js";
+import { normalizeUsage as normalizeLedgerUsage, splitUsage } from "../../utils/usage.js";
+import { wireInfoOf, type WireUsageBasis } from "../../providers/wireInfo.js";
 
 const DEFAULT_BASE_URL = "https://cloud.langfuse.com";
 const INGESTION_PATH = "/api/public/ingestion";
@@ -195,8 +196,14 @@ function basicAuth(publicKey: string, secretKey: string): string {
   throw new Error("[agent-sdk] langfuseTracing needs Buffer or btoa to encode Basic auth.");
 }
 
-/** Providers disagree on the spelling; the Langfuse body wants one shape. */
-function normalizeUsage(raw: unknown): LangfuseEvent["usage"] | undefined {
+/**
+ * Providers disagree on the spelling; the Langfuse body wants one shape.
+ * `basis` is the counting rule a hand-built or LangChain message declares for
+ * its usage (the SDK's own adapter already converts to the inclusive shape and
+ * declares none): the same rule as the OTLP exporter, so both report the same
+ * input / output for a call.
+ */
+function normalizeUsage(raw: unknown, basis?: WireUsageBasis): LangfuseEvent["usage"] | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const usage = raw as Record<string, unknown>;
   const num = (...keys: string[]): number | undefined => {
@@ -206,10 +213,21 @@ function normalizeUsage(raw: unknown): LangfuseEvent["usage"] | undefined {
     }
     return undefined;
   };
-  const input = num("prompt_tokens", "promptTokens", "input_tokens", "inputTokens");
-  const output = num("completion_tokens", "completionTokens", "output_tokens", "outputTokens");
-  const total = num("total_tokens", "totalTokens");
+  let input = num("prompt_tokens", "promptTokens", "input_tokens", "inputTokens");
+  let output = num("completion_tokens", "completionTokens", "output_tokens", "outputTokens");
+  let total = num("total_tokens", "totalTokens");
   if (input === undefined && output === undefined && total === undefined) return undefined;
+  if (basis?.inputExcludesCache || basis?.outputExcludesReasoning) {
+    const detail = normalizeLedgerUsage(raw);
+    if (basis.inputExcludesCache) {
+      input = (input ?? 0) + (detail?.prompt_tokens_details.cached_tokens ?? 0) + (detail?.prompt_tokens_details.cache_write_tokens ?? 0);
+    }
+    if (basis.outputExcludesReasoning) {
+      output = (output ?? 0) + (detail?.completion_tokens_details.reasoning_tokens ?? 0);
+    }
+    // The provider's own total does not cover the parts added back.
+    total = (input ?? 0) + (output ?? 0);
+  }
   return { input, output, total: total ?? (input ?? 0) + (output ?? 0) };
 }
 
@@ -441,7 +459,7 @@ export function langfuseTracing(config: LangfuseTracingConfig = {}): AgentPlugin
             startTime: new Date(endedAt - latency).toISOString(),
             endTime: new Date(endedAt).toISOString(),
             model: resolveModelName(ctx.state as SmartState, message),
-            usage: normalizeUsage(usage),
+            usage: normalizeUsage(usage, wireInfoOf(message)?.usageBasis),
             metadata: {
               iteration,
               latencyMs: latency,

@@ -473,11 +473,19 @@ export type ContextBuilder = {
   ): MaybePromise<Message[]>;
 };
 
+/**
+ * USD cost of one model call. `inputTokens` is INCLUSIVE: uncached + cache read +
+ * cache write. `cachedInputTokens` (cache read) and `cacheWriteTokens` (cache
+ * write) are subsets of it, `reasoningTokens` is a subset of `outputTokens`, so
+ * a price table bills `(input - cached - cacheWrite) * in + cached * read +
+ * cacheWrite * write + output * out`.
+ */
 export type CostEstimator = (args: {
   modelName?: string;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
 }) => number;
 

@@ -132,6 +132,7 @@ export class OpenAIProvider extends BaseProvider {
         },
         usage: response.usage,
         finishReason: response.finishReason,
+        ...(response.rawFinishReason ? { rawFinishReason: response.rawFinishReason } : {}),
       };
       return;
     }
@@ -495,6 +496,7 @@ export class OpenAIProvider extends BaseProvider {
       delta: final?.reasoning && !streamedSummary ? { reasoning: final.reasoning } : {},
       usage: final?.usage,
       finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
+      ...(final?.rawFinishReason ? { rawFinishReason: final.rawFinishReason } : {}),
     };
   }
 
@@ -669,21 +671,20 @@ export class OpenAIProvider extends BaseProvider {
       textParts.push(json.output_text);
     }
 
-    const usage = json.usage ?? {};
-    const reasoningTokens = usage.output_tokens_details?.reasoning_tokens ?? 0;
-    const tokenUsage: TokenUsage = {
-      inputTokens: usage.input_tokens ?? 0,
-      outputTokens: usage.output_tokens ?? 0,
-      totalTokens: usage.total_tokens ?? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
-      cachedInputTokens: usage.input_tokens_details?.cached_tokens ?? 0,
-      cachedWriteTokens: 0,
-      cachedOutputTokens: 0,
-      reasoningTokens,
-    };
+    const tokenUsage = usageFromOpenAIShape(json.usage);
 
-    const finishReason: ChatCompletionResponse["finishReason"] = toolCalls.length > 0
-      ? "tool_calls"
-      : json.status === "incomplete" ? "length" : "stop";
+    // A limit hit is status "incomplete" + a reason; "incomplete" alone says
+    // nothing about the cause, so it is not "length". A cut-off call's
+    // arguments are unusable, so a limit outranks the tool calls.
+    const incompleteReason = json.status === "incomplete"
+      ? (typeof json.incomplete_details?.reason === "string" ? json.incomplete_details.reason : "incomplete")
+      : undefined;
+    const finishReason: ChatCompletionResponse["finishReason"] = incompleteReason === "max_output_tokens"
+      ? "length"
+      : incompleteReason === "content_filter"
+        ? "content_filter"
+        : toolCalls.length > 0 ? "tool_calls" : "stop";
+    const rawFinishReason = incompleteReason ?? (typeof json.status === "string" ? json.status : undefined);
 
     return {
       id: json.id ?? "",
@@ -692,6 +693,7 @@ export class OpenAIProvider extends BaseProvider {
       toolCalls,
       usage: tokenUsage,
       finishReason,
+      ...(rawFinishReason ? { rawFinishReason } : {}),
       reasoning: summaryParts.length > 0 ? { summary: summaryParts.join("\n").trim() || undefined } : undefined,
       raw: json,
     };
@@ -818,22 +820,64 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   protected extractUsage(usage: any): TokenUsage {
-    if (!usage) return emptyUsage();
-    const promptDetails = usage.prompt_tokens_details ?? {};
-    const completionDetails = usage.completion_tokens_details ?? {};
-    return {
-      inputTokens: usage.prompt_tokens ?? 0,
-      outputTokens: usage.completion_tokens ?? 0,
-      totalTokens: usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0),
-      cachedInputTokens: promptDetails.cached_tokens ?? 0,
-      cachedWriteTokens: 0,
-      cachedOutputTokens: 0,
-      reasoningTokens: completionDetails.reasoning_tokens ?? 0,
-    };
+    return usageFromOpenAIShape(usage);
   }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * `TokenUsage` from an OpenAI-shaped usage object: Chat Completions
+ * (`prompt_tokens` / `completion_tokens`) and Responses (`input_tokens` /
+ * `output_tokens`), plus the cache dialects of OpenAI-compatible servers. Every
+ * dialect below reports `prompt_tokens` INCLUSIVE of the cached tokens, so the
+ * input is kept as it is:
+ *  - cache read: `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`
+ *    (OpenAI, Azure, OpenRouter), DeepSeek's `prompt_cache_hit_tokens` (docs:
+ *    `prompt_tokens = hit + miss`) and Moonshot's top-level `cached_tokens`
+ *    (docs: "cache reads and writes are already included in `prompt_tokens`")
+ *  - cache write: `prompt_tokens_details.cache_write_tokens` (OpenRouter, also
+ *    `input_tokens_details.cache_write_tokens`) and LiteLLM's `cache_creation_input_tokens`
+ * Defensive guard: read + write above the prompt can only mean a server that
+ * leaves the cache out of `prompt_tokens` (an Anthropic-style usage forwarded
+ * verbatim), so the cache is added back instead of being billed as a negative.
+ * Reasoning is a subset of the output and is 0 when the server does not report it.
+ */
+function usageFromOpenAIShape(usage: any): TokenUsage {
+  if (!usage || typeof usage !== "object") return emptyUsage();
+  const count = (...vals: any[]): number => {
+    for (const v of vals) if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    return 0;
+  };
+  const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details ?? {};
+  let input = count(usage.prompt_tokens, usage.input_tokens);
+  const output = count(usage.completion_tokens, usage.output_tokens);
+  const cachedRead = count(
+    usage.prompt_tokens_details?.cached_tokens,
+    usage.input_tokens_details?.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  );
+  const cachedWrite = count(
+    usage.prompt_tokens_details?.cache_write_tokens,
+    usage.input_tokens_details?.cache_write_tokens,
+    usage.cache_creation_input_tokens,
+  );
+  let total = count(usage.total_tokens);
+  if (cachedRead + cachedWrite > input) {
+    input += cachedRead + cachedWrite;
+    total = 0;
+  }
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total || input + output,
+    cachedInputTokens: cachedRead,
+    cachedWriteTokens: cachedWrite,
+    cachedOutputTokens: 0,
+    reasoningTokens: Math.min(count(completionDetails.reasoning_tokens), output),
+  };
+}
 
 /** Reasoning text as OpenAI-compatible servers spell it: `reasoning_content`
  * (DeepSeek, vLLM, Together) or `reasoning` (OpenRouter, newer vLLM). */
@@ -958,9 +1002,14 @@ function mapFinishReason(reason: string | null | undefined): ChatCompletionRespo
     case "tool_calls":
       return "tool_calls";
     case "length":
+    case "max_tokens":
+    case "model_length":
+    case "max_output_tokens":
       return "length";
     case "content_filter":
       return "content_filter";
+    case "insufficient_system_resource":
+      return "error";
     default:
       return "stop";
   }

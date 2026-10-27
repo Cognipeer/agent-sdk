@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 import { ProviderError } from "./types.js";
 import type { ModelRuleLearnedEvent } from "../models/adjust.js";
+import type { WireUsageBasis } from "./wireInfo.js";
 import { abortableSleep, abortReason } from "../utils/abort.js";
 
 export type ProviderRetryPolicy = {
@@ -35,6 +36,16 @@ const DEFAULT_RETRY: Required<Pick<ProviderRetryPolicy, "maxRetries" | "baseDela
 
 export abstract class BaseProvider {
   abstract readonly providerName: ProviderType;
+  /**
+   * How this provider's `TokenUsage` counts tokens. Unset = derive it from
+   * `providerName` (`usageBasisOf`: Anthropic / Bedrock `inputTokens` leave out the
+   * cache read + write, Vertex `outputTokens` leaves out the reasoning). An
+   * explicit `{}` = already inclusive: a gateway or wrapper that normalised the
+   * usage itself. `fromNativeProvider` converts to the inclusive `MessageUsage`
+   * with this basis, so a provider that reports inclusive counts under a
+   * provider name that is exclusive by default must declare `{}`.
+   */
+  readonly usageBasis?: WireUsageBasis;
   protected retryPolicy: ProviderRetryPolicy = DEFAULT_RETRY;
   /** Injected `fetch` (config.fetch); falls back to the global one at call time. */
   protected fetchImpl?: typeof fetch;

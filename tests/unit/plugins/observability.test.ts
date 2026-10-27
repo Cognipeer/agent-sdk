@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginHost, langfuseTracing, otelTracing } from "../../../src/plugins/index.js";
 import type { AgentPlugin, PluginLogger, PluginRunHost } from "../../../src/plugins/index.js";
 import type { SmartAgentEvent, SmartState, TraceSessionRuntime } from "../../../src/types.js";
+import { attachWireInfo } from "../../../src/providers/wireInfo.js";
 import { createSubagentTraceScope, createTraceSession, customSink, finalizeTraceSession, recordTraceEvent } from "../../../src/utils/tracing.js";
 
 afterEach(() => {
@@ -197,6 +198,24 @@ describe("langfuseTracing", () => {
     expect(init.method).toBe("POST");
     expect(init.headers?.["content-type"]).toBe("application/json");
     expect(init.headers?.Authorization).toBe(`Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`);
+    await host.dispose();
+  });
+
+  it("applies the declared usage basis like the OTLP export: a hand-built Anthropic-style message folds the cache in, an adapter message does not", async () => {
+    const fetchMock = stubFetch(async () => okResponse());
+    const { host, run } = harness([langfuseTracing({ ...langfuseKeys, flushAt: 1, flushIntervalMs: 0 })]);
+    await host.setup({ model: null });
+    const exclusive = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30, prompt_tokens_details: { cached_tokens: 90, cache_write_tokens: 5 } };
+
+    const declared = attachWireInfo({ role: "assistant", content: "hi" }, { provider: "anthropic" });
+    await run.runGate("postModelCall", modelInput({ message: declared, usage: exclusive }));
+    // The adapter converts first and declares no basis: its usage is already inclusive.
+    const converted = attachWireInfo({ role: "assistant", content: "hi" }, { provider: "anthropic", usageBasis: {} });
+    await run.runGate("postModelCall", modelInput({ message: converted, usage: { ...exclusive, prompt_tokens: 105, total_tokens: 125 } }));
+
+    const [first, second] = batchItems(fetchMock);
+    expect(first.body.usage).toMatchObject({ input: 105, output: 20, total: 125 });
+    expect(second.body.usage).toMatchObject({ input: 105, output: 20, total: 125 });
     await host.dispose();
   });
 

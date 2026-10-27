@@ -26,9 +26,10 @@ import { getResolvedSmartConfig } from "./smart/runtimeConfig.js";
 import { createContextPilotRuntime } from "./smart/contextPilot/index.js";
 import { seedChildMessages } from "./smart/subagents/registry.js";
 import { selectPendingToolCalls } from "./utils/pendingToolCalls.js";
+import { costEstimatorArgsOf } from "./utils/usage.js";
 import { nanoid } from "nanoid";
 import { createPluginHost, type PluginRunHost } from "./plugins/host.js";
-import type { AgentPlugin } from "./plugins/types.js";
+import type { AgentPlugin, CostEstimator } from "./plugins/types.js";
 import { openPluginSession } from "./plugins/session.js";
 import { createPluginTraceRecorder } from "./plugins/trace.js";
 
@@ -297,6 +298,13 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return next;
     };
     publish(state);
+    // Consumed like `__paused`: a limit ended the previous run, not this one
+    // (a budget is re-checked at the top of every iteration anyway).
+    if (state.ctx?.__limitBreached) {
+      const nextCtx = { ...state.ctx };
+      delete nextCtx.__limitBreached;
+      state = { ...state, ctx: Object.keys(nextCtx).length > 0 ? nextCtx : undefined } as AgentState;
+    }
     if (state.ctx?.__paused) {
       const nextCtx = { ...state.ctx };
       delete nextCtx.__paused;
@@ -351,7 +359,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
     const maxWallClockMs = mergedLimits?.maxWallClockMs && mergedLimits.maxWallClockMs > 0 ? mergedLimits.maxWallClockMs : undefined;
     const maxTotalOutputTokens = mergedLimits?.maxTotalOutputTokens && mergedLimits.maxTotalOutputTokens > 0 ? mergedLimits.maxTotalOutputTokens : undefined;
     const maxCostUsd = mergedLimits?.maxCostUsd && mergedLimits.maxCostUsd > 0 ? mergedLimits.maxCostUsd : undefined;
-    const costEstimator = ((opts as any).costEstimator ?? pluginHost.slots.costEstimator) as ((args: { modelName?: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number }) => number) | undefined;
+    const costEstimator = ((opts as any).costEstimator ?? pluginHost.slots.costEstimator) as CostEstimator | undefined;
     const checkBudgetBreached = (): { breached: false } | { breached: true; reason: string } => {
       if (maxWallClockMs && Date.now() - wallClockStart > maxWallClockMs) {
         return { breached: true, reason: `maxWallClockMs (${maxWallClockMs}ms) exceeded` };
@@ -371,13 +379,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         if (perRequest) {
           let cost = 0;
           for (const r of perRequest) {
-            cost += costEstimator({
-              modelName: r.modelName,
-              inputTokens: Number(r.usage?.prompt_tokens) || 0,
-              outputTokens: Number(r.usage?.completion_tokens) || 0,
-              cachedInputTokens: Number(r.usage?.prompt_tokens_details?.cached_tokens) || 0,
-              reasoningTokens: Number(r.usage?.completion_tokens_details?.reasoning_tokens) || 0,
-            }) || 0;
+            cost += costEstimator(costEstimatorArgsOf(r)) || 0;
           }
           if (cost > maxCostUsd) {
             return { breached: true, reason: `maxCostUsd ($${maxCostUsd}) exceeded (actual: $${cost.toFixed(4)})` };
@@ -387,6 +389,18 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return { breached: false };
     };
     let iterations = 0;
+    const announceLimit = async (reason: string) => {
+      emit?.({ type: "metadata", limitBreached: reason });
+      const limitHost = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
+      if (limitHost?.has("notification")) {
+        // Observation only: a throwing handler must not turn a graceful
+        // limit exit into a thrown run.
+        await limitHost.runObservers("notification", {
+          kind: "limit",
+          detail: { reason, iteration: iterations },
+        });
+      }
+    };
     // Run-scoped reflection counter. `state.reflections` accumulates across the
     // whole (possibly resumed) conversation, so it cannot back `maxPerRun`.
     let reflectionsThisRun = 0;
@@ -473,16 +487,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       // tokens after the cap has been hit.
       const budget = checkBudgetBreached();
       if (budget.breached) {
-        emit?.({ type: "metadata", limitBreached: budget.reason });
-        const limitHost = (state.ctx as any)?.__plugins as PluginRunHost | undefined;
-        if (limitHost?.has("notification")) {
-          // Observation only: a throwing handler must not turn a graceful
-          // budget exit into a thrown run.
-          await limitHost.runObservers("notification", {
-            kind: "limit",
-            detail: { reason: budget.reason, iteration: iterations },
-          });
-        }
+        await announceLimit(budget.reason);
         // The reviewer's answer that resumed this run is still owed to the trace:
         // no iteration opens below to record it.
         recordHumanDecisions(state.ctx?.__traceSession, state);
@@ -639,6 +644,14 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
       } else {
         resumeStage = null;
+      }
+
+      // The model call itself ended the run: its reply hit the output limit
+      // mid tool call (agentCore dropped the call). Nothing is routed to the
+      // tools node, and the structured-output nudge below must not fire either.
+      if (!skippingAgent && state.ctx?.__limitBreached) {
+        await announceLimit(String(state.ctx.__limitBreached));
+        break;
       }
 
       const lastMsg: any = state.messages[state.messages.length - 1];

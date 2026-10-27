@@ -4,18 +4,19 @@
 //   prompt_tokens: number;
 //   completion_tokens: number;
 //   total_tokens: number;
-//   prompt_tokens_details: { cached_tokens: number; audio_tokens: number };
+//   prompt_tokens_details: { cached_tokens: number; cache_write_tokens: number; audio_tokens: number };
 //   completion_tokens_details: { reasoning_tokens: number; audio_tokens: number; accepted_prediction_tokens: number; rejected_prediction_tokens: number };
 //   raw?: any; // original provider usage
 // }
 
 import type { AgentState } from "../types.js";
+import type { CostEstimator } from "../plugins/types.js";
 
 export type NormalizedUsage = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  prompt_tokens_details: { cached_tokens: number; audio_tokens: number };
+  prompt_tokens_details: { cached_tokens: number; cache_write_tokens: number; audio_tokens: number };
   completion_tokens_details: {
     reasoning_tokens: number;
     audio_tokens: number;
@@ -70,6 +71,7 @@ export function normalizeUsage(raw: any | undefined | null): NormalizedUsage | u
     total_tokens: safe(total || (prompt || 0) + (completion || 0)),
     prompt_tokens_details: {
       cached_tokens: safe(cachedTokens),
+      cache_write_tokens: safe(cacheWriteTokensOf(raw)),
       audio_tokens: safe(num(promptDetailsSrc.audio_tokens, promptDetailsSrc.audioTokens, promptDetailsSrc.audio)),
     },
     completion_tokens_details: {
@@ -108,6 +110,7 @@ export function recordUsage(
   const usageState = state.usage || { perRequest: [], totals: {} };
   const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const cachedInput = normalized.prompt_tokens_details?.cached_tokens;
+  const cacheWrite = normalized.prompt_tokens_details?.cache_write_tokens;
 
   usageState.perRequest.push({
     id,
@@ -116,18 +119,42 @@ export function recordUsage(
     timestamp: new Date().toISOString(),
     turn: usageState.perRequest.length + 1,
     cachedInput,
+    cacheWrite,
   });
 
-  const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+  const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0, cacheWriteInput: 0 };
   usageState.totals[modelName] = {
     input: previous.input + (Number(normalized.prompt_tokens) || 0),
     output: previous.output + (Number(normalized.completion_tokens) || 0),
     total: previous.total + (Number(normalized.total_tokens) || 0),
     cachedInput: previous.cachedInput + (Number(cachedInput) || 0),
+    // A ledger restored from an older run has no write counter: it reads as 0.
+    cacheWriteInput: (previous.cacheWriteInput || 0) + (Number(cacheWrite) || 0),
   };
 
   state.usage = usageState;
   return id;
+}
+
+/**
+ * The arguments a `costEstimator` receives for ONE ledger entry. `inputTokens`
+ * is INCLUSIVE (uncached + cache read + cache write); `cachedInputTokens` (read)
+ * and `cacheWriteTokens` are subsets of it and `reasoningTokens` is a subset of
+ * `outputTokens`. The one place that reads the entry, so `maxCostUsd`,
+ * `budgetGuard` and `sessionMetrics` cannot drift apart.
+ */
+export function costEstimatorArgsOf(request: { modelName?: string; usage?: any }): Parameters<CostEstimator>[0] {
+  const raw = (request.usage ?? {}) as Record<string, any>;
+  const promptDetails = raw.prompt_tokens_details ?? {};
+  const completionDetails = raw.completion_tokens_details ?? {};
+  return {
+    modelName: request.modelName,
+    inputTokens: Number(raw.prompt_tokens) || 0,
+    outputTokens: Number(raw.completion_tokens) || 0,
+    cachedInputTokens: Number(promptDetails.cached_tokens) || 0,
+    cacheWriteTokens: Number(promptDetails.cache_write_tokens) || 0,
+    reasoningTokens: Number(completionDetails.reasoning_tokens) || 0,
+  };
 }
 
 function num(...vals: any[]): number | undefined {
@@ -148,12 +175,13 @@ type Ledger = NonNullable<AgentState["usage"]>;
 export function totalUsage(entries: LedgerEntry[]): Ledger["totals"] {
   const totals: Ledger["totals"] = {};
   for (const entry of entries) {
-    const previous = totals[entry.modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+    const previous = totals[entry.modelName] || { input: 0, output: 0, total: 0, cachedInput: 0, cacheWriteInput: 0 };
     totals[entry.modelName] = {
       input: previous.input + (Number(entry.usage?.prompt_tokens) || 0),
       output: previous.output + (Number(entry.usage?.completion_tokens) || 0),
       total: previous.total + (Number(entry.usage?.total_tokens) || 0),
       cachedInput: previous.cachedInput + (Number(entry.cachedInput) || 0),
+      cacheWriteInput: (previous.cacheWriteInput || 0) + (Number(entry.cacheWrite) || 0),
     };
   }
   return totals;
@@ -181,12 +209,13 @@ export function appendUsageEntries(
   }
   const added = totalUsage(entries);
   for (const [modelName, add] of Object.entries(added)) {
-    const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0 };
+    const previous = usageState.totals[modelName] || { input: 0, output: 0, total: 0, cachedInput: 0, cacheWriteInput: 0 };
     usageState.totals[modelName] = {
       input: previous.input + add.input,
       output: previous.output + add.output,
       total: previous.total + add.total,
       cachedInput: previous.cachedInput + add.cachedInput,
+      cacheWriteInput: (previous.cacheWriteInput || 0) + (add.cacheWriteInput || 0),
     };
   }
   state.usage = usageState;
@@ -221,6 +250,7 @@ export function splitUsage(usage: AgentState["usage"]): {
           output: Math.max(0, total.output - child.output),
           total: Math.max(0, total.total - child.total),
           cachedInput: Math.max(0, total.cachedInput - child.cachedInput),
+          cacheWriteInput: Math.max(0, (total.cacheWriteInput || 0) - (child.cacheWriteInput || 0)),
         }
       : total;
   }
@@ -233,8 +263,9 @@ export function splitUsage(usage: AgentState["usage"]): {
  * `cache_write_tokens`, Anthropic's `cache_creation_input_tokens`, Bedrock's
  * `cacheWriteInputTokens`). Undefined when none is reported.
  *
- * Kept apart from `normalizeUsage`, which feeds budgets and cost and must not
- * change shape.
+ * `normalizeUsage` reads it into `prompt_tokens_details.cache_write_tokens` (the
+ * ledger's `cacheWrite` / `cacheWriteInput`); the trace facts read it from the
+ * raw usage too.
  */
 export function cacheWriteTokensOf(raw: any): number | undefined {
   if (!raw || typeof raw !== "object") return undefined;
