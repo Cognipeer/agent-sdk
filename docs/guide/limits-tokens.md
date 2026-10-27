@@ -51,6 +51,7 @@ Smart-agent summarization is controlled under `summarization`:
 - `summaryPromptMaxTokens` — caps the summarization prompt size
 - `summaryCompressionRatioTarget`
 - `summaryMode` — `"incremental"` (default) or `"full_rewrite"`
+- `outputMaxTokens` — output cap of the summarizer call (default 8192, `0` = none); retried once on `max_tokens_too_large`
 - `integrityCheck` — verifies stable facts survive across passes
 
 ## Pluggable token counter

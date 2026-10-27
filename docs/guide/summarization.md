@@ -47,6 +47,8 @@ Important fields:
 - `summarization.enable`
 - `summarization.maxTokens` — output ceiling (and the fallback trigger when `summaryTriggerTokens` is omitted)
 - `summarization.summaryTriggerTokens` — token threshold that triggers compaction; falls back to `maxTokens`, then to `limits.maxContextTokens`
+- `summarization.outputMaxTokens` — output cap of the summarizer call (default `8192`, `0` sends none). If the model rejects it with `max_tokens_too_large`, the pass retries once with the stated limit, or with no cap. A reply cut off at an output limit, empty, or JSON without summary fields ends the pass `skipped` with `status: "fallback"`: nothing is replaced and the previous summary stays
+- `summarization.reasoningEffort` — effort of the summarizer call (default `"none"`)
 - `summarization.summaryMode` — `"incremental"` (default) chains the prior summary; `"full_rewrite"` discards it
 - `summarization.summaryPromptMaxTokens` — caps the summarization prompt size
 - `summarization.integrityCheck` — verifies stable facts survive across passes (default `true`)

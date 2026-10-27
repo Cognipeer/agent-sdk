@@ -165,7 +165,7 @@ AWS Signature V4 signing is implemented inline — no `@aws-sdk` dependency need
 createProvider({
   provider: "vertex",
   projectId: "my-gcp-project",
-  location: "us-central1",          // optional, default "us-central1"
+  location: "us-central1",          // optional; default "us-central1" for Gemini, "global" for Claude models
   accessToken: process.env.VERTEX_ACCESS_TOKEN,
   defaultModel: "gemini-2.0-flash",
 })
@@ -184,6 +184,8 @@ createProvider({
   projectId: "my-gcp-project",
 })
 ```
+
+`VertexProvider` also serves Claude models (`claude-sonnet-4-6`, `claude-haiku-4-5@20251001`, `publishers/anthropic/models/<id>`) through `rawPredict`. With no `location` set, Claude calls use `global`, because regional endpoints serve Claude Sonnet 4.6 and earlier only; set `location` explicitly to keep a region (data residency). `prompt_caching` and `thinkingMode` apply to Claude models only. URL image / document sources are rejected with a 400 (send base64). The `gcloud` fallback times out after `gcloudTimeoutMs` (default 30000).
 
 ### OpenAI-compatible
 
@@ -254,7 +256,12 @@ When enabled:
 
 - **Anthropic** — the provider wraps the system prompt as a `[{ type: "text", text, cache_control: { type: "ephemeral" } }]` block and places a `cache_control` marker on the last tool definition. That caches `[tools + system]`, the stable prefix shared by every conversation. With `strategy: "auto"` the request also carries a top-level `cache_control` (automatic caching): the server puts a breakpoint on the last cacheable block and moves it forward as the conversation grows, so earlier turns are read from cache. It is left out when `extra` sets `cache_control` itself or when 4 explicit markers are already in use (the API allows 4). `"static"` keeps only the system and tool markers.
 - **Bedrock** — the provider appends `{ cachePoint: { type: "default" } }` blocks at the end of the `system` and `toolConfig.tools` arrays (Converse-API native shape). Converse has no automatic caching, so with `strategy: "auto"` it also appends a `cachePoint` to the last user message (text or tool results) on every request: a rolling checkpoint that writes the new tail and reads the previous prefix. Amazon Nova never gets a tools checkpoint or a `ttl`. Families without explicit caching on Converse (meta, mistral, cohere, ai21, deepseek, openai, qwen, writer, amazon.titan, ...) get no checkpoints.
+- **OpenAI-compatible (OpenRouter, LiteLLM routing to Claude)** — off unless `prompt_caching` is set on `OpenAICompatibleProvider` (Chat Completions only). `cache_control` goes on text parts: the end of the leading system prompt and, with `strategy: "auto"`, the last text part of the last *user* message (never a tool result), at most 4 markers including your own. A server that rejects an unknown `cache_control` field answers 400 and the SDK does not learn that, so leave it off there.
 - **OpenAI / Azure** — caching is automatic for prompts over the provider's threshold; no breakpoint configuration needed.
+
+`TextContent.cacheControl` (`{ type: "ephemeral", ttl?: "5m" | "1h" }`) puts a breakpoint on one text part. Anthropic sends it as `cache_control`, Bedrock as a `cachePoint` block after the part, OpenAI-compatible as `cache_control`; OpenAI and Azure ignore it. A request carries at most 4 breakpoints: yours win and the SDK's are added while slots remain, and a `5m` marker before a `1h` one downgrades the later one to `5m`.
+
+On Bedrock the `ttl: "1h"` field is sent only for Claude 4.5 and later; Claude 3.x, 4.0 / 4.1, Nova and unrecognised ids get a plain 5-minute checkpoint, because Bedrock rejects `ttl` on models that support only 5 minutes.
 
 A prompt below the model's minimum cacheable size (for example 512 tokens on Claude 5.5 models) is simply not cached; the request still succeeds.
 
