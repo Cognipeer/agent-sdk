@@ -139,12 +139,12 @@ describe("Responses API finish reasons", () => {
     });
   }
 
-  it("stream that ends without a terminal event keeps the old fallback and no raw reason", async () => {
+  // Deliberate change (truncated-stream rule): a body that ends before the terminal event was cut off,
+  // so it is a retryable error instead of a quiet "stop" with half a message.
+  it("stream that ends without a terminal event is a retryable error, not a finish reason", async () => {
     stubFetch({ sse: sseOf([{ type: "response.created", response: { id: "resp_1", model: MODEL } }]) });
-    const chunks = await collect(provider(true).completeStream({ model: MODEL, messages }));
-    const last = chunks[chunks.length - 1];
-    expect(last.finishReason).toBe("stop");
-    expect(last.rawFinishReason).toBeUndefined();
+    const error = await collect(provider(true).completeStream({ model: MODEL, messages })).catch((e) => e);
+    expect(error).toMatchObject({ message: "Responses stream ended before response.completed", statusCode: 502 });
   });
 });
 

@@ -15,6 +15,7 @@ import { countApproxTokens, countMessagesTokens } from "../utils/utilTokens.js";
 import { contentPartToText } from "../utils/content.js";
 import { isCompactedToolContent, isSyntheticSummaryMessage } from "../utils/syntheticMessages.js";
 import { getModelName, recordOrDeferTraceEvent, sanitizeTracePayload, traceErrorOf, traceSectionsFromMessages } from "../utils/tracing.js";
+import { ModelRequestError } from "../models/errors.js";
 import { providerHintOf, traceResponseFacts, type TraceResponseFacts } from "../utils/traceFacts.js";
 import { normalizeUsage, recordUsage } from "../utils/usage.js";
 import { getResolvedSmartConfig } from "../smart/runtimeConfig.js";
@@ -56,6 +57,65 @@ function eventErrorText(message: string | undefined): string | undefined {
     return message.length > MAX_EVENT_ERROR_CHARS
         ? `${message.slice(0, MAX_EVENT_ERROR_CHARS - 3)}...`
         : message;
+}
+
+/** Output-token cap of the summarizer call when `summarization.outputMaxTokens` is unset. */
+const DEFAULT_SUMMARY_OUTPUT_TOKENS = 8192;
+
+/**
+ * Stop reasons that say a reply was cut off by a limit instead of finished: the
+ * unified `length`, `max_tokens` (Anthropic, Bedrock, Gemini), the Responses API's
+ * `max_output_tokens` and `model_context_window_exceeded`. Compared lower-cased.
+ */
+const OUTPUT_LIMIT_STOPS = new Set(["length", "max_tokens", "max_output_tokens", "model_context_window_exceeded"]);
+
+/** The fields a summary reply is read from; a JSON reply with none of them is not a summary. */
+const SUMMARY_FIELDS = [
+    "user_directives", "stable_facts", "active_goals", "open_questions",
+    "discarded_obsolete", "obsolete_discarded", "rawSummary",
+];
+
+/**
+ * The summarizer answered, but the reply cannot stand in for a summary (cut off at
+ * an output limit, empty, JSON with no summary in it). Thrown inside the pass's try
+ * so it ends in the fallback branch with the reason; unlike another failure it
+ * then compacts nothing (the pass is skipped), because replacing tool output with
+ * placeholders under a summary nobody read loses what the run still needs.
+ */
+class UnusableSummaryReply extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "UnusableSummaryReply";
+    }
+}
+
+/**
+ * The call options of a summarizer that is not a LangChain model: the output cap,
+ * the reasoning effort and what the call is for (a host reads `purpose` to tell
+ * this call from the agent's own). A cap of `0` or less sends none.
+ */
+function summarizerCallOptions(config: { outputMaxTokens?: number; reasoningEffort?: string }): Record<string, unknown> {
+    const cap = config.outputMaxTokens == null ? DEFAULT_SUMMARY_OUTPUT_TOKENS : Math.floor(Number(config.outputMaxTokens));
+    return {
+        ...(Number.isFinite(cap) && cap > 0 ? { maxTokens: cap } : {}),
+        // Summarizing is compression, not problem solving; reasoning tokens would
+        // spend the same output budget as the summary.
+        reasoning: { effort: config.reasoningEffort ?? "none" },
+        purpose: "summarization",
+    };
+}
+
+/** The output-limit stop a reply ended with (unified or the provider's own), if it ended with one. */
+function outputLimitStop(response: any, facts: TraceResponseFacts | undefined): string | undefined {
+    const meta = response?.response_metadata;
+    return [meta?.finish_reason, meta?.finishReason, response?.finishReason, facts?.rawFinishReason]
+        .find((reason): reason is string => typeof reason === "string" && OUTPUT_LIMIT_STOPS.has(reason.trim().toLowerCase()));
+}
+
+/** A parsed reply that is a JSON object with none of the summary fields (`{}`, an error object). */
+function isJsonWithoutSummaryFields(parsed: unknown): boolean {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    return !SUMMARY_FIELDS.some((field) => field in (parsed as Record<string, unknown>));
 }
 
 /** What every `summarization` event of one pass repeats, so a consumer can tie them together. */
@@ -815,6 +875,8 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     let totalTokensActual: number | undefined;
     let reasoningTokensActual: number | undefined;
     let fallback = false;
+    // The summarizer answered with a reply that cannot be a summary (see UnusableSummaryReply).
+    let unusableReply = false;
     let summarizerError: { message: string; stack?: string; type?: string } | undefined;
     let responseFacts: TraceResponseFacts | undefined;
 
@@ -872,14 +934,30 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
                 }
                 // A LangChain model reports this call to its own callbacks
                 // (LangSmith…) as a named run instead of an anonymous chat call.
-                // Only a LangChain model gets the options: other adapters may
-                // forward unknown keys into the provider request.
-                const langchainRunOptions = (model as any)?._lc
+                // LangChain forwards unknown options into the provider request, so
+                // it gets only that; every other model gets the call's own options
+                // (output cap, reasoning effort, purpose).
+                const callOptions = (model as any)?._lc
                     ? { runName: "summarize_context", tags: ["cognipeer:summarization"], metadata: { cognipeer_event: "summarization" } }
-                    : undefined;
-                const response = langchainRunOptions
-                    ? await model.invoke(summaryPrompt, langchainRunOptions)
-                    : await model.invoke(summaryPrompt);
+                    : summarizerCallOptions(config);
+                let response: any;
+                try {
+                    response = await model.invoke(summaryPrompt, callOptions);
+                } catch (invokeErr: any) {
+                    // The output cap is ours to send, not the model's to refuse: a model
+                    // whose limit is below it answers 400 "max_tokens is too large". Retry
+                    // once, with the limit the server stated (never raised above the cap
+                    // sent) or, when it states none, with no cap. A second failure is the
+                    // pass's failure as before.
+                    const sentCap = (callOptions as any).maxTokens;
+                    if (!(invokeErr instanceof ModelRequestError) || invokeErr.code !== "max_tokens_too_large" || sentCap === undefined) throw invokeErr;
+                    const { maxTokens: _dropped, ...withoutCap } = callOptions as Record<string, unknown>;
+                    const allowed = invokeErr.maxAllowed;
+                    if (allowed !== undefined && allowed >= sentCap) throw invokeErr;
+                    response = await model.invoke(summaryPrompt, allowed !== undefined && allowed > 0 ? { ...withoutCap, maxTokens: Math.min(sentCap, allowed) } : withoutCap);
+                }
+                // A model that answers with nothing at all is an empty reply, not a crash.
+                if (response == null) throw new UnusableSummaryReply("Summarizer returned no text.");
         durationMs = Date.now() - startTime;
         summaryText = typeof response.content === "string" 
             ? response.content 
@@ -912,8 +990,22 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
           recordUsage(state, modelName || "unknown_model", normalized);
         }
 
+                // A reply the model did not finish, or that has nothing in it, is no
+                // summary. Checked after the usage is booked: it cost real tokens.
+                const limitStop = outputLimitStop(response, responseFacts);
+                if (limitStop) throw new UnusableSummaryReply(`Summarizer reply ended at its output limit (${limitStop}).`);
+                if (response.content == null || typeof summaryText !== "string" || !summaryText.trim()) {
+                    throw new UnusableSummaryReply("Summarizer returned no text.");
+                }
+
                 const jsonText = extractJsonObject(summaryText);
                 const parsed = jsonText ? JSON.parse(jsonText) : undefined;
+                // JSON with none of the summary fields. A custom template may ask for
+                // another shape, so only the default prompt is held to this; a reply
+                // that is not JSON at all stays a free-text summary.
+                if (!config.promptTemplate && isJsonWithoutSummaryFields(parsed)) {
+                    throw new UnusableSummaryReply("Summarizer reply has no summary fields.");
+                }
                 structuredSummary = normalizeStructuredSummary(parsed, summaryText);
                 structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
                 integrity = config.integrityCheck
@@ -931,6 +1023,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     } catch (err: any) {
         durationMs = Date.now() - startTime;
         fallback = true;
+        unusableReply = err instanceof UnusableSummaryReply;
                 structuredSummary = normalizeStructuredSummary(undefined, previousSummary || conversationText.slice(0, 800));
                 structuredSummary = mergeStableFacts(structuredSummary, canonicalFacts);
                 // The local fallback has no model to re-derive directives with;
@@ -951,6 +1044,62 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     // What the pass's events say about a failed summarizer: a clipped copy of the
     // provider's message (hosts relay events onward). The trace keeps it whole.
     const eventError = eventErrorText(summarizerError?.message);
+
+    // Ends a pass that compacted nothing. The empty delta is what the smart driver
+    // reads as "nothing reclaimed" (it does not retry until new tool output). A pass
+    // that announced itself with a `start` must also say it ended; one that never
+    // did (no model to call) stays as silent as it always was.
+    const endSkipped = (): Partial<SmartState> => {
+        if (events.started) {
+            events.ended = true;
+            onEvent?.({
+                type: "summarization",
+                phase: "skipped",
+                ...passIdentity,
+                summary: "",
+                ...(fallback ? { status: "fallback", ...(eventError ? { error: eventError } : {}) } : {}),
+            } as SummarizationEvent);
+        }
+        // A trace event held for the next leg (no session was open) rides back on
+        // ctx alone; a delta without messages is still "nothing reclaimed".
+        if (ctxWithDeferredTrace) {
+            const { [SUMMARIZATION_TRIGGER_KEY]: _passTrigger, ...carried } = ctxWithDeferredTrace;
+            return { ctx: carried } as Partial<SmartState>;
+        }
+        return {};
+    };
+
+    // The reply was cut off, empty or not a summary: the previous summary stays the
+    // latest and no tool message is rewritten. Compacting under a local fallback
+    // summary would archive tool output the run may still need.
+    if (unusableReply) {
+      // The call was billed (usage is booked above), so the trace says so too.
+      traceSummarization({
+        type: "summarization",
+        label: "Context Summarization Failed",
+        actor: { scope: "system", name: "summarizer", role: "summarization" },
+        status: "error",
+        durationMs,
+        ...(inputTokensActual !== undefined ? {
+          inputTokens: inputTokensActual,
+          outputTokens: outputTokensActual,
+          cachedInputTokens,
+          totalTokens: totalTokensActual,
+          ...(reasoningTokensActual !== undefined ? { reasoningTokens: reasoningTokensActual } : {}),
+          ...(responseFacts?.usageBasis ? { usageBasis: responseFacts.usageBasis } : {}),
+          ...(responseFacts?.cacheWriteTokens ? { cacheWriteTokens: responseFacts.cacheWriteTokens } : {}),
+        } : {}),
+        ...(responseFacts?.responseId ? { responseId: responseFacts.responseId } : {}),
+        ...(responseFacts?.responseModel ? { responseModel: responseFacts.responseModel } : {}),
+        ...(responseFacts?.rawFinishReason ? { rawFinishReason: responseFacts.rawFinishReason } : {}),
+        ...(modelName ? { model: modelName } : {}),
+        ...((responseFacts?.provider ?? providerName) ? { provider: responseFacts?.provider ?? providerName } : {}),
+        ...(summarizerError ? { error: summarizerError } : {}),
+        sections: promptAndOutputSections(),
+        debug: { skipped: true, usageFromModel: inputTokensActual !== undefined },
+      } as any);
+      return endSkipped();
+    }
 
     // 2. Build a map of tool_call_id -> assistant message index
     // This ensures we only keep tool messages that have a matching assistant with tool_calls
@@ -1101,19 +1250,7 @@ ${canonicalFacts.length > 0 ? canonicalFacts.map((fact) => `- ${fact.key}: ${fac
     if (actuallyCompressed.length === 0) {
         // All compressable messages were protected (recent). Skip summarization to avoid
         // injecting a summary + synthetic messages without actually reducing context.
-        // A pass that announced itself with a `start` must also say it ended. One
-        // that never did (no model to call) stays as silent as it always was.
-        if (events.started) {
-            events.ended = true;
-            onEvent?.({
-                type: "summarization",
-                phase: "skipped",
-                ...passIdentity,
-                summary: "",
-                ...(fallback ? { status: "fallback", ...(eventError ? { error: eventError } : {}) } : {}),
-            } as SummarizationEvent);
-        }
-        return {};
+        return endSkipped();
     }
 
     // 4. Validate message sequence - ensure every tool message follows an assistant with matching tool_calls

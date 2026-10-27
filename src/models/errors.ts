@@ -6,7 +6,7 @@
 
 import { ProviderError } from "../providers/types.js";
 
-export type ModelRequestErrorCode = "unsupported_parameter" | "unsupported_value" | "model_request_invalid";
+export type ModelRequestErrorCode = "unsupported_parameter" | "unsupported_value" | "max_tokens_too_large" | "model_request_invalid";
 
 export type ModelRequestErrorInit = {
   status?: number;
@@ -14,6 +14,8 @@ export type ModelRequestErrorInit = {
   param?: string;
   value?: unknown;
   supportedValues?: string[];
+  /** `max_tokens_too_large` only: the most completion tokens the server says it accepts, when its message states one. */
+  maxAllowed?: number;
   provider: string;
   model: string;
   message: string;
@@ -26,6 +28,8 @@ export class ModelRequestError extends ProviderError {
   readonly param?: string;
   readonly value?: unknown;
   readonly supportedValues?: string[];
+  /** `code: "max_tokens_too_large"` only: the largest completion size the server states it takes (a retry with it is the caller's call). */
+  readonly maxAllowed?: number;
   readonly model: string;
 
   constructor(init: ModelRequestErrorInit) {
@@ -35,6 +39,7 @@ export class ModelRequestError extends ProviderError {
     this.param = init.param;
     this.value = init.value;
     this.supportedValues = init.supportedValues;
+    this.maxAllowed = init.maxAllowed;
     this.model = init.model;
   }
 }

@@ -10,10 +10,22 @@ import { resolveModelRule, applyDropParams, type RulePatch } from "../models/rul
 import { runWithModelAdjustments } from "../models/adjust.js";
 import { chunkArray, mapWithConcurrency, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
 import { documentMimeToBedrockFormat, sanitizeBedrockDocName } from "./utils/media.js";
+// What the two Messages-shaped providers share: the split of the system prompt into its
+// static and per-turn parts, the pieces a caller's cache markers cut it into, the content
+// part guard, the placeholders for empty text and the truncated-stream error.
+import {
+  partitionSystemMessages,
+  systemPieces,
+  isContentPart,
+  truncatedStreamError,
+  EMPTY_MESSAGE_TEXT,
+  EMPTY_TOOL_RESULT_TEXT,
+} from "./anthropic.js";
 import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
   type ChatCompletionChunk,
+  type ContentPart,
   type ToolCall,
   type TokenUsage,
   type UnifiedMessage,
@@ -24,6 +36,7 @@ import {
   type EmbeddingRequest,
   type EmbeddingResponse,
   type ProviderType,
+  type TextContent,
   ProviderError,
 } from "./types.js";
 
@@ -47,7 +60,45 @@ function bedrockCacheFamily(modelId: string): BedrockCacheFamily {
   return "unknown";
 }
 
+/**
+ * Whether a Converse model id takes the 1-hour cache TTL: Claude 4.5 and later only
+ * (Opus/Sonnet/Haiku 4.5+, every 5.x). Claude 3.x, 4.0/4.1, Nova and anything unrecognised
+ * are 5-minute only, and a `ttl` there can raise a ValidationException, so the field is
+ * left out. An ARN / inference-profile id is read by its last path segment; an opaque
+ * application profile id is unknown and gets no ttl.
+ */
+function bedrockSupportsOneHourTtl(modelId: string): boolean {
+  const last = String(modelId ?? "").toLowerCase().split("/").pop() ?? "";
+  const bare = last.replace(/^(?:us-gov|us|eu|apac|jp|au|ca|global)\./, "").replace(/^anthropic\./, "");
+  const m = /^claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?!\d))?(?=[-:]|$)/.exec(bare);
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = m[2] ? Number(m[2]) : 0;
+  return major > 4 || (major === 4 && minor >= 5);
+}
+
+/** Converse accepts at most this many cache checkpoints per request (Claude and Nova alike). */
 const MAX_CACHE_CHECKPOINTS = 4;
+
+type CacheControl = NonNullable<TextContent["cacheControl"]>;
+
+/** What one request body is built against: the model's caching family and the checkpoints made from the caller's parts. */
+type BuildCtx = {
+  family: BedrockCacheFamily;
+  /** The model takes the 1-hour cache TTL (see bedrockSupportsOneHourTtl). */
+  oneHour: boolean;
+  /** The `cachePoint` blocks made from the caller's `cacheControl` text parts (as opposed to the SDK's own or raw `extra` ones). */
+  parts: Set<object>;
+};
+
+/** The blocks of the built request the SDK made itself, so the checkpoint pass never touches what `extra` replaced. */
+type OwnBlocks = {
+  system?: Record<string, any>[];
+  /** The last block of the static system prefix: where the SDK's system checkpoint goes after. */
+  lastStatic?: Record<string, any>;
+  tools?: Record<string, any>[];
+  messages?: Record<string, any>[];
+};
 
 export class BedrockProvider extends BaseProvider {
   readonly providerName: ProviderType = "bedrock";
@@ -116,6 +167,8 @@ export class BedrockProvider extends BaseProvider {
     let rawFinishReason: string | undefined;
     let toolOrdinal = 0;
     let usage: TokenUsage | undefined;
+    // True once `messageStop` (the event that carries the stop reason) has arrived.
+    let stopped = false;
 
     for await (const msg of parseEventStream(res.body, request.signal)) {
       const messageType = String(msg.headers[":message-type"] ?? "event");
@@ -176,6 +229,7 @@ export class BedrockProvider extends BaseProvider {
           break;
         }
         case "messageStop":
+          stopped = true;
           finishReason = mapBedrockStopReason(data.stopReason);
           if (typeof data.stopReason === "string") rawFinishReason = data.stopReason;
           break;
@@ -202,6 +256,16 @@ export class BedrockProvider extends BaseProvider {
         default:
           break; // messageStart, contentBlockStop, unknown events
       }
+    }
+
+    // The body ended with no `messageStop`: the connection was cut, not the message
+    // finished. Closing with a "stop" would hand the caller half a message (a tool call
+    // whose arguments stop halfway) as if it were whole, so it is the same retryable
+    // failure as a cut Anthropic stream. A caller that cancelled the call ended it
+    // itself: that is not an error.
+    if (!stopped) {
+      if (request.signal?.aborted) return;
+      throw truncatedStreamError(this.providerName, "Bedrock");
     }
 
     const blocks = [...reasoningByIndex.values()].filter(
@@ -307,30 +371,22 @@ export class BedrockProvider extends BaseProvider {
   // ─── Internals ───────────────────────────────────────────────────────────
 
   private buildConverseBody(request: ChatCompletionRequest, downgradeToolChoice = false, overlay?: RulePatch): Record<string, any> {
-    const { system, messages } = this.splitSystemMessages(request.messages);
+    // "unknown" families (ARNs, application profiles) keep the 0.20 behaviour: the
+    // caller opted in, so checkpoints are sent. A family with no explicit caching
+    // takes none at all (a ValidationException), the caller's own markers included.
+    const cacheModel = request.model || this.defaultModel;
+    const ctx: BuildCtx = { family: bedrockCacheFamily(cacheModel), oneHour: bedrockSupportsOneHourTtl(cacheModel), parts: new Set<object>() };
 
-    const body: Record<string, any> = {
-      messages: this.toBedrockMessages(messages),
-    };
+    // The system prompt that does not change between turns comes first and the SDK's
+    // own per-turn blocks (summary, memory, plugin and reflection context) after it, so
+    // the checkpoint can sit between the two instead of after text that changes every turn.
+    const { staticSystem, dynamicSystem, rest } = partitionSystemMessages(request.messages);
+    const staticBlocks = this.toBedrockSystem(staticSystem, ctx);
+    const systemBlocks = [...staticBlocks, ...this.toBedrockSystem(dynamicSystem, ctx)];
+    const messages = this.toBedrockMessages(rest, ctx);
 
-    // "unknown" families (ARNs, application profiles) keep the 0.20 behaviour:
-    // the caller opted in, so checkpoints are sent.
-    const family = bedrockCacheFamily(request.model || this.defaultModel);
-    const caching = this.promptCachingEnabled && family !== "none";
-    // Nova is 5-minute only; a ttl there can raise a ValidationException.
-    const cachePoint = (): Record<string, any> => ({
-      cachePoint: this.promptCaching.ttl === "1h" && family !== "nova" ? { type: "default", ttl: "1h" } : { type: "default" },
-    });
-    let checkpoints = 0;
-
-    if (system.length > 0) {
-      const systemBlocks = system.map((s) => ({ text: s }) as Record<string, any>);
-      if (caching) {
-        systemBlocks.push(cachePoint());
-        checkpoints++;
-      }
-      body.system = systemBlocks;
-    }
+    const body: Record<string, any> = { messages };
+    if (systemBlocks.length > 0) body.system = systemBlocks;
 
     // Inference config
     const inferenceConfig: Record<string, any> = {};
@@ -340,17 +396,13 @@ export class BedrockProvider extends BaseProvider {
     if (request.stop) inferenceConfig.stopSequences = request.stop;
     if (Object.keys(inferenceConfig).length > 0) body.inferenceConfig = inferenceConfig;
 
-    // Tools
+    // Tools (the SDK's checkpoint, a {cachePoint} block at the end of the array, is
+    // added with the others once the body is finished)
+    let ownTools: Record<string, any>[] | undefined;
     if (request.tools?.length) {
-      const tools = request.tools.map((t) => this.toBedrockTool(t)) as Array<Record<string, any>>;
-      // Nova takes checkpoints in system and messages only, not in tools.
-      if (caching && family !== "nova" && tools.length > 0) {
-        // Converse uses a {cachePoint} block at the end of the tools array.
-        tools.push(cachePoint());
-        checkpoints++;
-      }
+      ownTools = request.tools.map((t) => this.toBedrockTool(t));
       body.toolConfig = {
-        tools,
+        tools: ownTools,
       };
 
       const forceOk = !downgradeToolChoice && supportsForcedToolChoice(request.model || this.defaultModel);
@@ -362,16 +414,6 @@ export class BedrockProvider extends BaseProvider {
         } else if (typeof request.toolChoice === "object") {
           body.toolConfig.toolChoice = { tool: { name: request.toolChoice.name } };
         }
-      }
-    }
-
-    // Rolling breakpoint: each request writes at the new tail and reads the
-    // previous prefix (Bedrock looks back ~20 content blocks).
-    if (caching && this.promptCaching.strategy === "auto" && checkpoints < MAX_CACHE_CHECKPOINTS) {
-      const last = body.messages[body.messages.length - 1];
-      const content = last?.role === "user" ? last.content : undefined;
-      if (Array.isArray(content) && content.length > 0 && !content[content.length - 1].cachePoint) {
-        content.push(cachePoint());
       }
     }
 
@@ -401,25 +443,89 @@ export class BedrockProvider extends BaseProvider {
     }
     applyDropParams(body, rule);
 
+    // Last, on the finished body: `extra` may have replaced any of its parts, and its
+    // own checkpoints count against the limit too.
+    this.settleCheckpoints(
+      body,
+      { system: systemBlocks, lastStatic: staticBlocks[staticBlocks.length - 1], tools: ownTools, messages },
+      ctx,
+    );
+
     return body;
   }
 
-  private splitSystemMessages(messages: UnifiedMessage[]): { system: string[]; messages: UnifiedMessage[] } {
-    const system: string[] = [];
-    const rest: UnifiedMessage[] = [];
-
+  /**
+   * The `system` blocks of a group of system messages: one text block per message
+   * (blank text has no block: Converse rejects it), cut after each text part the
+   * caller marked for caching, which gets a checkpoint right after it.
+   */
+  private toBedrockSystem(messages: UnifiedMessage[], ctx: BuildCtx): Record<string, any>[] {
+    const blocks: Record<string, any>[] = [];
     for (const m of messages) {
-      if (m.role === "system") {
-        const text = typeof m.content === "string"
-          ? m.content
-          : m.content.filter((p) => p.type === "text").map((p) => (p as { type: "text"; text: string }).text).join("\n");
-        if (text) system.push(text);
-      } else {
-        rest.push(m);
+      for (const piece of systemPieces(m)) blocks.push(...textBlocks(piece.text, piece.mark, ctx));
+    }
+    return blocks;
+  }
+
+  /**
+   * Settles the cache checkpoints of a finished body so a request never carries more
+   * than the 4 Converse accepts. In order:
+   *  1. The caller's own come first: the `cacheControl` of text parts and any
+   *     `cachePoint` in `extra`. Over the limit, the earliest ones made from parts are
+   *     dropped (a later checkpoint covers a longer prefix); a raw `extra` one is
+   *     never touched. They are sent whether or not `prompt_caching` is enabled: that
+   *     switch is for the SDK's own, and a marker is an explicit request.
+   *  2. The SDK's own, only while a slot is free (`prompt_caching.enabled`) and only on
+   *     blocks it built: after the static system prompt, after the tools (not on Nova,
+   *     which takes none there) and, with strategy `auto`, at the end of the last user
+   *     message: a rolling breakpoint, each request writes at the new tail and reads
+   *     the previous prefix (Bedrock looks back ~20 content blocks). A checkpoint the
+   *     caller already put at that spot counts as the SDK's.
+   *  3. A longer lifetime may not come after a shorter one: in the order Bedrock reads
+   *     them (tools, system, messages) a 1h checkpoint after a 5m one is sent as 5m.
+   *     Only the ones the SDK made (from parts, or its own) are changed.
+   */
+  private settleCheckpoints(body: Record<string, any>, own: OwnBlocks, ctx: BuildCtx): void {
+    const sdk = new Set<object>();
+    const found = checkpointHolders(body, ctx.parts, sdk);
+    let count = found.length;
+    for (const holder of found) {
+      if (count <= MAX_CACHE_CHECKPOINTS) break;
+      if (holder.origin !== "part") continue;
+      holder.list.splice(holder.list.indexOf(holder.block), 1);
+      count--;
+    }
+
+    if (this.promptCachingEnabled && ctx.family !== "none") {
+      const add = (list: Record<string, any>[], at: number): void => {
+        const block = cachePointBlock(ctx.oneHour, this.promptCaching.ttl);
+        list.splice(at, 0, block);
+        sdk.add(block);
+        count++;
+      };
+      const system = own.system;
+      if (count < MAX_CACHE_CHECKPOINTS && system && own.lastStatic && body.system === system && !own.lastStatic.cachePoint) {
+        const after = system.indexOf(own.lastStatic);
+        if (after >= 0) add(system, after + 1);
+      }
+      const tools = own.tools;
+      if (count < MAX_CACHE_CHECKPOINTS && ctx.family !== "nova" && tools && tools.length > 0 && body.toolConfig?.tools === tools && !tools[tools.length - 1].cachePoint) {
+        add(tools, tools.length);
+      }
+      const messages = own.messages;
+      if (count < MAX_CACHE_CHECKPOINTS && this.promptCaching.strategy === "auto" && messages && body.messages === messages) {
+        const last = messages[messages.length - 1];
+        const content = last?.role === "user" ? last.content : undefined;
+        if (Array.isArray(content) && content.length > 0 && !content[content.length - 1].cachePoint) add(content, content.length);
       }
     }
 
-    return { system, messages: rest };
+    let shorter = false;
+    for (const holder of checkpointHolders(body, ctx.parts, sdk)) {
+      const point = holder.block.cachePoint as Record<string, any>;
+      if (point.ttl !== "1h") shorter = true;
+      else if (shorter && holder.origin !== "raw") delete point.ttl;
+    }
   }
 
   /**
@@ -433,47 +539,59 @@ export class BedrockProvider extends BaseProvider {
    * separate consecutive `user` messages triggers: "Expected toolResult
    * blocks at messages.N.content for the following Ids: ...".
    */
-  private toBedrockMessages(messages: UnifiedMessage[]): Record<string, any>[] {
+  private toBedrockMessages(messages: UnifiedMessage[], ctx: BuildCtx): Record<string, any>[] {
     const result: Record<string, any>[] = [];
     let mergingToolResults = false;
 
     for (const m of messages) {
       if (m.role === "tool" && m.toolCallId) {
-        const toolResult = this.toBedrockToolResult(m);
+        const blocks = this.toBedrockToolResult(m, ctx);
         if (mergingToolResults) {
-          result[result.length - 1].content.push(toolResult);
+          result[result.length - 1].content.push(...blocks);
         } else {
-          result.push({ role: "user", content: [toolResult] });
+          result.push({ role: "user", content: blocks });
           mergingToolResults = true;
         }
         continue;
       }
 
       mergingToolResults = false;
-      result.push(this.toBedrockMessage(m));
+      result.push(this.toBedrockMessage(m, ctx));
     }
 
     return result;
   }
 
-  private toBedrockToolResult(m: UnifiedMessage): Record<string, any> {
-    const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-    return {
-      toolResult: {
-        toolUseId: m.toolCallId,
-        content: [{ text }],
-        status: "success",
+  /**
+   * One tool result: the `toolResult` block (`status` "error" when the host flagged the
+   * result as one, which Converse documents for Nova and Claude), then a checkpoint
+   * when a text part of the result carried the caller's `cacheControl`: a toolResult
+   * has no cachePoint member of its own, so it goes after the whole block.
+   */
+  private toBedrockToolResult(m: UnifiedMessage, ctx: BuildCtx): Record<string, any>[] {
+    return [
+      {
+        toolResult: {
+          toolUseId: m.toolCallId,
+          content: toolResultContent(m.content, ctx),
+          status: m.isError ? "error" : "success",
+        },
       },
-    };
+      ...callerCheckpoint(ctx, toolResultMark(m.content)),
+    ];
   }
 
-  private toBedrockMessage(m: UnifiedMessage): Record<string, any> {
+  private toBedrockMessage(m: UnifiedMessage, ctx: BuildCtx): Record<string, any> {
     // Assistant with tool calls
     if (m.role === "assistant" && m.toolCalls?.length) {
       const content: any[] = [];
       appendBedrockReasoning(content, m.reasoning?.blocks);
-      if (typeof m.content === "string" && m.content) {
-        content.push({ text: m.content });
+      if (typeof m.content === "string") {
+        content.push(...textBlocks(m.content, undefined, ctx));
+      } else if (Array.isArray(m.content)) {
+        for (const part of m.content) {
+          if (part.type === "text") content.push(...textBlocks(part.text, part.cacheControl, ctx));
+        }
       }
       for (const tc of m.toolCalls) {
         content.push({
@@ -487,46 +605,15 @@ export class BedrockProvider extends BaseProvider {
       return { role: "assistant", content };
     }
 
-    // Regular messages
+    // Regular messages. Converse rejects a blank text block, so blank text is dropped,
+    // and a message left with nothing carries a placeholder instead.
     const content: any[] = [];
     if (typeof m.content === "string") {
-      content.push({ text: m.content });
+      content.push(...textBlocks(m.content, undefined, ctx));
     } else if (Array.isArray(m.content)) {
-      for (const part of m.content) {
-        if (part.type === "text") {
-          content.push({ text: part.text });
-        } else if (part.type === "image") {
-          const src = part.source;
-          if (src.type === "base64") {
-            content.push({
-              image: {
-                format: mediaTypeToFormat(src.mediaType),
-                source: { bytes: src.data },
-              },
-            });
-          }
-        } else if (part.type === "file") {
-          const src = part.source;
-          const format = documentMimeToBedrockFormat(src.mediaType, part.fileName);
-          if (src.type === "base64" && format) {
-            content.push({
-              document: {
-                format,
-                name: sanitizeBedrockDocName(part.fileName),
-                source: { bytes: src.data },
-              },
-            });
-          } else {
-            // Converse has no URL document source / unknown format; keep the reference visible.
-            const ref = src.type === "url" ? src.url : part.fileName ?? "attachment";
-            content.push({ text: `[file: ${ref}]` });
-          }
-        } else if (part.type === "audio") {
-          const src = part.source;
-          content.push({ text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" });
-        }
-      }
+      for (const part of m.content) content.push(...partBlocks(part, ctx));
     }
+    if (content.length === 0) content.push({ text: EMPTY_MESSAGE_TEXT });
 
     return { role: m.role === "user" ? "user" : "assistant", content };
   }
@@ -693,6 +780,143 @@ function appendBedrockReasoning(content: any[], blocks: ReasoningBlock[] | undef
   }
 }
 
+// ── Cache checkpoints ───────────────────────────────────────────────────────
+
+/**
+ * A `cachePoint` content block (Converse: `type: "default"`, optional `ttl` of `5m` or
+ * `1h`). The ttl is sent for 1h only (the 5-minute default is the API's own) and only
+ * for a model that takes it: on a 5-minute-only model a ttl can raise a ValidationException.
+ */
+function cachePointBlock(oneHour: boolean, ttl: CacheControl["ttl"] | undefined): Record<string, any> {
+  return { cachePoint: ttl === "1h" && oneHour ? { type: "default", ttl: "1h" } : { type: "default" } };
+}
+
+/** The checkpoint the caller asked for after a block: none when it asked for none, or when the model takes none. */
+function callerCheckpoint(ctx: BuildCtx, cc: CacheControl | undefined): Record<string, any>[] {
+  if (!cc || ctx.family === "none") return [];
+  const block = cachePointBlock(ctx.oneHour, cc.ttl);
+  ctx.parts.add(block);
+  return [block];
+}
+
+/**
+ * A text part as Converse blocks: the text, then the caller's checkpoint when it marked
+ * the part. Blank text has no block (Converse rejects it) and a checkpoint on it goes
+ * with it, so a checkpoint never follows nothing.
+ */
+function textBlocks(text: string, cc: CacheControl | undefined, ctx: BuildCtx): Record<string, any>[] {
+  return text.trim() ? [{ text }, ...callerCheckpoint(ctx, cc)] : [];
+}
+
+/** Where a built body carries a `cachePoint`: the block, the array it sits in and who made it. */
+type CheckpointHolder = { list: Record<string, any>[]; block: Record<string, any>; origin: "raw" | "part" | "sdk" };
+
+/** Every `cachePoint` block of a built body, in the order Bedrock reads them: tools, system, messages. */
+function checkpointHolders(body: Record<string, any>, parts: Set<object>, sdk: Set<object>): CheckpointHolder[] {
+  const found: CheckpointHolder[] = [];
+  const visit = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    for (const block of list) {
+      if (!block || typeof block !== "object" || !(block as Record<string, any>).cachePoint) continue;
+      found.push({ list, block, origin: parts.has(block) ? "part" : sdk.has(block) ? "sdk" : "raw" });
+    }
+  };
+  visit(body.toolConfig?.tools);
+  visit(body.system);
+  if (Array.isArray(body.messages)) {
+    for (const message of body.messages) visit(message && typeof message === "object" ? (message as Record<string, any>).content : undefined);
+  }
+  return found;
+}
+
+// ── Content parts ───────────────────────────────────────────────────────────
+
+/**
+ * One content part of a message (or, with `inToolResult`, of a tool result) as Converse
+ * blocks. Converse takes no URL source for an image or a document and no audio, so
+ * those keep a visible text reference. The text of a tool result takes no checkpoint
+ * here (see `toolResultMark`).
+ */
+function partBlocks(part: ContentPart, ctx: BuildCtx, inToolResult = false): Record<string, any>[] {
+  if (part.type === "text") return textBlocks(part.text, inToolResult ? undefined : part.cacheControl, ctx);
+  if (part.type === "image") {
+    const src = part.source;
+    if (src.type !== "base64") return [{ text: `[image: ${src.url}]` }];
+    // An image inside a tool result is documented for Nova and Claude only.
+    if (inToolResult && ctx.family === "none") {
+      return [{ text: "[image attachment omitted: not supported in tool results by this model]" }];
+    }
+    return [{ image: { format: mediaTypeToFormat(src.mediaType), source: { bytes: src.data } } }];
+  }
+  if (part.type === "file") {
+    const src = part.source;
+    const format = documentMimeToBedrockFormat(src.mediaType, part.fileName);
+    if (src.type === "base64" && format) {
+      return [{ document: { format, name: sanitizeBedrockDocName(part.fileName), source: { bytes: src.data } } }];
+    }
+    // Converse has no URL document source / unknown format; keep the reference visible.
+    const ref = src.type === "url" ? src.url : part.fileName ?? "attachment";
+    return [{ text: `[file: ${ref}]` }];
+  }
+  const src = part.source;
+  return [{ text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" }];
+}
+
+/**
+ * `toolResult.content`: text, images and documents when the result is made of parts,
+ * one `json` block for a JSON object a host passed through, the JSON text for anything
+ * else. Never empty: Converse rejects a blank text block (and some models an empty
+ * array), so a result with no output says so.
+ */
+function toolResultContent(content: unknown, ctx: BuildCtx): Record<string, any>[] {
+  if (typeof content === "string") return [{ text: content.trim() ? content : EMPTY_TOOL_RESULT_TEXT }];
+  const list: unknown[] = Array.isArray(content) ? content : content == null ? [] : [content];
+  if (list.length === 0) return [{ text: EMPTY_TOOL_RESULT_TEXT }];
+  if (list.every(isContentPart)) {
+    const blocks = (list as ContentPart[]).flatMap((part) => partBlocks(part, ctx, true));
+    return blocks.length > 0 ? blocks : [{ text: EMPTY_TOOL_RESULT_TEXT }];
+  }
+  return [structuredResultBlock(content)];
+}
+
+/**
+ * A JSON value a host passed through as a tool result. Converse takes a JSON OBJECT in a
+ * `json` block: an array or any scalar there is a ValidationException ("Provide a json
+ * object for the field"), although the API reference types it as any JSON value. So an
+ * object goes out as one (a plain JSON copy, nothing a JSON body cannot carry reaches
+ * the wire) and everything else as its JSON text.
+ */
+function structuredResultBlock(value: unknown): Record<string, any> {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? "";
+  } catch {
+    text = String(value);
+  }
+  if (!text.trim()) return { text: EMPTY_TOOL_RESULT_TEXT };
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { json: parsed };
+  } catch {
+    // Not JSON (the String() of a value that has no JSON form): sent as text.
+  }
+  return { text };
+}
+
+/**
+ * The caching marker among a tool result's text parts (the last marked one with text in
+ * it). A toolResult content block has no cachePoint member, so the marker becomes one
+ * checkpoint after the whole toolResult block.
+ */
+function toolResultMark(content: unknown): CacheControl | undefined {
+  if (!Array.isArray(content) || !content.every(isContentPart)) return undefined;
+  let mark: CacheControl | undefined;
+  for (const part of content as ContentPart[]) {
+    if (part.type === "text" && part.text.trim() && part.cacheControl) mark = part.cacheControl;
+  }
+  return mark;
+}
+
 function bedrockExceptionStatus(code: string): number | undefined {
   switch (code) {
     case "throttlingException": return 429;
@@ -715,10 +939,17 @@ function mapBedrockStopReason(reason: string | null | undefined): ChatCompletion
     case "max_tokens":
     case "model_context_window_exceeded":
       return "length";
+    // A content filter or a guardrail withheld the answer: an HTTP 200, not an error.
     case "content_filtered":
     case "guardrail_intervened":
     case "guardrail":
       return "content_filter";
+    // The model's own output (`malformed_model_output`) or its tool call
+    // (`malformed_tool_use`) came out malformed: the turn did not finish properly, so it
+    // is not a "stop". The raw value stays in `rawFinishReason` for a host that retries.
+    case "malformed_model_output":
+    case "malformed_tool_use":
+      return "error";
     default:
       return "stop";
   }

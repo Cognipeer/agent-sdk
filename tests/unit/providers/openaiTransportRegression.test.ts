@@ -1,11 +1,13 @@
 /**
  * Byte-for-byte regression guard for the OpenAI-shaped providers.
  *
- * The snapshots in this file were recorded BEFORE `responsesApiModels` and
- * `responsesStreaming` existed. Every case here is a configuration that does
- * not use those options, so each recorded URL, payload string and streamed
- * chunk sequence must stay exactly as it was: a diff here means an existing
- * consumer's wire traffic changed.
+ * The snapshots were re-recorded for 0.22.0 with these deliberate wire changes:
+ * Responses bodies send `temperature` where the model rule allows it and
+ * `include: ["reasoning.encrypted_content"]` for reasoning models, and Chat
+ * Completions stream chunks carry `finishReason` only on the chunk that has a
+ * `finish_reason`. Apart from those, each recorded URL, payload string and
+ * streamed chunk sequence must stay exactly as it is: any other diff means an
+ * existing consumer's wire traffic changed.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {

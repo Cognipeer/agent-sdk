@@ -360,7 +360,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
       const tool = toolByName.get(tc.name);
       if (!tool) {
-        push({ role: "tool", content: `Tool not found: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_unknown`, name: tc.name });
+        push({ role: "tool", content: `Tool not found: ${tc.name}`, tool_call_id: tc.id || `${tc.name}_unknown`, name: tc.name, isError: true });
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args: tc.args, error: { message: "Tool not found" } });
         toolCount += 1;
         return { status: "error" };
@@ -375,7 +375,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const validatedArgs = validateToolArgs(tool, args);
       if (!validatedArgs.ok && resolved.toolResponses.schemaValidation === "strict") {
         const errorMessage = `Tool argument validation failed for ${tc.name}: ${validatedArgs.message}`;
-        push({ role: "tool", content: errorMessage, tool_call_id: toolCallId, name: tc.name });
+        push({ role: "tool", content: errorMessage, tool_call_id: toolCallId, name: tc.name, isError: true });
         markToolFailure(errorMessage, tc.name, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: tc.name, id: tc.id, args, error: { message: errorMessage } });
         toolCount += 1;
@@ -417,7 +417,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       // on the model's arguments and the re-gate on reviewer-edited ones.
       const rejectByPolicy = (gateReason: string | undefined, gatedArgs: unknown): ToolExecutionResult => {
         const reason = gateReason || `Tool call blocked by policy: ${toolName}`;
-        push({ role: "tool", content: reason, tool_call_id: toolCallId, name: tc.name });
+        push({ role: "tool", content: reason, tool_call_id: toolCallId, name: tc.name, isError: true });
         toolHistory.push({
           executionId: nanoid(),
           toolName,
@@ -481,7 +481,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           const revalidated = validateToolArgs(tool, gate.input.args);
           if (!revalidated.ok && resolved.toolResponses.schemaValidation === "strict") {
             const message = `Tool argument validation failed after a plugin rewrite for ${toolName}: ${revalidated.message}`;
-            push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name });
+            push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name, isError: true });
             markToolFailure(message, toolName, toolCallId);
             onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args: gate.input.args, error: { message } });
             toolCount += 1;
@@ -520,7 +520,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         const currentExecutions = countSuccessfulToolExecutions(toolHistory, toolName);
         if (currentExecutions >= maxExecutionsPerRun) {
           const limitMessage = `Skipped tool due to per-tool execution limit: ${toolName} (${maxExecutionsPerRun}/run)`;
-          push({ role: "tool", content: limitMessage, tool_call_id: toolCallId, name: tc.name });
+          push({ role: "tool", content: limitMessage, tool_call_id: toolCallId, name: tc.name, isError: true });
           onEvent?.({ type: "tool_call", phase: "skipped", name: toolName, id: tc.id, args });
           recordTraceEvent(traceSession, {
             type: "tool_call",
@@ -600,7 +600,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
 
         if (approvalEntry.status === "rejected") {
           const rejectionMessage = approvalEntry.comment || "Tool call rejected by reviewer.";
-          push({ role: "tool", content: `Tool call rejected: ${rejectionMessage}`, tool_call_id: toolCallId, name: tc.name });
+          push({ role: "tool", content: `Tool call rejected: ${rejectionMessage}`, tool_call_id: toolCallId, name: tc.name, isError: true });
           approvalEntry.metadata = { ...(approvalEntry.metadata || {}), resolution: "rejected" };
           approvalEntry.status = "executed";
           approvalEntry.resolvedAt = new Date().toISOString();
@@ -627,7 +627,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
             const revalidated = validateToolArgs(tool, approvedArgs);
             if (!revalidated.ok && resolved.toolResponses.schemaValidation === "strict") {
               const message = `Tool argument validation failed for reviewer-edited arguments of ${toolName}: ${revalidated.message}`;
-              push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name });
+              push({ role: "tool", content: message, tool_call_id: toolCallId, name: tc.name, isError: true });
               markToolFailure(message, toolName, toolCallId);
               settleRefused("invalid_args");
               onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args: approvedArgs, error: { message } });
@@ -686,7 +686,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
       const failureStats = (state.ctx as any).__toolFailureCounts ||= {} as Record<string, number>;
       if (retryCfg?.circuitBreakerThreshold && failureStats[toolName] >= retryCfg.circuitBreakerThreshold) {
         const breakerMsg = `Tool ${toolName} circuit breaker open after ${failureStats[toolName]} consecutive failures`;
-        push({ role: "tool", content: breakerMsg, tool_call_id: toolCallId, name: tc.name });
+        push({ role: "tool", content: breakerMsg, tool_call_id: toolCallId, name: tc.name, isError: true });
         markToolFailure(breakerMsg, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message: breakerMsg } });
         recordTraceEvent(traceSession, {
@@ -1055,7 +1055,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           contextPilot: contextPilotStats,
         });
 
-        push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
+        push({ role: "tool", content: responsePolicy.content, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name, ...(reportedFailure ? { isError: true } : {}) });
         if (reportedFailure) {
           onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, result: output, error: { message: reportedFailure }, durationMs });
         } else {
@@ -1141,7 +1141,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
         }
 
         toolHistory.push({ executionId, toolName, args, output: `Error executing tool: ${message}`, rawOutput: null, timestamp: new Date().toISOString(), tool_call_id: tc.id, status: "error" });
-        push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name });
+        push({ role: "tool", content: `Error executing tool: ${message}`, tool_call_id: tc.id || `${tc.name}_${toolCount}`, name: tc.name, isError: true });
         markToolFailure(message, toolName, toolCallId);
         onEvent?.({ type: "tool_call", phase: "error", name: toolName, id: tc.id, args, error: { message } });
         onProgress?.({ stage: "tools", message: `Tool ${tc.name} failed`, detail: { error: message } });
@@ -1282,6 +1282,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           content: cancelMessage,
           tool_call_id: tc.id || `${tc.name}_cancelled_${idx}`,
           name: tc.name,
+          isError: true,
         } as Message);
         // "rejected", not "error": the tool never ran, so it must not consume
         // the per-run execution budget the way a real failure does.
@@ -1326,7 +1327,7 @@ export function createToolsNode(initialTools: Array<ToolInterface<any, any, any>
           toolName: tc.name,
         }),
       });
-      appended.push({ role: "tool", content: skipMessage, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name });
+      appended.push({ role: "tool", content: skipMessage, tool_call_id: tc.id || `${tc.name}_${appended.length}`, name: tc.name, isError: true });
       toolCount += 1;
     }
 

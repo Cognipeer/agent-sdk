@@ -9,7 +9,8 @@ import type { ReasoningEffort } from "../providers/types.js";
 export type { ReasoningEffort };
 
 export type RuleFamily = "openai" | "anthropic" | "gemini" | "other";
-export type ReasoningStyle = "effort" | "adaptive" | "budget" | "toggle" | "none";
+/** `level` = a discrete thinking level instead of a token budget (Gemini 3 `thinkingConfig.thinkingLevel`). */
+export type ReasoningStyle = "effort" | "adaptive" | "budget" | "toggle" | "level" | "none";
 /** How "reasoning off" is spelled on the wire (`none` = the effort value itself). */
 export type OffMechanism = "none" | "disabled" | "between_tools";
 export type TemperatureRule = "any" | "default-only" | "unsupported" | "thinking-requires-1";
@@ -28,6 +29,21 @@ export type ModelRule = {
     /** Efforts the OpenAI Responses endpoint accepts, when they differ from `efforts`. */
     responsesEfforts?: ReasoningEffort[];
     off: OffMechanism | null;
+    /**
+     * Budget style only: the smallest thinking budget the model accepts, used for
+     * effort `none` when `efforts` has no `none` (the model cannot turn thinking off,
+     * e.g. Gemini 2.5 Pro: 128).
+     */
+    minBudget?: number;
+    /**
+     * Adaptive style only: the model already thinks when a request carries no
+     * `thinking` field (Claude 5.x), but returns the thinking text empty because
+     * `display` defaults to "omitted". `includeThoughts: true` without any effort or
+     * budget then sends `thinking: { type: "adaptive", display: "summarized" }` alone
+     * (no `output_config`, no `max_tokens` raise). Unset: thinking is opt-in, and
+     * `includeThoughts` alone sends nothing.
+     */
+    defaultOn?: boolean;
   };
   sampling: {
     temperature: TemperatureRule;
@@ -176,11 +192,43 @@ export function clearLearnedModelRules(): void {
   learned.clear();
 }
 
+/** `anthropic.claude...` behind any geography prefix, in a bare id or at the end of an ARN. */
+const BEDROCK_CLAUDE = /(?:^|[./])anthropic\.claude/;
+
+/**
+ * True when a model id names a Claude model: `claude-...`, `anthropic.claude-...`, a
+ * region-prefixed profile (`us.`, `eu.`, `apac.`, `global.`, ...), or an ARN ending in
+ * one. The vendor namespace is what is tested, not a list of geography prefixes: AWS
+ * adds prefixes over time (its docs list `in` next to `us`, `eu` and `apac`), and a
+ * Claude profile must not read as "another family" just because its prefix is new.
+ */
+export function isClaudeModelId(model: string | undefined): boolean {
+  const id = String(model ?? "").trim().toLowerCase();
+  if (!id) return false;
+  return BEDROCK_CLAUDE.test(id) || modelIdCandidates(id).some((c) => c.startsWith("claude"));
+}
+
+/**
+ * Whether a Bedrock model id is Claude (`claude`), another family (`other`: Nova,
+ * Llama, gpt-oss, Mistral, ...) or does not say (`unknown`): no id, or an ARN whose
+ * last segment has no `vendor.model` form, such as an application inference
+ * profile's opaque id. Anything not `other` may be Claude.
+ */
+export function bedrockModelFamily(model: string | undefined): "claude" | "other" | "unknown" {
+  const id = String(model ?? "").trim().toLowerCase();
+  if (!id) return "unknown";
+  if (isClaudeModelId(id)) return "claude";
+  if (id.startsWith("arn:") && !(id.split("/").pop() ?? "").includes(".")) return "unknown";
+  return "other";
+}
+
 /**
  * Finds the rule for a model: the first matching rule of the provider's family
  * (or families, for gateways such as Bedrock), else the family's permissive
- * default. Learned adjustments for (provider, model) are merged in; `patch`
- * lets a caller layer one more override on top (used by the retry loop).
+ * default. A Bedrock id that is not Claude has no Anthropic default to fall back
+ * on: it gets the generic `other` one. Learned adjustments for (provider, model)
+ * are merged in; `patch` lets a caller layer one more override on top (used by the
+ * retry loop).
  */
 export function resolveModelRule(opts: { provider?: string; model?: string; patch?: RulePatch; scope?: string }): ResolvedModelRule {
   const families = familiesFor(opts.provider);
@@ -193,7 +241,8 @@ export function resolveModelRule(opts: { provider?: string; model?: string; patc
   let isDefault = false;
   if (!rule) {
     isDefault = true;
-    rule = matchRule(families[0], ids, true) ?? MODEL_RULES.rules[MODEL_RULES.rules.length - 1];
+    const notClaude = (opts.provider ?? "").toLowerCase() === "bedrock" && bedrockModelFamily(opts.model) === "other";
+    rule = matchRule(notClaude ? "other" : families[0], ids, true) ?? MODEL_RULES.rules[MODEL_RULES.rules.length - 1];
   }
   let effective: ModelRule = rule;
   const known = opts.model ? learned.get(learnedKey(opts.provider, opts.model, opts.scope))?.patch : undefined;

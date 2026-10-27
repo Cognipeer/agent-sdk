@@ -8,7 +8,20 @@ import type { ModelRuleLearnedEvent } from "../models/adjust.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
-export type TextContent = { type: "text"; text: string };
+export type TextContent = {
+  type: "text";
+  text: string;
+  /**
+   * Explicit prompt-cache breakpoint on this text part (a 5-minute lifetime
+   * unless `ttl: "1h"`). Sent as `cache_control` by the Anthropic provider
+   * (Claude on Vertex included) and by the OpenAI-compatible provider
+   * (OpenRouter and LiteLLM forward it to Claude and similar models; Chat
+   * Completions only). Other providers ignore it: OpenAI and Azure never send
+   * the field. On an agent's messages it is set on the part itself (`cacheControl`,
+   * or Anthropic's `cache_control`); `fromNativeProvider` carries it through.
+   */
+  cacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
+};
 
 export type ImageContent = {
   type: "image";
@@ -88,6 +101,11 @@ export type UnifiedMessage = {
   name?: string;
   toolCalls?: ToolCall[];
   toolCallId?: string; // for tool result messages
+  /**
+   * Tool-role messages only: the tool result is an error. A provider with a
+   * native error flag for tool results maps it; the others ignore it.
+   */
+  isError?: boolean;
   /** Native reasoning blocks to replay verbatim (Anthropic/Bedrock thinking). */
   reasoning?: ReasoningPayload;
 };
@@ -139,6 +157,13 @@ export type ChatCompletionRequest = {
   topLogprobs?: number;
   // Provider-specific extras passed raw into the body (escape hatch)
   extra?: Record<string, any>;
+  /**
+   * What this call is for (`"summarization"`, `"reflection"`): the agent's own
+   * side calls tag themselves through the invoke options and the adapter copies
+   * the tag here. Providers ignore it and never put it on the wire; a host that
+   * reads the request (cost attribution, routing) can use it.
+   */
+  purpose?: string;
   /**
    * Unified native-reasoning request config. Each provider maps this to its
    * own shape:
@@ -455,14 +480,15 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   responsesStreaming?: boolean;
 };
 
-/** Prompt caching options shared by the Anthropic and Bedrock providers. */
+/** Prompt caching options shared by the Anthropic, Bedrock, Vertex (Claude models) and OpenAI-compatible providers. */
 export type PromptCachingConfig = {
   /** Turns caching on. Off (or omitted) sends no cache markers. */
   enabled: boolean;
   /**
    * `"auto"` (default): cache the static prefix (system + tools) AND the moving
    * conversation tail (Anthropic: top-level automatic `cache_control`; Bedrock:
-   * a `cachePoint` after the last user message). `"static"`: system + tools only.
+   * a `cachePoint` after the last user message; OpenAI-compatible: the last text
+   * part of the last user or tool message). `"static"`: system (+ tools) only.
    */
   strategy?: "auto" | "static";
   /** Cache lifetime: `"5m"` (default) or `"1h"`. Bedrock Nova is always 5 minutes. */
@@ -530,6 +556,31 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   baseURL: string;
   defaultModel?: string;
   defaultHeaders?: Record<string, string>;
+  /**
+   * Explicit prompt caching through servers that route to Claude and similar
+   * models (OpenRouter, LiteLLM): places `cache_control` markers on Chat
+   * Completions text parts. Off unless `enabled: true`.
+   *
+   *  - `strategy: "static"`: the end of the system prompt (leading system
+   *    messages; sent as a text part).
+   *  - `strategy: "auto"` (default): that, plus the last text part of the last
+   *    user or tool message.
+   *  - `ttl`: `"5m"` (default, the field is omitted) or `"1h"`.
+   *
+   * At most 4 markers go out in total, counting the `cacheControl` the caller
+   * set on its own text parts (those are always kept and sent, with or without
+   * this option). A plain string message becomes one text part only when a
+   * marker is added to it. Not sent to a server that rejects `cache_control`:
+   * leave this off for those. Ignored on the Responses API.
+   */
+  prompt_caching?: PromptCachingConfig;
+  /**
+   * Send the reasoning text of assistant messages back as `reasoning_content`
+   * (the DeepSeek spelling), for servers whose thinking mode requires it to be
+   * echoed in a tool loop. Default false. See the `reasoning_content` handling
+   * in the server's own documentation before enabling it.
+   */
+  replayReasoningContent?: boolean;
 };
 
 export type BedrockProviderConfig = ProviderTransportConfig & {
@@ -563,6 +614,19 @@ export type VertexProviderConfig = ProviderTransportConfig & {
   defaultHeaders?: Record<string, string>;
   /** Retry policy for 429/5xx (default 3 retries, exponential backoff). */
   retry?: ProviderRetryConfig;
+  /**
+   * Prompt caching for Claude models served by Vertex (ignored for Gemini): the
+   * same shape and meaning as on `AnthropicProviderConfig.prompt_caching`. Off
+   * unless `enabled: true`. See {@link PromptCachingConfig}.
+   */
+  prompt_caching?: PromptCachingConfig;
+  /**
+   * Thinking request shape for Claude models on Vertex (ignored for Gemini):
+   * `auto` (default, by model id), `adaptive` or `budget`, as on
+   * `AnthropicProviderConfig.thinkingMode`. Spelled out here because
+   * `utils/reasoning.ts`, which owns `ThinkingMode`, imports from this file.
+   */
+  thinkingMode?: "auto" | "adaptive" | "budget";
 };
 
 export type JevProviderConfig = ProviderTransportConfig & {

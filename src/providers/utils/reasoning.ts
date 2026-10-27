@@ -9,6 +9,7 @@ import {
   resolveModelRule,
   mapReasoningEffort,
   allowsSampling,
+  bedrockModelFamily,
   type ModelRule,
 } from "../../models/rules.js";
 
@@ -130,7 +131,16 @@ function applyAdaptiveThinking(
   if (!requested && typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0) {
     requested = reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.low ? "low" : reasoning.budgetTokens <= ANTHROPIC_EFFORT_BUDGET.medium ? "medium" : "high";
   }
-  if (!requested) return false;
+  if (!requested) {
+    // A model that already thinks by default (Claude 5.x) returns the thinking text
+    // empty unless `display` is asked for. Asking for the thoughts alone is enough:
+    // thinking stays at the model's own default, so no effort and no max_tokens raise.
+    if (reasoning.includeThoughts !== true || !rule.reasoning.defaultOn) return false;
+    const thinking: Record<string, any> = { type: "adaptive", display: "summarized" };
+    if (reasoning.providerExtras) Object.assign(thinking, reasoning.providerExtras);
+    setThinking(thinking);
+    return true;
+  }
   const mapped = mapReasoningEffort(rule, requested);
   if (mapped.off) {
     setThinking({ type: mapped.off });
@@ -205,14 +215,22 @@ export function applyAnthropicReasoning(
 /** Maps onto AWS Bedrock Converse for thinking-capable Anthropic models via
  * `additionalModelRequestFields.thinking`. Same budget/temperature rules as the
  * direct Anthropic API apply. The Converse body is mutated in place.
+ *
+ * `thinking` is Claude's field: a model id that names another family (Nova, Llama,
+ * gpt-oss, Mistral, ...) gets no reasoning fields at all, whatever `thinkingMode`
+ * says (that setting is about Claude models). Those families' own reasoning
+ * controls are not mapped here; `request.extra` reaches them. An id that hides the
+ * model (no id, or an application inference profile ARN) is treated as Claude, as
+ * before.
  */
 export function applyBedrockReasoning(
   body: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
   opts?: ThinkingOpts,
 ): void {
-  const rule = opts?.rule ?? resolveModelRule({ provider: "bedrock", model: opts?.model ?? body.modelId });
-  if (!reasoning) {
+  const model = opts?.model ?? body.modelId;
+  const rule = opts?.rule ?? resolveModelRule({ provider: "bedrock", model });
+  if (!reasoning || bedrockModelFamily(model) === "other") {
     if (body.inferenceConfig) enforceAnthropicSampling(body.inferenceConfig, rule, false, true);
     return;
   }
@@ -246,20 +264,77 @@ export function applyBedrockReasoning(
   enforceAnthropicSampling(inference, rule, true, true);
 }
 
-/** Maps onto Google Vertex / Gemini generationConfig. */
+/** Optional model context for {@link applyGeminiReasoning}; without it the budget style is used. */
+type GeminiReasoningOpts = {
+  /** Model id (`gemini-3-pro-preview`, `publishers/google/models/gemini-2.5-pro`, ...) used to pick the rule. */
+  model?: string;
+  /** A rule already resolved by the caller; wins over `model`. */
+  rule?: ModelRule;
+};
+
+/**
+ * Maps onto Google Vertex / Gemini generationConfig.
+ *
+ * Two thinking styles, picked by the model's rule: `budget` (Gemini 2.5 and
+ * unknown models: `thinkingBudget`) and `level` (Gemini 3 and later:
+ * `thinkingLevel`; `thinkingBudget` is legacy there and a 400 on Gemini 4).
+ * Google rejects both fields in one request, so only one is ever sent: a caller's
+ * explicit value (`thinkingLevel`, `budgetTokens`, `providerExtras`) wins over
+ * the one derived from `effort`. On a level model `budgetTokens` is not sent as a
+ * budget: its size picks the nearest level (see `levelForBudget`); only an explicit
+ * `providerExtras.thinkingBudget` sends one. A model that cannot disable thinking
+ * never gets `thinkingBudget: 0`: `effort: none` becomes its lowest level (Gemini 3
+ * and later) or minimum budget (Gemini 2.5 Pro).
+ */
 export function applyGeminiReasoning(
   generationConfig: Record<string, any>,
   reasoning: ReasoningRequestConfig | undefined,
+  opts?: GeminiReasoningOpts,
 ): void {
   if (!reasoning) return;
-  const budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
+  const rule = opts?.rule ?? resolveModelRule({ provider: "vertex", model: opts?.model });
   const level = typeof reasoning.thinkingLevel === "string" && reasoning.thinkingLevel ? reasoning.thinkingLevel : undefined;
-  // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
-  if (budget == null && !level) return;
-  const thinkingConfig: Record<string, any> =
-    level && budget !== 0 ? { thinkingLevel: level } : { thinkingBudget: budget ?? 0 };
+  const effort = normalizeEffort(reasoning.effort);
+  const thinkingConfig: Record<string, any> = {};
+
+  if (rule.reasoning.style === "level") {
+    // An explicit budget still wins over `effort`, but `none` is the later, more specific intent (as in resolveBudget).
+    const explicitBudget =
+      effort !== "none" && typeof reasoning.budgetTokens === "number" && reasoning.budgetTokens > 0
+        ? Math.floor(reasoning.budgetTokens)
+        : undefined;
+    if (level) thinkingConfig.thinkingLevel = level;
+    else if (explicitBudget != null) {
+      // thinkingBudget is legacy on Gemini 3 (kept for backward compatibility) and a 400 on Gemini 4: the budget's size picks the level.
+      const mapped = levelForBudget(rule, explicitBudget);
+      if (mapped) thinkingConfig.thinkingLevel = mapped;
+    } else if (effort) {
+      // Thinking cannot be switched off here, so `none` is the lowest allowed level.
+      const mapped = mapReasoningEffort(rule, effort).effort;
+      if (mapped && mapped !== "none") thinkingConfig.thinkingLevel = mapped;
+    }
+  } else {
+    let budget = resolveBudget(reasoning, GEMINI_EFFORT_BUDGET);
+    // A model whose rule has no `none` (Gemini 2.5 Pro) cannot be told "do not think".
+    if (effort === "none" && !rule.reasoning.efforts.includes("none")) {
+      budget = rule.reasoning.minBudget ?? GEMINI_EFFORT_BUDGET.minimal;
+    }
+    // `effort: none` still wins over a level; otherwise an explicit level replaces the budget.
+    if (budget != null || level) {
+      if (level && budget !== 0 && effort !== "none") thinkingConfig.thinkingLevel = level;
+      else thinkingConfig.thinkingBudget = budget ?? 0;
+    }
+  }
+  if (Object.keys(thinkingConfig).length === 0) return;
+
   if (reasoning.includeThoughts) thinkingConfig.includeThoughts = true;
-  if (reasoning.providerExtras) Object.assign(thinkingConfig, reasoning.providerExtras);
+  if (reasoning.providerExtras) {
+    const extras = reasoning.providerExtras;
+    Object.assign(thinkingConfig, extras);
+    // The API rejects both fields together: the caller's own field replaces the derived one.
+    if ("thinkingLevel" in extras && !("thinkingBudget" in extras)) delete thinkingConfig.thinkingBudget;
+    else if ("thinkingBudget" in extras && !("thinkingLevel" in extras)) delete thinkingConfig.thinkingLevel;
+  }
   generationConfig.thinkingConfig = thinkingConfig;
   // Thinking tokens come out of maxOutputTokens: keep room for the answer.
   // Dynamic (-1), 0 and levels have no known size, so they are left alone.
@@ -268,6 +343,13 @@ export function applyGeminiReasoning(
   if (typeof tb === "number" && tb > 0 && typeof cap === "number" && cap < tb + GEMINI_OUTPUT_RESERVE) {
     generationConfig.maxOutputTokens = tb + GEMINI_OUTPUT_RESERVE;
   }
+}
+
+/** The level a token budget stands for on a level-style model (<= 1024 low, <= 8192 medium, else high), clamped to the levels the rule accepts. */
+function levelForBudget(rule: ModelRule, budget: number): ReasoningEffort | undefined {
+  const wanted: ReasoningEffort = budget <= 1024 ? "low" : budget <= 8192 ? "medium" : "high";
+  const mapped = mapReasoningEffort(rule, wanted).effort;
+  return mapped === "none" ? undefined : mapped;
 }
 
 function clampBudget(budget: number, maxTokens: number | undefined): number {

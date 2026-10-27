@@ -4,8 +4,8 @@
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyOpenAIReasoning } from "./utils/reasoning.js";
-import { resolveModelRule, allowsSampling, applyDropParams, type RulePatch } from "../models/rules.js";
-import { runWithModelAdjustments } from "../models/adjust.js";
+import { resolveModelRule, allowsSampling, applyDropParams, type ResolvedModelRule, type RulePatch } from "../models/rules.js";
+import { runWithModelAdjustments, parseModelError } from "../models/adjust.js";
 import { audioMimeToOpenAIFormat } from "./utils/media.js";
 import { inlineJsonSchemaRefs } from "./utils/jsonSchemaRefs.js";
 import { chunkArray, decodeBase64Vector, assertVectorCount, requireEmbeddingModel } from "./utils/embeddings.js";
@@ -21,11 +21,40 @@ import {
   type OpenAIProviderConfig,
   type ProviderType,
   type ProviderResponseFields,
+  type ReasoningBlock,
+  type ReasoningPayload,
   type EmbeddingRequest,
   type EmbeddingResponse,
   ProviderError,
   emptyUsage,
 } from "./types.js";
+
+/** A Responses `reasoning` output item, as far as this file reads it. */
+type ResponsesReasoningItem = {
+  type?: string;
+  id?: string;
+  summary?: Array<{ type?: string; text?: string }>;
+  content?: unknown[] | null;
+  encrypted_content?: string | null;
+  [key: string]: unknown;
+};
+
+/**
+ * A Responses reasoning item kept on `reasoning.blocks` so the next call of the
+ * same tool loop can hand it back (see `captureReasoningBlocks`). It is typed
+ * `thinking` with no `signature`, which Anthropic / Bedrock replay skips, and
+ * carries the item under `openaiResponses`:
+ *  - `item`    the output item as the API returned it (`encrypted_content` is what makes it replayable)
+ *  - `origin`  provider | endpoint | model that produced it; the blob only decrypts for that account
+ *  - `next`    what followed it in the output (`"message"`, or `call:<call_id>`): it must go back right before that item
+ *  - `nextId`  the `id` of that function call item (`fc_…`), for an endpoint that wants the pair back with its ids (Azure)
+ */
+export type ResponsesReasoningBlock = ReasoningBlock & {
+  openaiResponses: { item: ResponsesReasoningItem; origin: string; next: string; nextId?: string };
+};
+
+/** What `toResponsesInput` hands `expandResponsesInput` for a replayed reasoning item (`nextId`: see `ResponsesReasoningBlock`). */
+type ReplayedReasoning = { next: string; item: Record<string, any>; nextId?: string };
 
 export class OpenAIProvider extends BaseProvider {
   readonly providerName: ProviderType = "openai";
@@ -43,6 +72,8 @@ export class OpenAIProvider extends BaseProvider {
   /** `api: "responses"` was passed (the legacy `responsesApi: "always"` keeps its old single-call behaviour). */
   private readonly apiResponsesNative: boolean;
   protected readonly maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens";
+  /** Origins (see `responsesOrigin`) whose endpoint refused a replayed reasoning item: not replayed again by this instance. */
+  private readonly reasoningReplayRefused = new Set<string>();
 
   constructor(config: OpenAIProviderConfig) {
     super();
@@ -172,13 +203,13 @@ export class OpenAIProvider extends BaseProvider {
       }
 
       const delta = choice.delta ?? {};
-      const out: ChatCompletionChunk = {
-        id,
-        model,
-        delta: {},
-        finishReason: mapFinishReason(choice.finish_reason),
-      };
-      if (typeof choice.finish_reason === "string") out.rawFinishReason = choice.finish_reason;
+      const out: ChatCompletionChunk = { id, model, delta: {} };
+      // Only the chunk that carries a finish reason sets one: a null is "still
+      // generating", not a "stop" (a consumer keeps the last finish reason it saw).
+      if (typeof choice.finish_reason === "string") {
+        out.finishReason = mapFinishReason(choice.finish_reason);
+        out.rawFinishReason = choice.finish_reason;
+      }
       const fields = pickProviderFields(chunk, delta, choice);
       if (fields) out.providerFields = fields;
 
@@ -282,7 +313,12 @@ export class OpenAIProvider extends BaseProvider {
     });
   }
 
-  /** Same for the Responses API. */
+  /**
+   * Same for the Responses API. Replaying reasoning items is an optimisation and
+   * must never break a call: when the endpoint answers a request that carries
+   * them with a 400 no model adjustment explains, the request goes out once more
+   * without them, and when that one succeeds they are not replayed to that origin again.
+   */
   private fetchResponses(request: ChatCompletionRequest, adaptExtras: boolean, stream = false): Promise<Response> {
     const model = request.model || this.defaultModel;
     return runWithModelAdjustments({
@@ -292,12 +328,24 @@ export class OpenAIProvider extends BaseProvider {
       scope: this.baseURL,
       callerParams: request.extra ? Object.keys(request.extra) : undefined,
       onLearned: this.onModelRuleLearned,
-      run: (overlay, guard) => {
-        const body = this.buildResponsesBody(request, overlay);
-        if (adaptExtras) adaptChatExtrasForResponses(body, request.extra);
-        if (stream) body.stream = true;
-        guard(body);
-        return this.responsesFetch(body, request.signal);
+      run: async (overlay, guard) => {
+        const build = (replayReasoning: boolean) => {
+          const body = this.buildResponsesBody(request, overlay, { replayReasoning });
+          if (adaptExtras) adaptChatExtrasForResponses(body, request.extra);
+          if (stream) body.stream = true;
+          guard(body);
+          return body;
+        };
+        const body = build(true);
+        const replayed = hasReplayedReasoning(body.input); // before `responsesFetch` flattens `input`
+        try {
+          return await this.responsesFetch(body, request.signal);
+        } catch (err) {
+          if (!replayed || request.signal?.aborted || !isUnexplainedBadRequest(err)) throw err;
+          const res = await this.responsesFetch(build(false), request.signal);
+          this.reasoningReplayRefused.add(this.responsesOrigin(model));
+          return res;
+        }
       },
     });
   }
@@ -387,9 +435,10 @@ export class OpenAIProvider extends BaseProvider {
    * `responsesApiModels` with `responsesStreaming` on. Emits the same chunk
    * shapes as the Chat Completions stream: text deltas as they arrive, a tool
    * call's id + name when it opens and its argument fragments under that id,
-   * then one final chunk with usage, finish reason and any reasoning summary
-   * (taken from the completed response, exactly as the non-streaming parse
-   * reads it). */
+   * then one final chunk with usage, finish reason, any reasoning summary and
+   * the reasoning blocks to replay (taken from the completed response, exactly
+   * as the non-streaming parse reads them). A stream that ends without
+   * `response.completed` is an error, not a clean stop. */
   private async *streamResponses(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const modelId = request.model || this.defaultModel;
     const res = await this.fetchResponses(request, true, true);
@@ -402,6 +451,8 @@ export class OpenAIProvider extends BaseProvider {
     const calls = new Map<string, { callId: string; name: string; arguments: string; index: number }>();
     let final: ChatCompletionResponse | undefined;
     let streamedSummary = false;
+    // Every finished output item, in order: the source of the reasoning blocks when the completed event carries no output.
+    const doneItems: any[] = [];
 
     for await (const event of parseSSEStream(res.body, request.signal)) {
       if (event.data === "[DONE]") break;
@@ -456,6 +507,7 @@ export class OpenAIProvider extends BaseProvider {
           // A server that sends a call's arguments only once it is complete
           // (or never announced it): emit whatever the deltas did not carry.
           const item = data.item;
+          if (item && typeof item === "object") doneItems.push(item);
           if (item?.type !== "function_call") break;
           const full = typeof item.arguments === "string" ? item.arguments : "";
           const call = calls.get(item.id ?? item.call_id);
@@ -489,27 +541,52 @@ export class OpenAIProvider extends BaseProvider {
       }
     }
 
+    // A body that ended before the terminal event was cut off (a proxy, a reset): what
+    // streamed so far is an unfinished answer, not a stop. 502 = the upstream response
+    // was incomplete, a failure a caller retries; a cancelled call is the caller's own doing.
+    if (!final && !request.signal?.aborted) {
+      throw new ProviderError("Responses stream ended before response.completed", this.providerName, 502);
+    }
+
+    // The reasoning items to replay come from the completed response; a server whose
+    // completed event carries no output still sent each one as output_item.done.
+    const blocks = final?.reasoning?.blocks?.length ? final.reasoning.blocks : this.captureReasoningBlocks(doneItems, modelId);
+    let reasoning: ReasoningPayload | undefined;
+    if (streamedSummary) {
+      // The summary text already went out as deltas; do not repeat it.
+      if (blocks.length > 0) reasoning = { blocks };
+    } else if (final?.reasoning || blocks.length > 0) {
+      reasoning = { ...final?.reasoning, ...(blocks.length > 0 ? { blocks } : {}) };
+    }
     yield {
       id: final?.id || id,
       model: final?.model || model,
-      // Summary text already went out as deltas; do not repeat it.
-      delta: final?.reasoning && !streamedSummary ? { reasoning: final.reasoning } : {},
+      delta: reasoning ? { reasoning } : {},
       usage: final?.usage,
       finishReason: final?.finishReason ?? (calls.size > 0 ? "tool_calls" : "stop"),
       ...(final?.rawFinishReason ? { rawFinishReason: final.rawFinishReason } : {}),
     };
   }
 
-  protected buildResponsesBody(request: ChatCompletionRequest, overlay?: RulePatch): Record<string, any> {
+  protected buildResponsesBody(request: ChatCompletionRequest, overlay?: RulePatch, opts?: { replayReasoning?: boolean }): Record<string, any> {
+    const model = request.model || this.defaultModel;
+    // The tool loop in progress (the assistant turns after the last user message) gets its
+    // reasoning items back; `fetchResponses` turns that off for an endpoint that refused them.
+    const origin = this.responsesOrigin(model);
+    const replayOrigin = opts?.replayReasoning === false || this.reasoningReplayRefused.has(origin) ? undefined : origin;
+    let lastUser = -1;
+    request.messages.forEach((m, i) => { if (m.role === "user") lastUser = i; });
     const body: Record<string, any> = {
-      model: request.model || this.defaultModel,
-      input: request.messages.map((m) => this.toResponsesInput(m)),
+      model,
+      input: request.messages.map((m, i) => this.toResponsesInput(m, i > lastUser ? replayOrigin : undefined)),
     };
 
     if (request.maxTokens != null) body.max_output_tokens = request.maxTokens;
     const rule = resolveModelRule({ provider: this.providerName, model: String(body.model), patch: overlay, scope: this.baseURL });
+    // The rule decides what the model takes: reasoning models accept no temperature or top_p.
+    if (request.temperature != null && allowsSampling(rule, "temperature", request.temperature)) body.temperature = request.temperature;
     if (request.topP != null && allowsSampling(rule, "topP")) body.top_p = request.topP;
-    // Reasoning models reject `temperature`; omit it intentionally.
+    // seed, stop, presence/frequency penalties and logprobs have no Responses equivalent here: left out.
 
     if (request.tools?.length) {
       // Responses tools are flat function objects (not nested under `function`).
@@ -520,6 +597,7 @@ export class OpenAIProvider extends BaseProvider {
         parameters: t.parameters,
         ...(t.strict ? { strict: true } : {}),
       }));
+      if (request.parallelToolCalls != null) body.parallel_tool_calls = request.parallelToolCalls;
     }
 
     if (request.toolChoice != null && request.tools?.length) {
@@ -549,13 +627,121 @@ export class OpenAIProvider extends BaseProvider {
 
     // reasoning.effort + reasoning.summary
     applyOpenAIReasoning(body, request.reasoning, "responses", String(body.model), rule);
+    // A stored response carries its reasoning as encrypted_content only when asked (a stateless one,
+    // store:false or ZDR, carries it by default and still accepts the legacy include): ask for it, so
+    // a tool loop can hand the reasoning back (see `replayableReasoning`). Only the reasoning models
+    // take it, any other answers 400 "Encrypted content is not supported with this model". A caller's
+    // `include` is kept and merged; `extra: { include: null }` opts out.
+    if (isEffortReasoningRule(rule) && this.acceptsEncryptedReasoningInclude()) addInclude(body, "reasoning.encrypted_content");
     applyDropParams(body, rule);
 
     return body;
   }
 
-  /** Maps a unified message to a Responses API `input` item. */
-  protected toResponsesInput(m: UnifiedMessage): Record<string, any> {
+  /** Whether the Responses endpoint takes `include: ["reasoning.encrypted_content"]`. Azure's older dated api-versions do not. */
+  protected acceptsEncryptedReasoningInclude(): boolean {
+    return true;
+  }
+
+  /**
+   * Who a reasoning item was produced for. `encrypted_content` only decrypts for
+   * the account that minted it, so an item goes back only to the same provider,
+   * endpoint and model. Azure overrides the endpoint part.
+   */
+  protected responsesOrigin(model: string): string {
+    return `${this.providerName}|${this.baseURL}|${model}`;
+  }
+
+  /**
+   * The reasoning items of an assistant turn that are safe to hand back: those
+   * this origin produced and that carry `encrypted_content` (the opaque payload
+   * is the whole point; an item without it is only a reference to stored state
+   * that may be gone). Blocks from another provider are skipped.
+   */
+  protected replayableReasoning(m: UnifiedMessage, origin: string): ReplayedReasoning[] {
+    const out: ReplayedReasoning[] = [];
+    for (const block of m.reasoning?.blocks ?? []) {
+      const kept = (block as Partial<ResponsesReasoningBlock>).openaiResponses;
+      if (!kept || typeof kept !== "object" || kept.origin !== origin || typeof kept.next !== "string") continue;
+      if (!kept.item || typeof kept.item.encrypted_content !== "string" || !kept.item.encrypted_content) continue;
+      const item = this.reasoningInputItem(kept.item);
+      if (!item) continue;
+      const nextId = this.replaysItemIds() && typeof kept.nextId === "string" && kept.nextId ? kept.nextId : undefined;
+      out.push({ next: kept.next, item, ...(nextId ? { nextId } : {}) });
+    }
+    return out;
+  }
+
+  /**
+   * Whether a replayed reasoning item, and the function call it preceded, go back with the ids
+   * the API gave them. No by default: the id is a pointer into the server's storage, a stored
+   * item must then be followed by the exact item that followed it ("Item 'rs_…' of type
+   * 'reasoning' was provided without its required following item") and can have expired,
+   * while `encrypted_content` is self-contained. AzureProvider says yes: its docs replay the
+   * items with their ids, and it is reported to answer one without its `id` with 400 `invalid_payload`.
+   */
+  protected replaysItemIds(): boolean {
+    return false;
+  }
+
+  /**
+   * A captured reasoning item as it goes back in `input`: type, summary and
+   * `encrypted_content` (plus the reasoning text when the server gave it), never the
+   * `status`; the `id` only when `replaysItemIds()`. Undefined when the item cannot
+   * go back in that shape (an id is required and the item has none).
+   */
+  protected reasoningInputItem(item: ResponsesReasoningItem): Record<string, any> | undefined {
+    const withId = this.replaysItemIds();
+    if (withId && (typeof item.id !== "string" || !item.id)) return undefined;
+    return {
+      type: "reasoning",
+      ...(withId ? { id: item.id } : {}),
+      summary: Array.isArray(item.summary) ? item.summary : [],
+      encrypted_content: item.encrypted_content,
+      ...(Array.isArray(item.content) && item.content.length > 0 ? { content: item.content } : {}),
+    };
+  }
+
+  /**
+   * The reasoning items of a Responses output worth keeping on `reasoning.blocks`
+   * for the next call of the same tool loop. Only a turn that calls functions
+   * continues (a final answer has nothing to hand back), and only an item with
+   * `encrypted_content` followed by a message or a function call can go back as
+   * it came, right before that item.
+   */
+  protected captureReasoningBlocks(output: unknown, model: string): ResponsesReasoningBlock[] {
+    if (!Array.isArray(output) || !output.some((it) => it?.type === "function_call")) return [];
+    const origin = this.responsesOrigin(model);
+    const blocks: ResponsesReasoningBlock[] = [];
+    output.forEach((item: any, i: number) => {
+      if (item?.type !== "reasoning" || typeof item.encrypted_content !== "string" || !item.encrypted_content) return;
+      let next: string | undefined;
+      let nextId: string | undefined;
+      for (let j = i + 1; j < output.length; j++) {
+        const follower = output[j];
+        if (follower?.type === "reasoning") continue; // consecutive items stay together, in order
+        if (follower?.type === "function_call") {
+          next = callKey(follower.call_id ?? follower.id);
+          if (typeof follower.id === "string" && follower.id) nextId = follower.id;
+        } else if (follower?.type === "message") next = "message";
+        break;
+      }
+      if (!next) return;
+      const summary = Array.isArray(item.summary)
+        ? item.summary.map((s: any) => (typeof s?.text === "string" ? s.text : "")).filter(Boolean).join("\n")
+        : "";
+      blocks.push({
+        type: "thinking",
+        ...(summary ? { text: summary } : {}),
+        openaiResponses: { item: { ...item }, origin, next, ...(nextId ? { nextId } : {}) },
+      });
+    });
+    return blocks;
+  }
+
+  /** Maps a unified message to a Responses API `input` item. `replayOrigin` is set for the
+   * assistant turns of the tool loop in progress: their reasoning items go back in. */
+  protected toResponsesInput(m: UnifiedMessage, replayOrigin?: string): Record<string, any> {
     // Tool result → function_call_output
     if (m.role === "tool" && m.toolCallId) {
       const output = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
@@ -569,7 +755,9 @@ export class OpenAIProvider extends BaseProvider {
       // Caller flattens arrays; return the function_call list wrapped so the
       // body builder can splice. We return a single item array marker instead.
       // To keep the 1:1 map contract, encode tool calls as a message with an
-      // attached __calls field that buildResponsesBody expands.
+      // attached __calls field that buildResponsesBody expands. The reasoning
+      // items ride along and are put back right before the item they preceded.
+      const reasoning = replayOrigin ? this.replayableReasoning(m, replayOrigin) : [];
       return {
         __assistantWithCalls: true,
         text: typeof m.content === "string" ? m.content : "",
@@ -579,6 +767,7 @@ export class OpenAIProvider extends BaseProvider {
           name: tc.name,
           arguments: tc.arguments,
         })),
+        ...(reasoning.length > 0 ? { reasoning } : {}),
       };
     }
 
@@ -686,6 +875,9 @@ export class OpenAIProvider extends BaseProvider {
         : toolCalls.length > 0 ? "tool_calls" : "stop";
     const rawFinishReason = incompleteReason ?? (typeof json.status === "string" ? json.status : undefined);
 
+    // Reasoning items with encrypted content ride along for the next call of a tool loop.
+    const blocks = this.captureReasoningBlocks(json.output, modelId);
+
     return {
       id: json.id ?? "",
       model: json.model ?? modelId,
@@ -694,7 +886,12 @@ export class OpenAIProvider extends BaseProvider {
       usage: tokenUsage,
       finishReason,
       ...(rawFinishReason ? { rawFinishReason } : {}),
-      reasoning: summaryParts.length > 0 ? { summary: summaryParts.join("\n").trim() || undefined } : undefined,
+      reasoning: summaryParts.length > 0 || blocks.length > 0
+        ? {
+            ...(blocks.length > 0 ? { blocks } : {}),
+            ...(summaryParts.length > 0 ? { summary: summaryParts.join("\n").trim() || undefined } : {}),
+          }
+        : undefined,
       raw: json,
     };
   }
@@ -910,8 +1107,38 @@ function pickProviderFields(top: any, message: any, choice: any): ProviderRespon
  */
 export function isReasoningModel(model: string | undefined): boolean {
   if (!model) return false;
-  const rule = resolveModelRule({ provider: "openai", model });
+  return isEffortReasoningRule(resolveModelRule({ provider: "openai", model }));
+}
+
+/** A rule that describes a reasoning model with restricted sampling (see {@link isReasoningModel}); the
+ * models that return reasoning items with `encrypted_content`. */
+function isEffortReasoningRule(rule: ResolvedModelRule): boolean {
   return !rule.isDefault && rule.reasoning.style === "effort" && rule.sampling.temperature !== "any";
+}
+
+/** Adds `value` to the body's `include` list, keeping what the caller put there. An explicit
+ * `include: null` is the caller opting out, and anything that is not a list is left alone. */
+function addInclude(body: Record<string, any>, value: string): void {
+  if (body.include === null) return;
+  if (body.include !== undefined && !Array.isArray(body.include)) return;
+  const have: unknown[] = body.include ?? [];
+  if (!have.includes(value)) body.include = [...have, value];
+}
+
+/** Key tying a reasoning item to the function call it preceded (the call's `call_id`). */
+function callKey(callId: unknown): string {
+  return `call:${typeof callId === "string" ? callId : ""}`;
+}
+
+/** True when a built Responses `input` carries reasoning items to replay (checked before it is flattened). */
+function hasReplayedReasoning(input: unknown): boolean {
+  return Array.isArray(input) && input.some((item) => item?.__assistantWithCalls && Array.isArray(item.reasoning) && item.reasoning.length > 0);
+}
+
+/** A 400 / 422 whose message no model adjustment (models/adjust.ts) explains: what a refused reasoning item looks like. */
+function isUnexplainedBadRequest(err: unknown): boolean {
+  if (!(err instanceof ProviderError) || (err.statusCode !== 400 && err.statusCode !== 422)) return false;
+  return parseModelError(String(err.responseBody ?? err.message)) === undefined;
 }
 
 /** Re-spells Chat Completions fields that arrived through `extra` into their
@@ -979,15 +1206,34 @@ function toResponsesTextFormat(rf: any): Record<string, any> | undefined {
 
 /** Expands assistant-with-tool-call markers produced by toResponsesInput into
  * the flat Responses `input` item list (optional message text + function_call
- * items in order). */
-function expandResponsesInput(input: any[]): any[] {
+ * items in order). A replayed reasoning item goes right before the item it
+ * preceded in the model's output (the message, or its function call); one whose
+ * item is not there any more is left out, never sent without it. A function call
+ * whose reasoning kept the call's original `id` (`nextId`) gets it back. Shared
+ * with AzureProvider. */
+export function expandResponsesInput(input: any[]): any[] {
   const out: any[] = [];
   for (const item of input) {
     if (item && item.__assistantWithCalls) {
+      const reasoning: ReplayedReasoning[] = Array.isArray(item.reasoning) ? item.reasoning : [];
+      // Puts the reasoning items that preceded `key` here; returns the id of the item they preceded, when they kept it.
+      const before = (key: string): string | undefined => {
+        let id: string | undefined;
+        for (const r of reasoning) {
+          if (r.next !== key) continue;
+          out.push(r.item);
+          id = r.nextId ?? id;
+        }
+        return id;
+      };
       if (item.text) {
+        before("message");
         out.push({ role: "assistant", content: [{ type: "output_text", text: item.text }] });
       }
-      for (const call of item.calls) out.push(call);
+      for (const call of item.calls) {
+        const id = before(callKey(call.call_id));
+        out.push(id && call.id === undefined ? { ...call, id } : call);
+      }
     } else {
       out.push(item);
     }

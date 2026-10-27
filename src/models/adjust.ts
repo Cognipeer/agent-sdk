@@ -15,6 +15,7 @@ export type ParsedModelErrorKind =
   | "unsupported_parameter"
   | "unsupported_value"
   | "max_tokens_rename"
+  | "max_tokens_too_large"
   | "default_only"
   | "chat_tools_effort"
   | "thinking_enabled_unsupported"
@@ -30,6 +31,12 @@ export type ParsedModelError = {
   supportedValues?: string[];
   /** `max_tokens` / `max_completion_tokens` for `max_tokens_rename`. */
   renameTo?: "max_tokens" | "max_completion_tokens";
+  /**
+   * `max_tokens_too_large` only: the most completion tokens the server says it
+   * accepts, when the message states it (a context-length message gives the
+   * window minus the prompt). Absent when the message states no usable number.
+   */
+  maxAllowed?: number;
   message: string;
 };
 
@@ -62,6 +69,52 @@ function quotedList(s: string): string[] {
   return s.split(/[,\s]+/).map((x) => x.replace(/[.\s]+$/, "")).filter(Boolean);
 }
 
+const toInt = (s: string) => Number(s.replace(/,/g, ""));
+
+/**
+ * `max_tokens` larger than the server takes. Returns the shape when the
+ * message is one, with the stated maximum when there is one:
+ *  - OpenAI: "max_tokens is too large: 32768. This model supports at most 4096 completion tokens, whereas you provided 32768."
+ *  - vLLM (newer): "'max_tokens' or 'max_completion_tokens' is too large: 65536. This model's maximum context length is 65536 tokens and your request has 10969 input tokens (65536 > 65536 - 10969)."
+ *  - vLLM (newer, second form): "... maximum context length is X tokens. However, you requested Y output tokens and your prompt contains at least Z input tokens ..."
+ *  - vLLM / OpenAI (older): "This model's maximum context length is 16385 tokens. However, you requested 19847 tokens (3398 in the messages, 449 in the functions, and 16000 in the completion)."
+ *  - DeepSeek: "Invalid max_tokens value, the valid range of max_tokens is [1, 8192]"
+ *  - "Field 'max_tokens' must be at most 65536"
+ */
+function parseMaxTokensTooLarge(message: string, errParam: string | undefined): ParsedModelError | undefined {
+  const param = errParam && /^max_(completion_)?tokens$/.test(errParam) ? errParam : "max_tokens";
+  const done = (maxAllowed?: number): ParsedModelError => ({
+    kind: "max_tokens_too_large",
+    param,
+    ...(maxAllowed !== undefined && Number.isFinite(maxAllowed) && maxAllowed > 0 ? { maxAllowed } : {}),
+    message,
+  });
+
+  const tooLarge = new RegExp(`max_(?:completion_)?tokens${Q}?\\s+(?:or\\s+${Q}?max_(?:completion_)?tokens${Q}?\\s+)?is too large`, "i").test(message);
+  const atMost = /supports at most ([\d,]+)\s+(?:completion |output )?tokens/i.exec(message);
+  if (atMost && (tooLarge || /max_(?:completion_)?tokens/i.test(message))) return done(toInt(atMost[1]));
+
+  const ctx = /maximum context length is ([\d,]+) tokens/i.exec(message);
+  if (ctx) {
+    const ctxLen = toInt(ctx[1]);
+    const inputs = /your request has ([\d,]+) input tokens/i.exec(message) ?? /your prompt contains (?:at least )?([\d,]+) input tokens/i.exec(message);
+    if (inputs && (tooLarge || /you requested [\d,]+ output tokens/i.test(message))) return done(ctxLen - toInt(inputs[1]));
+    const parts = /you requested [\d,]+ tokens \(([^)]*)\)/i.exec(message);
+    if (parts && /in the completion/i.test(parts[1])) {
+      const prompt = [...parts[1].matchAll(/([\d,]+) in the (?:messages|functions|tools)/gi)].reduce((n, x) => n + toInt(x[1]), 0);
+      return done(ctxLen - prompt);
+    }
+    if (tooLarge) return done();
+  }
+  if (tooLarge) return done();
+
+  const range = /valid range of max_(?:completion_)?tokens is \[\s*[\d,]+\s*,\s*([\d,]+)\s*\]/i.exec(message);
+  if (range) return done(toInt(range[1]));
+  const most = new RegExp(`max_(?:completion_)?tokens${Q}?\\s+must be at most\\s+([\\d,]+)`, "i").exec(message);
+  if (most) return done(toInt(most[1]));
+  return undefined;
+}
+
 /** Recognises the 400 shapes OpenAI-wire servers and Anthropic use for a bad parameter or value. */
 export function parseModelError(text: string): ParsedModelError | undefined {
   const { message, param: errParam } = errorMessage(String(text ?? ""));
@@ -81,6 +134,9 @@ export function parseModelError(text: string): ParsedModelError | undefined {
   const dep = new RegExp(`${Q}([\\w.]+)${Q}\\s+is deprecated for this model`, "i").exec(message);
   if (dep) return { kind: "unsupported_parameter", param: dep[1], message };
 
+  const tooMany = parseMaxTokensTooLarge(message, errParam);
+  if (tooMany) return tooMany;
+
   const rename = new RegExp(`use ${Q}(max_completion_tokens|max_tokens)${Q} instead`, "i").exec(message);
   if (rename) return { kind: "max_tokens_rename", renameTo: rename[1].toLowerCase() as any, param: rename[1].toLowerCase() === "max_tokens" ? "max_completion_tokens" : "max_tokens", message };
 
@@ -97,6 +153,25 @@ export function parseModelError(text: string): ParsedModelError | undefined {
   }
   const prm = new RegExp(`unsupported parameter:?\\s*${Q}?([\\w.]+)${Q}?`, "i").exec(message);
   if (prm) return { kind: "unsupported_parameter", param: prm[1], message };
+
+  // A server that does not take `stream_options` (the streaming usage switch) names it in
+  // several dialects; all of them end in the same fix, dropping the field.
+  if (m.includes("stream_options") && (
+    /unrecognized request arguments? supplied/.test(m)
+    || /extra inputs? (?:is|are) not permitted/.test(m)
+    || /unknown field\s*['"`]?stream_options/.test(m)
+    || /stream_options['"`]?\s+(?:is|are)\s+not supported/.test(m)
+  )) return { kind: "unsupported_parameter", param: "stream_options", message };
+
+  // "Unrecognized request argument supplied: max_completion_tokens" (OpenAI, and Azure for an
+  // api-version or deployment that predates the field). Several names come as "arguments
+  // supplied: a, b": the first is fixed now, the next one on the retry.
+  const unrecognized = /unrecognized request arguments? supplied:\s*(\w+(?:\.\w+)*)/i.exec(message);
+  if (unrecognized) return { kind: "unsupported_parameter", param: unrecognized[1], message };
+
+  // `include: ["reasoning.encrypted_content"]` on a model that does not reason answers
+  // "Encrypted content is not supported with this model." (type invalid_request_error, param "include").
+  if (m.includes("encrypted content is not supported")) return { kind: "unsupported_parameter", param: errParam ?? "include", message };
   return undefined;
 }
 
@@ -135,6 +210,9 @@ export function patchFromParsedError(parsed: ParsedModelError, endpoint: string 
     }
     case "unsupported_parameter":
       return paramDropPatch(param, parsed);
+    case "max_tokens_too_large":
+      // Parse-only: what to retry with is the caller's decision (read `maxAllowed` from parseModelError).
+      return undefined;
   }
 }
 
@@ -164,6 +242,8 @@ function codeFor(parsed: ParsedModelError | undefined): ModelRequestErrorCode {
   if (!parsed) return "model_request_invalid";
   if (parsed.kind === "unsupported_value" || parsed.kind === "default_only") return "unsupported_value";
   if (parsed.kind === "unsupported_parameter" || parsed.kind === "max_tokens_rename" || parsed.kind === "temperature_thinking") return "unsupported_parameter";
+  // Parse-only (see `patchFromParsedError`): the typed error carries the stated maximum as `maxAllowed`.
+  if (parsed.kind === "max_tokens_too_large") return "max_tokens_too_large";
   return "model_request_invalid";
 }
 
@@ -174,6 +254,7 @@ function toModelRequestError(err: ProviderError, parsed: ParsedModelError | unde
     param: parsed?.param,
     value: parsed?.value,
     supportedValues: parsed?.supportedValues,
+    maxAllowed: parsed?.maxAllowed,
     provider: err.provider || provider,
     model,
     message: err.message,
