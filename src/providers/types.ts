@@ -13,10 +13,12 @@ export type TextContent = {
   text: string;
   /**
    * Explicit prompt-cache breakpoint on this text part (a 5-minute lifetime
-   * unless `ttl: "1h"`). Sent as `cache_control` by the OpenAI-compatible
-   * provider (OpenRouter and LiteLLM forward it to Claude and similar models;
-   * Chat Completions only). Other providers ignore it: OpenAI and Azure never
-   * send the field.
+   * unless `ttl: "1h"`). Sent as `cache_control` by the Anthropic provider
+   * (Claude on Vertex included) and by the OpenAI-compatible provider
+   * (OpenRouter and LiteLLM forward it to Claude and similar models; Chat
+   * Completions only). Other providers ignore it: OpenAI and Azure never send
+   * the field. On an agent's messages it is set on the part itself (`cacheControl`,
+   * or Anthropic's `cache_control`); `fromNativeProvider` carries it through.
    */
   cacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
 };
@@ -99,6 +101,11 @@ export type UnifiedMessage = {
   name?: string;
   toolCalls?: ToolCall[];
   toolCallId?: string; // for tool result messages
+  /**
+   * Tool-role messages only: the tool result is an error. A provider with a
+   * native error flag for tool results maps it; the others ignore it.
+   */
+  isError?: boolean;
   /** Native reasoning blocks to replay verbatim (Anthropic/Bedrock thinking). */
   reasoning?: ReasoningPayload;
 };
@@ -150,6 +157,13 @@ export type ChatCompletionRequest = {
   topLogprobs?: number;
   // Provider-specific extras passed raw into the body (escape hatch)
   extra?: Record<string, any>;
+  /**
+   * What this call is for (`"summarization"`, `"reflection"`): the agent's own
+   * side calls tag themselves through the invoke options and the adapter copies
+   * the tag here. Providers ignore it and never put it on the wire; a host that
+   * reads the request (cost attribution, routing) can use it.
+   */
+  purpose?: string;
   /**
    * Unified native-reasoning request config. Each provider maps this to its
    * own shape:
@@ -466,7 +480,7 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
   responsesStreaming?: boolean;
 };
 
-/** Prompt caching options shared by the Anthropic, Bedrock and OpenAI-compatible providers. */
+/** Prompt caching options shared by the Anthropic, Bedrock, Vertex (Claude models) and OpenAI-compatible providers. */
 export type PromptCachingConfig = {
   /** Turns caching on. Off (or omitted) sends no cache markers. */
   enabled: boolean;
@@ -600,6 +614,19 @@ export type VertexProviderConfig = ProviderTransportConfig & {
   defaultHeaders?: Record<string, string>;
   /** Retry policy for 429/5xx (default 3 retries, exponential backoff). */
   retry?: ProviderRetryConfig;
+  /**
+   * Prompt caching for Claude models served by Vertex (ignored for Gemini): the
+   * same shape and meaning as on `AnthropicProviderConfig.prompt_caching`. Off
+   * unless `enabled: true`. See {@link PromptCachingConfig}.
+   */
+  prompt_caching?: PromptCachingConfig;
+  /**
+   * Thinking request shape for Claude models on Vertex (ignored for Gemini):
+   * `auto` (default, by model id), `adaptive` or `budget`, as on
+   * `AnthropicProviderConfig.thinkingMode`. Spelled out here because
+   * `utils/reasoning.ts`, which owns `ThinkingMode`, imports from this file.
+   */
+  thinkingMode?: "auto" | "adaptive" | "budget";
 };
 
 export type JevProviderConfig = ProviderTransportConfig & {

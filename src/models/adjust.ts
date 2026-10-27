@@ -162,6 +162,16 @@ export function parseModelError(text: string): ParsedModelError | undefined {
     || /unknown field\s*['"`]?stream_options/.test(m)
     || /stream_options['"`]?\s+(?:is|are)\s+not supported/.test(m)
   )) return { kind: "unsupported_parameter", param: "stream_options", message };
+
+  // "Unrecognized request argument supplied: max_completion_tokens" (OpenAI, and Azure for an
+  // api-version or deployment that predates the field). Several names come as "arguments
+  // supplied: a, b": the first is fixed now, the next one on the retry.
+  const unrecognized = /unrecognized request arguments? supplied:\s*(\w+(?:\.\w+)*)/i.exec(message);
+  if (unrecognized) return { kind: "unsupported_parameter", param: unrecognized[1], message };
+
+  // `include: ["reasoning.encrypted_content"]` on a model that does not reason answers
+  // "Encrypted content is not supported with this model." (type invalid_request_error, param "include").
+  if (m.includes("encrypted content is not supported")) return { kind: "unsupported_parameter", param: errParam ?? "include", message };
   return undefined;
 }
 
@@ -232,8 +242,8 @@ function codeFor(parsed: ParsedModelError | undefined): ModelRequestErrorCode {
   if (!parsed) return "model_request_invalid";
   if (parsed.kind === "unsupported_value" || parsed.kind === "default_only") return "unsupported_value";
   if (parsed.kind === "unsupported_parameter" || parsed.kind === "max_tokens_rename" || parsed.kind === "temperature_thinking") return "unsupported_parameter";
-  // `max_tokens_too_large` stays `model_request_invalid`: `ModelRequestErrorCode` has no slot for it, and the
-  // stated maximum is read with `parseModelError(err.responseBody).maxAllowed`.
+  // Parse-only (see `patchFromParsedError`): the typed error carries the stated maximum as `maxAllowed`.
+  if (parsed.kind === "max_tokens_too_large") return "max_tokens_too_large";
   return "model_request_invalid";
 }
 
@@ -244,6 +254,7 @@ function toModelRequestError(err: ProviderError, parsed: ParsedModelError | unde
     param: parsed?.param,
     value: parsed?.value,
     supportedValues: parsed?.supportedValues,
+    maxAllowed: parsed?.maxAllowed,
     provider: err.provider || provider,
     model,
     message: err.message,

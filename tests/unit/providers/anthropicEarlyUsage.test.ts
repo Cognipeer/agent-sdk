@@ -22,8 +22,17 @@ const start = ev("message_start", {
 });
 
 describe("Anthropic stream usage is reported early and cumulatively", () => {
-  it("a stream cut after message_start still carries the input and cache counters (no finish reason)", async () => {
-    const chunks = await collect(provider([start, ev("content_block_start", { index: 0, content_block: { type: "text" } })]));
+  it("a stream cut after message_start still carries the input and cache counters (no finish reason), then fails as truncated", async () => {
+    // Deliberate change (truncated-stream rule): the cut is a retryable error after the early usage chunk.
+    const chunks: ChatCompletionChunk[] = [];
+    const error: any = await (async () => {
+      try {
+        for await (const c of provider([start, ev("content_block_start", { index: 0, content_block: { type: "text" } })]).completeStream({ model: "c", messages: msgs })) chunks.push(c);
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(error).toMatchObject({ message: "Anthropic stream ended before the message finished", statusCode: 502 });
     const usage = chunks.filter((c) => c.usage);
     expect(usage).toHaveLength(1);
     expect(usage[0].usage).toMatchObject({ inputTokens: 3, cachedInputTokens: 100, cachedWriteTokens: 5, outputTokens: 1, totalTokens: 4 });

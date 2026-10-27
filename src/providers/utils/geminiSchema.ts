@@ -44,12 +44,20 @@ const SCALAR_KEYS = [
  *    a bare `{ type: "object" }` that keeps its `description`.
  *  - Keys the Schema object does not know are dropped: `$schema`, `$id`,
  *    `additionalProperties`, `examples`, `exclusiveMinimum`, `not`, ...
- *  - `const` becomes a one-value `enum` (Gemini enums hold strings; numbers and
- *    booleans are written as their string form). Enum values are stringified.
+ *  - `const` becomes a one-value `enum` (Gemini enums hold strings, so values are
+ *    written as their string form). On an `integer` / `number` node the enum is
+ *    marked with `format: "enum"`, which is how the reference says to mark one
+ *    (its integer example is `{type: INTEGER, format: enum, enum: ["101", ...]}`);
+ *    that replaces a `format` such as `int32` there. A boolean `const` / `enum` has
+ *    no enum form and is dropped: the `boolean` type says all there is to say.
  *  - `type: ["string", "null"]`, `anyOf` / `oneOf` branches of `{ type: "null" }`
  *    and `null` enum members become the type plus `nullable: true`. A union that
- *    is left with one branch collapses into it; `oneOf` is sent as `anyOf`;
- *    a one-element `allOf` is merged into its parent.
+ *    is left with one branch collapses into it; `oneOf` is sent as `anyOf`.
+ *  - `allOf` (`z.intersection`, inheritance) members are merged into one schema:
+ *    properties are joined, `required` lists concatenated and de-duplicated, later
+ *    members and the node's own keys win. Members that cannot be merged (a
+ *    different `type`, or two unions) are sent as `anyOf` alternatives, so no
+ *    member is dropped.
  *  - Recursive; the input is never mutated. Non-object input is returned as is.
  */
 export function sanitizeGeminiSchema<T = Json>(schema: T): T {
@@ -66,9 +74,13 @@ function convert(node: unknown): Json {
     return { type: "object", ...(typeof node.description === "string" ? { description: node.description } : {}) };
   }
 
-  if (Array.isArray(node.allOf) && node.allOf.length === 1 && isObject(node.allOf[0])) {
+  // Every `allOf` member has to hold, which the Schema cannot say: they are merged
+  // (the node's own keys win over the members'), never dropped.
+  if (Array.isArray(node.allOf) && node.allOf.length > 0) {
     const { allOf, ...rest } = node;
-    return convert({ ...allOf[0], ...rest });
+    const members = combine(allOf.map((member: unknown) => convert(member)));
+    const own = convert(rest);
+    return members.anyOf && own.anyOf ? combine([members, own]) : mergeTwo(members, own);
   }
 
   const out: Json = {};
@@ -91,13 +103,23 @@ function convert(node: unknown): Json {
   }
 
   // enum / const
+  let values: unknown[] = [];
   if (Array.isArray(node.enum)) {
     if (node.enum.includes(null)) nullable = true;
-    const values = node.enum.filter((v: unknown) => v !== null && typeof v !== "object").map(String);
-    if (values.length > 0) out.enum = values;
+    values = node.enum.filter((v: unknown) => v !== null && typeof v !== "object");
   } else if ("const" in node) {
     const v = node.const;
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out.enum = [String(v)];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") values = [v];
+  }
+  if (values.length > 0) {
+    if (out.type === "boolean" || (out.type === undefined && !typeBranches && values.every((v) => typeof v === "boolean"))) {
+      // No enum form for a boolean: the type is all that is left to say.
+      out.type = "boolean";
+    } else {
+      out.enum = values.map(String);
+      // Vertex: "To mark a field as an enum, set format to enum" (integer example included).
+      if (out.type === "integer" || out.type === "number") out.format = "enum";
+    }
   }
 
   if (isObject(node.properties)) {
@@ -140,6 +162,50 @@ function convert(node: unknown): Json {
 
 function isNullSchema(node: unknown): boolean {
   return isObject(node) && node.type === "null" && !("enum" in node) && !("anyOf" in node);
+}
+
+/**
+ * Schemas that all have to hold, as one. The first that says anything anchors the
+ * result; each later one is merged into it when the two fit together (see
+ * `canMerge`) and kept as an `anyOf` alternative when not. Empty schemas (`true`,
+ * `{}`) say nothing and are skipped; with nothing left the result is `{}`.
+ */
+function combine(parts: Json[]): Json {
+  let merged: Json | undefined;
+  const alternatives: Json[] = [];
+  for (const part of parts) {
+    if (Object.keys(part).length === 0) continue;
+    if (!merged) merged = part;
+    else if (canMerge(merged, part)) merged = mergeTwo(merged, part);
+    else alternatives.push(part);
+  }
+  if (alternatives.length === 0) return merged ?? {};
+  return { anyOf: merged ? [merged, ...alternatives] : alternatives };
+}
+
+/** Two converted schemas fit together unless their types differ or both are unions (one `anyOf` cannot hold two). */
+function canMerge(a: Json, b: Json): boolean {
+  if (a.anyOf && b.anyOf) return false;
+  return a.type === undefined || b.type === undefined || a.type === b.type;
+}
+
+/** `b` merged over `a` (converted schemas): `b`'s keys win, but properties and `required` lists are joined. */
+function mergeTwo(a: Json, b: Json): Json {
+  const out: Json = { ...a, ...b };
+  if (isObject(a.properties) && isObject(b.properties)) {
+    const properties: Json = { ...a.properties };
+    for (const [name, child] of Object.entries<Json>(b.properties)) {
+      // A property both define has to satisfy both definitions.
+      properties[name] = Object.prototype.hasOwnProperty.call(properties, name) ? combine([properties[name], child]) : child;
+    }
+    out.properties = properties;
+  }
+  for (const key of ["required", "propertyOrdering"] as const) {
+    if (Array.isArray(a[key]) && Array.isArray(b[key])) out[key] = [...new Set([...a[key], ...b[key]])];
+  }
+  if (isObject(a.items) && isObject(b.items)) out.items = combine([a.items, b.items]);
+  if (a.nullable === true || b.nullable === true) out.nullable = true;
+  return out;
 }
 
 function clone<T>(value: T): T {

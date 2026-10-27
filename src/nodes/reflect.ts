@@ -14,8 +14,8 @@
 import type { SmartState, SmartAgentOptions, SmartAgentEvent, ReflectionRecord, ReflectionCadence } from "../types.js";
 import type { ResolvedReflectionConfig } from "../smart/reasoning.js";
 import { randomUUID } from "node:crypto";
-import { normalizeUsage } from "../utils/usage.js";
-import { recordTraceEvent, traceErrorOf } from "../utils/tracing.js";
+import { normalizeUsage, recordUsage } from "../utils/usage.js";
+import { getModelName, recordTraceEvent, traceErrorOf } from "../utils/tracing.js";
 
 const REFLECTION_SYSTEM_NAME = "agent_reflection";
 const REFLECTION_ASK_NAME = "agent_reflection_ask";
@@ -156,6 +156,8 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
         // to the adapter which forwards into the provider body.
         max_tokens: resolved.maxTokens,
         maxTokens: resolved.maxTokens,
+        // What the call is for: a host reads it to tell this call from the agent's own.
+        purpose: "reflection",
       });
     } catch (err: any) {
       recordTraceEvent(traceSession, {
@@ -169,6 +171,20 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
     }
 
     const durationMs = Date.now() - start;
+
+    // A reflection is a real model call: book it in the run's usage like the agent's
+    // own, so `result.metadata.usage` and the budgets (`maxCostUsd`, token caps) count
+    // it. Once per call and before the early returns below: a reply that is empty or
+    // repeats the last note still cost the tokens.
+    const rawUsage = (response as any)?.usage_metadata
+      || (response as any)?.response_metadata?.usage
+      || (response as any)?.usage
+      || (response as any)?.additional_kwargs?.usage
+      || (response as any)?.response_metadata?.token_usage
+      || (response as any)?.response_metadata?.tokenUsage;
+    const usage = normalizeUsage(rawUsage);
+    if (usage) recordUsage(state, getModelName(model) || "unknown_model", usage);
+
     const rawText = extractText(response);
     const text = trimToChars(String(rawText ?? "").trim(), maxChars);
     if (!text) return {};
@@ -178,11 +194,6 @@ export function createReflectionNode(opts: SmartAgentOptions, resolved: Resolved
     const prevText = (state.reflections?.[state.reflections.length - 1]?.text || "").trim();
     if (prevText && isNearDuplicate(prevText, text)) return {};
 
-    const rawUsage = (response as any)?.usage_metadata
-      || (response as any)?.response_metadata?.usage
-      || (response as any)?.usage
-      || (response as any)?.additional_kwargs?.usage;
-    const usage = normalizeUsage(rawUsage);
     const { ids, names } = countToolCallsInLastTurn(state);
     const turn = (state.toolCallCount ?? 0);
     const record: ReflectionRecord = {

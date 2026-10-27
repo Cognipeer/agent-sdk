@@ -17,7 +17,9 @@ import type {
 } from "./types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { linkAbortSignal } from "../utils/abort.js";
+import { cacheControlOf } from "../utils/content.js";
 import { attachWireInfo, usageBasisOf, type WireUsageBasis } from "./wireInfo.js";
+import { vertexClaudeModelId } from "./vertexAnthropic.js";
 
 export type NativeModelOptions = {
   /** Override the model ID per adapter instance */
@@ -125,7 +127,7 @@ export function fromNativeProvider(
   const adapted: BaseChatModel = {
     modelName,
 
-    capabilities: resolveCapabilities(provider.providerName),
+    capabilities: resolveCapabilities(provider.providerName, modelName),
 
     invoke: async (
       messages: BaseChatMessage[],
@@ -309,6 +311,10 @@ export function fromNativeProvider(
     if (opts?.frequencyPenalty != null) req.frequencyPenalty = opts.frequencyPenalty;
     if (tools?.length) req.tools = tools;
     if (opts?.extra) req.extra = opts.extra;
+    // What the call is for (the summarizer and the reflection pass tag theirs):
+    // carried on the request for a host to read, never sent by a provider.
+    const purpose = invokeOptions?.purpose;
+    if (typeof purpose === "string" && purpose) req.purpose = purpose;
 
     // Reasoning config: a per-call `invokeOptions.reasoning` is MERGED over the
     // adapter default rather than replacing it.
@@ -395,6 +401,9 @@ function toUnifiedMessage(msg: BaseChatMessage): UnifiedMessage {
 
   if (msg.name) unified.name = msg.name;
   if (msg.tool_call_id) unified.toolCallId = msg.tool_call_id;
+  // A failed tool call's result. Only a tool message can carry it; a provider with a
+  // native error flag for tool results (Anthropic `is_error`) maps it, the others ignore it.
+  if (msg.role === "tool" && (msg.isError === true || msg.is_error === true)) unified.isError = true;
 
   if (msg.tool_calls?.length) {
     unified.toolCalls = msg.tool_calls.map((tc: any) => ({
@@ -421,7 +430,10 @@ function convertContent(content: string | BaseChatMessagePart[]): string | Conte
 
   return content.map((part): ContentPart => {
     if (part.type === "text" || (!part.type && part.text)) {
-      return { type: "text", text: part.text ?? part.content ?? "" };
+      // A caller's cache breakpoint rides on the part: rebuilding it as a bare
+      // `{ type, text }` dropped the marker before any provider could read it.
+      const cacheControl = cacheControlOf(part);
+      return { type: "text", text: part.text ?? part.content ?? "", ...(cacheControl ? { cacheControl } : {}) };
     }
     if (part.type === "image_url") {
       const img = (part as any).image_url;
@@ -838,7 +850,7 @@ function assembleMessage(content: string, toolCalls: ToolCall[], usage?: TokenUs
   return msg;
 }
 
-function resolveCapabilities(provider: ProviderType): ModelCapabilities {
+function resolveCapabilities(provider: ProviderType, model?: string): ModelCapabilities {
   switch (provider) {
     case "openai":
     case "azure":
@@ -873,6 +885,10 @@ function resolveCapabilities(provider: ProviderType): ModelCapabilities {
         provider: "bedrock",
       };
     case "vertex":
+      // The Vertex provider also serves Claude, over the Messages API, which has
+      // no `responseFormat`: the native strategy would set one and nothing would
+      // enforce it. Claude ids get the Anthropic capabilities (response tool).
+      if (vertexClaudeModelId(model)) return resolveCapabilities("anthropic");
       return {
         structuredOutput: "native",
         strictToolCalling: false,

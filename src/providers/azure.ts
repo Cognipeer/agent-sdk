@@ -1,12 +1,16 @@
 // Azure OpenAI provider.
 // Extends OpenAI with Azure-specific URL construction and api-key auth.
 
-import { OpenAIProvider } from "./openai.js";
+import { OpenAIProvider, expandResponsesInput } from "./openai.js";
 import {
   type AzureProviderConfig,
   type ProviderType,
   ProviderError,
 } from "./types.js";
+
+/** The dated api-version used when the config names none (and for chat / embeddings under `apiVersion: "v1"`). */
+const DEFAULT_API_VERSION = "2024-10-21";
+
 export class AzureProvider extends OpenAIProvider {
   override readonly providerName: ProviderType = "azure";
 
@@ -33,9 +37,30 @@ export class AzureProvider extends OpenAIProvider {
       responsesStreaming: config.responsesStreaming,
     });
     this.endpoint = config.endpoint.replace(/\/$/, "");
-    this.apiVersion = config.apiVersion ?? "2024-10-21";
+    this.apiVersion = config.apiVersion ?? DEFAULT_API_VERSION;
     this.deploymentName = config.deploymentName;
     this.azureApiKey = config.apiKey;
+  }
+
+  /** `apiVersion: "v1"` selects Azure's versionless v1 route, which this provider uses for the Responses API only. */
+  private get usesV1Route(): boolean {
+    return this.apiVersion.toLowerCase() === "v1";
+  }
+
+  /** The `api-version` of the deployment routes (chat, embeddings): the v1 route has none, so under `"v1"` a dated one stands in. */
+  private get datedApiVersion(): string {
+    return this.usesV1Route ? DEFAULT_API_VERSION : this.apiVersion;
+  }
+
+  /** Reasoning items only decrypt for the resource that minted them: the Azure endpoint, not the dummy OpenAI base URL, is the scope. */
+  protected override responsesOrigin(model: string): string {
+    return `${this.providerName}|${this.endpoint}|${model}`;
+  }
+
+  /** Azure's docs replay the output items as they came, so the reasoning item and the function call it preceded go
+   * back with their ids; a reasoning item without its `id` is reported to be refused (400 `invalid_payload`). */
+  protected override replaysItemIds(): boolean {
+    return true;
   }
 
   protected override async doFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
@@ -45,7 +70,7 @@ export class AzureProvider extends OpenAIProvider {
       throw new ProviderError("Azure requires a deploymentName or model", this.providerName);
     }
 
-    const url = `${this.endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${this.apiVersion}`;
+    const url = `${this.endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${this.datedApiVersion}`;
 
     // Remove model from body since Azure uses deployment path
     const { model: _model, ...bodyWithoutModel } = body;
@@ -82,7 +107,7 @@ export class AzureProvider extends OpenAIProvider {
     if (!deployment) {
       throw new ProviderError("Azure embeddings require a deployment name or model", this.providerName, 400);
     }
-    const url = `${this.endpoint}/openai/deployments/${deployment}/embeddings?api-version=${this.apiVersion}`;
+    const url = `${this.endpoint}/openai/deployments/${deployment}/embeddings?api-version=${this.datedApiVersion}`;
     const { model: _model, ...bodyWithoutModel } = body;
     const payload = JSON.stringify(bodyWithoutModel);
     const res = await this.doFetchWithRetry(() => this.httpFetch(url, {
@@ -102,18 +127,34 @@ export class AzureProvider extends OpenAIProvider {
     return res;
   }
 
+  /**
+   * Encrypted reasoning items are new in api-version 2025-04-01-preview (2025-03-01-preview
+   * is the first Responses version), so a dated version before that gets no `include`
+   * for them. The v1 route, `preview` and `latest` have them; a version that cannot be read is left out.
+   */
+  protected override acceptsEncryptedReasoningInclude(): boolean {
+    if (this.usesV1Route) return true;
+    const v = this.apiVersion.toLowerCase();
+    if (v === "preview" || v === "latest") return true;
+    const dated = /^(\d{4}-\d{2}-\d{2})/.exec(v);
+    return dated != null && dated[1] >= "2025-04-01";
+  }
+
   /** Azure exposes the Responses API at /openai/responses with api-key auth.
    * Reasoning summaries require a preview api-version; callers can override via
-   * the `apiVersion` config. */
+   * the `apiVersion` config. `apiVersion: "v1"` uses the versionless v1 route
+   * (`/openai/v1/responses`, no `api-version` query); chat and embeddings keep
+   * their dated deployment routes, so under "v1" v1 is Responses-only. */
   protected override async responsesFetch(body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
-    body.input = expandAzureResponsesInput(body.input);
+    body.input = expandResponsesInput(body.input);
     const deployment = this.deploymentName ?? body.model;
     if (!deployment) {
       throw new ProviderError("Azure requires a deploymentName or model", this.providerName);
     }
-    // Azure routes by deployment in the path; keep `model` in the body too as
-    // some api-versions expect it. Prefer the deployment-scoped responses route.
-    const url = `${this.endpoint}/openai/responses?api-version=${this.apiVersion}`;
+    // Both routes take the deployment name as `model` in the body.
+    const url = this.usesV1Route
+      ? `${this.endpoint}/openai/v1/responses`
+      : `${this.endpoint}/openai/responses?api-version=${this.apiVersion}`;
     const payload = JSON.stringify({ ...body, model: deployment });
     const res = await this.doFetchWithRetry(() => this.httpFetch(url, {
       method: "POST",
@@ -136,20 +177,4 @@ export class AzureProvider extends OpenAIProvider {
     }
     return res;
   }
-}
-
-/** Re-applies the assistant-with-calls expansion (mirrors the OpenAI helper). */
-function expandAzureResponsesInput(input: any[]): any[] {
-  const out: any[] = [];
-  for (const item of input) {
-    if (item && item.__assistantWithCalls) {
-      if (item.text) {
-        out.push({ role: "assistant", content: [{ type: "output_text", text: item.text }] });
-      }
-      for (const call of item.calls) out.push(call);
-    } else {
-      out.push(item);
-    }
-  }
-  return out;
 }

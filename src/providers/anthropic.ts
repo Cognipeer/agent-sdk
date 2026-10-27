@@ -11,6 +11,7 @@ import {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
   type ChatCompletionChunk,
+  type ContentPart,
   type ToolCall,
   type TokenUsage,
   type UnifiedMessage,
@@ -19,6 +20,7 @@ import {
   type AnthropicProviderConfig,
   type PromptCachingConfig,
   type ProviderType,
+  type TextContent,
   ProviderError,
 } from "./types.js";
 
@@ -28,19 +30,13 @@ const DEFAULT_MAX_TOKENS_ADAPTIVE = 16384;
 /** The Messages API accepts at most this many cache breakpoints per request. */
 const MAX_CACHE_BREAKPOINTS = 4;
 
+/** What a tool result with no output is sent as: both APIs reject an empty text block. */
+export const EMPTY_TOOL_RESULT_TEXT = "(no output)";
+/** What a user or assistant message with no text (and nothing else) is sent as, for the same reason. */
+export const EMPTY_MESSAGE_TEXT = "(empty message)";
+
 function defaultMaxTokens(model: unknown): number {
   return supportsAdaptiveThinking(model) ? DEFAULT_MAX_TOKENS_ADAPTIVE : DEFAULT_MAX_TOKENS;
-}
-
-/** Counts explicit `cache_control` markers in system, tools and messages. */
-function countCacheMarkers(node: unknown): number {
-  if (Array.isArray(node)) return node.reduce((n: number, v) => n + countCacheMarkers(v), 0);
-  if (!node || typeof node !== "object") return 0;
-  let n = 0;
-  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-    n += k === "cache_control" ? (v != null ? 1 : 0) : countCacheMarkers(v);
-  }
-  return n;
 }
 
 /** Enforces the Anthropic rules around a caller-supplied `thinking` block
@@ -60,6 +56,15 @@ function normalizeExplicitThinking(body: Record<string, any>): void {
   }
   for (const k of ["temperature", "top_p", "top_k"]) delete body[k];
 }
+
+/** The blocks of the built request the SDK made itself, so the breakpoint pass never touches what `extra` replaced. */
+type OwnBlocks = {
+  /** The `system` block array (absent when `system` went out as a plain string). */
+  system?: Record<string, any>[];
+  /** The last block of the static system prefix: where the SDK's system breakpoint goes. */
+  lastStatic?: Record<string, any>;
+  tools?: Record<string, any>[];
+};
 
 export class AnthropicProvider extends BaseProvider {
   readonly providerName: ProviderType = "anthropic";
@@ -133,6 +138,9 @@ export class AnthropicProvider extends BaseProvider {
     let toolOrdinal = 0;
     // Accumulate thinking blocks by content-block index so we can replay them.
     const reasoningBlocks = new Map<number, ReasoningBlock>();
+    // True once the message is known to be complete: `message_stop`, or the
+    // `message_delta` that carries the stop reason (some gateways drop the former).
+    let finished = false;
 
     for await (const event of parseSSEStream(res.body, request.signal)) {
       let data: any;
@@ -241,6 +249,7 @@ export class AnthropicProvider extends BaseProvider {
           }
           const finishReason = mapAnthropicStopReason(delta?.stop_reason);
           const rawFinishReason = typeof delta?.stop_reason === "string" ? delta.stop_reason : undefined;
+          if (rawFinishReason) finished = true;
           const usage = streamUsage();
           const blocks = [...reasoningBlocks.values()].filter(
             (b) => (b.type === "thinking" && b.signature) || (b.type === "redacted_thinking" && b.data),
@@ -257,36 +266,58 @@ export class AnthropicProvider extends BaseProvider {
         }
 
         case "message_stop":
+          finished = true;
           break;
 
         case "error": {
+          // The stream's own error event: it carries the failure the HTTP status would
+          // have named (an `overloaded_error` is a 529), so it is retried, or not, by the
+          // same rule. The raw event is the body, as the response text is on an HTTP error.
           const errMsg = data.error?.message ?? "Unknown Anthropic streaming error";
-          throw new ProviderError(errMsg, this.providerName);
+          throw new ProviderError(errMsg, this.providerName, anthropicErrorStatus(data.error?.type), event.data);
         }
       }
+    }
+
+    // The body ended with no `message_stop` and no stop reason: the connection was
+    // cut, not the message finished. Ending quietly would hand the caller half a
+    // message (a tool call whose arguments stop halfway) as if it were whole. A
+    // caller that cancelled the call ended it itself: that is not an error.
+    if (!finished) {
+      if (request.signal?.aborted) return;
+      throw truncatedStreamError(this.providerName, this.apiName);
     }
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────
 
   private buildRequestBody(request: ChatCompletionRequest, stream: boolean, overlay?: RulePatch, downgradeToolChoice = false): Record<string, any> {
-    // Anthropic separates system from messages
-    const { system, messages } = this.splitSystemMessages(request.messages);
+    // Anthropic separates system from messages. The system prompt that does not
+    // change between turns comes first and the SDK's own per-turn blocks (summary,
+    // memory, plugin and reflection context) after it, so a cache breakpoint can
+    // sit between the two instead of after text that changes every turn.
+    const { staticSystem, dynamicSystem, rest } = partitionSystemMessages(request.messages);
+    // The `cache_control` objects made from the caller's `cacheControl` parts.
+    const partMarks = new Set<object>();
+    const staticBlocks = systemTextBlocks(staticSystem, partMarks);
+    const systemBlocks = [...staticBlocks, ...systemTextBlocks(dynamicSystem, partMarks)];
 
     const body: Record<string, any> = {
       model: request.model || this.defaultModel,
-      messages: this.toAnthropicMessages(messages),
+      messages: this.toAnthropicMessages(rest, partMarks),
       max_tokens: request.maxTokens ?? defaultMaxTokens(request.model || this.defaultModel),
       stream,
     };
 
-    if (system) {
-      // When prompt caching is on, ship `system` as a block array with a
-      // cache_control breakpoint so the static system prompt is reused.
-      if (this.promptCachingEnabled) {
-        body.system = [{ type: "text", text: system, cache_control: this.cacheControl() }];
+    // `system` stays a plain string unless something needs blocks: prompt caching
+    // (the SDK's breakpoint goes on a block) or a breakpoint the caller put on a part.
+    let ownSystem: Record<string, any>[] | undefined;
+    if (systemBlocks.length > 0) {
+      if (this.promptCachingEnabled || systemBlocks.some((b) => b.cache_control)) {
+        ownSystem = systemBlocks;
+        body.system = ownSystem;
       } else {
-        body.system = system;
+        body.system = systemBlocks.map((b) => b.text).join("\n\n");
       }
     }
     // Which sampling params and thinking form the model takes comes from its rule.
@@ -295,14 +326,10 @@ export class AnthropicProvider extends BaseProvider {
     if (request.topP != null) body.top_p = request.topP;
     if (request.stop) body.stop_sequences = request.stop;
 
+    let ownTools: Record<string, any>[] | undefined;
     if (request.tools?.length) {
-      const tools = request.tools.map((t) => this.toAnthropicTool(t));
-      // Cache the entire tools block by placing the breakpoint on the final
-      // tool definition – everything above it in the request is cached too.
-      if (this.promptCachingEnabled && tools.length > 0) {
-        tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: this.cacheControl() };
-      }
-      body.tools = tools;
+      ownTools = request.tools.map((t) => this.toAnthropicTool(t));
+      body.tools = ownTools;
     }
 
     if (request.toolChoice != null) {
@@ -338,46 +365,74 @@ export class AnthropicProvider extends BaseProvider {
       body.max_tokens = defaultMaxTokens(body.model);
     }
 
-    // Automatic caching for the conversation tail. Applied last so the explicit
-    // markers of `extra` are counted; the server answers 400 when the 4 slots
-    // are full, and a caller-set top-level key is left alone (null included).
-    if (this.promptCachingEnabled && this.promptCaching.strategy === "auto" && !("cache_control" in body)) {
-      const explicit = countCacheMarkers(body.system) + countCacheMarkers(body.tools) + countCacheMarkers(body.messages);
-      if (explicit < MAX_CACHE_BREAKPOINTS) body.cache_control = this.cacheControl();
-    }
+    // Last, on the finished body: `extra` may have replaced any block, and its own
+    // markers count against the limit too.
+    this.settleCacheBreakpoints(body, { system: ownSystem, lastStatic: staticBlocks[staticBlocks.length - 1], tools: ownTools }, partMarks);
 
     return body;
+  }
+
+  /**
+   * Settles the cache breakpoints of a finished body so a request never carries
+   * more than the 4 the API accepts (a 5th is a 400). In order:
+   *  1. The caller's own come first: the `cacheControl` of text parts and any
+   *     `cache_control` in `extra`. Over the limit, the earliest ones made from parts
+   *     are dropped (a later breakpoint covers a longer prefix); a raw `extra` one
+   *     is never touched.
+   *  2. The SDK's own, only while a slot is free and only on blocks it built: the
+   *     end of the static system prompt, the last tool, then top-level automatic
+   *     caching (it takes one slot, on the last cacheable block). A breakpoint the
+   *     caller already put on that block counts as the SDK's. Automatic caching is
+   *     left out when the request's last block carries a breakpoint of another
+   *     lifetime: it would land on that block, a 400 (the caller asked for 1h on the
+   *     tail, the provider default is 5m). At the same lifetime it is a no-op, and sent.
+   *  3. A longer lifetime may not come after a shorter one (the API answers 400): a
+   *     1h breakpoint after a 5m one, in the order tools, system, messages, is sent as
+   *     5m. Only the ones the SDK made (from parts, or its own) are changed.
+   */
+  private settleCacheBreakpoints(body: Record<string, any>, own: OwnBlocks, partMarks: Set<object>): void {
+    const sdkMarks = new Set<object>();
+    const found = cacheHolders(body, partMarks, sdkMarks);
+    let count = found.length;
+    for (const holder of found) {
+      if (count <= MAX_CACHE_BREAKPOINTS) break;
+      if (holder.origin !== "part") continue;
+      delete holder.node.cache_control;
+      count--;
+    }
+
+    if (this.promptCachingEnabled) {
+      const mark = (node: Record<string, any>): void => {
+        const marker = this.cacheControl();
+        node.cache_control = marker;
+        sdkMarks.add(marker);
+        count++;
+      };
+      if (count < MAX_CACHE_BREAKPOINTS && own.lastStatic && body.system === own.system && own.lastStatic.cache_control == null) {
+        mark(own.lastStatic);
+      }
+      const tools = own.tools;
+      const lastTool = tools && tools.length > 0 ? tools[tools.length - 1] : undefined;
+      if (count < MAX_CACHE_BREAKPOINTS && lastTool && body.tools === tools && lastTool.cache_control == null) {
+        mark(lastTool);
+      }
+      // A caller-set top-level key is left alone (null included).
+      if (count < MAX_CACHE_BREAKPOINTS && this.promptCaching.strategy === "auto" && !("cache_control" in body) && !tailClashes(body, this.cacheControl())) {
+        mark(body);
+      }
+    }
+
+    let shorter = false;
+    for (const holder of cacheHolders(body, partMarks, sdkMarks)) {
+      const marker = holder.node.cache_control as Record<string, any>;
+      if (marker.ttl !== "1h") shorter = true;
+      else if (shorter && holder.origin !== "raw") delete marker.ttl;
+    }
   }
 
   /** `ttl` is sent only for 1h; the 5-minute default is the API's own. */
   private cacheControl(): Record<string, any> {
     return this.promptCaching.ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
-  }
-
-  private splitSystemMessages(messages: UnifiedMessage[]): { system: string | undefined; messages: UnifiedMessage[] } {
-    const systemParts: string[] = [];
-    const rest: UnifiedMessage[] = [];
-
-    for (const m of messages) {
-      if (m.role === "system") {
-        if (typeof m.content === "string") {
-          systemParts.push(m.content);
-        } else {
-          const text = m.content
-            .filter((p) => p.type === "text")
-            .map((p) => (p as { type: "text"; text: string }).text)
-            .join("\n");
-          if (text) systemParts.push(text);
-        }
-      } else {
-        rest.push(m);
-      }
-    }
-
-    return {
-      system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
-      messages: rest,
-    };
   }
 
   /**
@@ -390,13 +445,13 @@ export class AnthropicProvider extends BaseProvider {
    * block(s) to be batched into ONE `user` message rather than sent as
    * separate consecutive `user` messages.
    */
-  private toAnthropicMessages(messages: UnifiedMessage[]): Record<string, any>[] {
+  private toAnthropicMessages(messages: UnifiedMessage[], marks: Set<object>): Record<string, any>[] {
     const result: Record<string, any>[] = [];
     let mergingToolResults = false;
 
     for (const m of messages) {
       if (m.role === "tool" && m.toolCallId) {
-        const toolResult = this.toAnthropicToolResult(m);
+        const toolResult = this.toAnthropicToolResult(m, marks);
         if (mergingToolResults) {
           result[result.length - 1].content.push(toolResult);
         } else {
@@ -407,31 +462,30 @@ export class AnthropicProvider extends BaseProvider {
       }
 
       mergingToolResults = false;
-      result.push(this.toAnthropicMessage(m));
+      result.push(this.toAnthropicMessage(m, marks));
     }
 
     return result;
   }
 
-  private toAnthropicToolResult(m: UnifiedMessage): Record<string, any> {
-    const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+  private toAnthropicToolResult(m: UnifiedMessage, marks: Set<object>): Record<string, any> {
     return {
       type: "tool_result",
       tool_use_id: m.toolCallId,
-      content,
+      content: toolResultContent(m.content, marks),
+      // Only when set: a result that did not fail carries no flag at all.
+      ...(m.isError ? { is_error: true } : {}),
     };
   }
 
-  private toAnthropicMessage(m: UnifiedMessage): Record<string, any> {
+  private toAnthropicMessage(m: UnifiedMessage, marks: Set<object>): Record<string, any> {
     // Assistant with tool calls. Anthropic requires the original thinking
     // blocks (with their `signature`) to be replayed verbatim *before* the
     // text/tool_use blocks whenever extended thinking was used in that turn.
     if (m.role === "assistant" && m.toolCalls?.length) {
       const content: any[] = [];
       appendReasoningBlocks(content, m.reasoning?.blocks);
-      if (typeof m.content === "string" && m.content) {
-        content.push({ type: "text", text: m.content });
-      }
+      content.push(...assistantTextBlocks(m.content, marks));
       for (const tc of m.toolCalls) {
         content.push({
           type: "tool_use",
@@ -447,51 +501,24 @@ export class AnthropicProvider extends BaseProvider {
     if (m.role === "assistant" && m.reasoning?.blocks?.length) {
       const content: any[] = [];
       appendReasoningBlocks(content, m.reasoning.blocks);
-      const text = typeof m.content === "string" ? m.content : "";
-      if (text) content.push({ type: "text", text });
+      content.push(...assistantTextBlocks(m.content, marks));
+      if (content.length === 0) content.push({ type: "text", text: EMPTY_MESSAGE_TEXT });
       return { role: "assistant", content };
     }
 
-    // Regular messages
+    // Regular messages. An empty text block is a 400, so blank text is dropped,
+    // and a message left with nothing carries a placeholder instead.
     const msg: Record<string, any> = { role: m.role };
 
     if (typeof m.content === "string") {
-      msg.content = m.content;
+      msg.content = m.content.trim() ? m.content : EMPTY_MESSAGE_TEXT;
     } else if (Array.isArray(m.content)) {
-      msg.content = m.content.map((part) => {
-        if (part.type === "text") return { type: "text", text: part.text };
-        if (part.type === "image") {
-          const src = part.source;
-          if (src.type === "base64") {
-            return {
-              type: "image",
-              source: { type: "base64", media_type: src.mediaType, data: src.data },
-            };
-          }
-          return {
-            type: "image",
-            source: { type: "url", url: src.url },
-          };
-        }
-        if (part.type === "file") {
-          const src = part.source;
-          const title = part.fileName ? { title: part.fileName } : {};
-          if (src.type === "base64") {
-            return {
-              type: "document",
-              source: { type: "base64", media_type: src.mediaType, data: src.data },
-              ...title,
-            };
-          }
-          return { type: "document", source: { type: "url", url: src.url }, ...title };
-        }
-        if (part.type === "audio") {
-          // Anthropic has no audio input; keep the reference visible.
-          const src = part.source;
-          return { type: "text", text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" };
-        }
-        return part;
-      });
+      const blocks: Record<string, any>[] = [];
+      for (const part of m.content) {
+        const block = anthropicPart(part, marks);
+        if (block) blocks.push(block);
+      }
+      msg.content = blocks.length > 0 ? blocks : [{ type: "text", text: EMPTY_MESSAGE_TEXT }];
     }
 
     return msg;
@@ -555,7 +582,11 @@ export class AnthropicProvider extends BaseProvider {
     };
   }
 
-  /** The JSON that goes on the wire for a built request body (the body itself is left as it is). */
+  /**
+   * The JSON that goes on the wire for a built request body (the body itself is left as
+   * it is). A backend that can never take part of the body throws a non-retryable
+   * `ProviderError` here, before anything is sent.
+   */
   protected wireBody(body: Record<string, any>): Record<string, any> {
     return body;
   }
@@ -567,8 +598,10 @@ export class AnthropicProvider extends BaseProvider {
 
   private async doFetch(body: Record<string, any>, stream: boolean, signal?: AbortSignal): Promise<Response> {
     const url = this.requestUrl(String(body.model), stream);
-    const headers = await this.requestHeaders();
+    // The payload first: `wireBody` may refuse a body the backend can never take, and
+    // that must fail before any auth work (a token fetch) is spent on it.
     const payload = JSON.stringify(this.wireBody(body));
+    const headers = await this.requestHeaders();
     const res = await this.doFetchWithRetry(() => this.httpFetch(url, { method: "POST", headers, body: payload, signal }), signal);
 
     if (!res.ok) {
@@ -646,15 +679,314 @@ function mapAnthropicStopReason(reason: string | null | undefined): ChatCompleti
   switch (reason) {
     case "end_turn":
     case "stop_sequence":
+    // `pause_turn`: a server tool's sampling loop hit its iteration limit, so the turn
+    // is NOT finished. There is no unified "paused" reason, so it stays "stop"; the raw
+    // value is always kept in `rawFinishReason` (both paths), which is how a host that
+    // runs server tools sees it and decides whether to send the content back to continue.
+    case "pause_turn":
       return "stop";
     case "tool_use":
       return "tool_calls";
     case "max_tokens":
     case "model_context_window_exceeded":
       return "length";
+    // A safety classifier declined to answer: an HTTP 200, not an error.
+    case "refusal":
+      return "content_filter";
     default:
       return "stop";
   }
+}
+
+/**
+ * The HTTP status the Messages API gives an error type (platform.claude.com/docs/en/api/errors).
+ * An `error` event inside a stream names only the type, so this puts it on the same
+ * footing as the HTTP answer: 429 and 5xx (500, 504, 529) retry, the rest do not. The
+ * list may grow, so an unknown type has no status rather than a guessed one.
+ */
+export function anthropicErrorStatus(type: unknown): number | undefined {
+  switch (type) {
+    case "invalid_request_error": return 400;
+    case "authentication_error": return 401;
+    case "billing_error": return 402;
+    case "permission_error": return 403;
+    case "not_found_error": return 404;
+    case "conflict_error": return 409;
+    case "request_too_large": return 413;
+    case "rate_limit_error": return 429;
+    case "api_error": return 500;
+    case "timeout_error": return 504;
+    case "overloaded_error": return 529;
+    default: return undefined;
+  }
+}
+
+/**
+ * The error for a response stream that ended before the message was finished.
+ * A cut connection is the same transient failure as a 502 from a gateway, so it
+ * carries that status: retried like any other 5xx, with the one phrase the hosts
+ * and the other native providers can match on.
+ */
+export function truncatedStreamError(provider: string, apiName: string, cause?: string): ProviderError {
+  return new ProviderError(
+    `${apiName} stream ended before the message finished${cause ? ` (${cause})` : ""}`,
+    provider,
+    502,
+  );
+}
+
+// ── System prompt: what stays the same between turns, and what does not ─────
+
+/**
+ * Names of the system messages the SDK itself injects and rewrites between turns:
+ * the context summary and memory block (smart/contextPolicy), plugin context
+ * (plugins/session) and the reflection note (nodes/reflect). They change from turn
+ * to turn, so a cache breakpoint must not sit after them.
+ */
+const DYNAMIC_SYSTEM_NAMES = new Set(["context_summary", "memory_context", "plugin_context", "agent_reflection"]);
+
+/**
+ * Splits the messages into the static system prefix, the dynamic system messages
+ * and everything else (a native `system` field takes the first two, in that order).
+ * Static is the run of system messages at the head of the list up to the first one
+ * the SDK names as a per-turn block; every other system message (named, or added
+ * after the conversation began, such as a language guard) is dynamic. The relative
+ * order of the system messages never changes.
+ */
+export function partitionSystemMessages(messages: UnifiedMessage[]): {
+  staticSystem: UnifiedMessage[];
+  dynamicSystem: UnifiedMessage[];
+  rest: UnifiedMessage[];
+} {
+  const staticSystem: UnifiedMessage[] = [];
+  const dynamicSystem: UnifiedMessage[] = [];
+  const rest: UnifiedMessage[] = [];
+  let stable = true;
+  for (const m of messages) {
+    if (m.role !== "system") {
+      stable = false;
+      rest.push(m);
+    } else if (stable && !(m.name && DYNAMIC_SYSTEM_NAMES.has(m.name))) {
+      staticSystem.push(m);
+    } else {
+      stable = false;
+      dynamicSystem.push(m);
+    }
+  }
+  return { staticSystem, dynamicSystem, rest };
+}
+
+/** One run of a system message's text, ended by a part the caller marked for caching. */
+export type SystemPiece = { text: string; mark?: TextContent["cacheControl"] };
+
+/**
+ * What a system message contributes: its text, cut after each text part that carries
+ * a `cacheControl` (the text parts of one run are joined with a newline; other parts
+ * have no place in a system prompt).
+ */
+export function systemPieces(m: UnifiedMessage): SystemPiece[] {
+  if (typeof m.content === "string") return [{ text: m.content }];
+  const pieces: SystemPiece[] = [];
+  let run: string[] = [];
+  for (const part of Array.isArray(m.content) ? m.content : []) {
+    if (part.type !== "text") continue;
+    run.push(part.text);
+    if (part.cacheControl) {
+      pieces.push({ text: run.join("\n"), mark: part.cacheControl });
+      run = [];
+    }
+  }
+  if (run.length > 0) pieces.push({ text: run.join("\n") });
+  return pieces;
+}
+
+/**
+ * The text blocks of a group of system messages. Runs of unmarked text are merged
+ * (blank ones dropped: the API rejects an empty text block) and a block ends
+ * wherever the caller put a cache breakpoint.
+ */
+function systemTextBlocks(messages: UnifiedMessage[], marks: Set<object>): Record<string, any>[] {
+  const blocks: Record<string, any>[] = [];
+  let pending: string[] = [];
+  const flush = (mark?: TextContent["cacheControl"]): void => {
+    if (pending.length === 0) return;
+    const block = anthropicTextBlock(pending.join("\n\n"), mark, marks);
+    pending = [];
+    if (block) blocks.push(block);
+  };
+  for (const m of messages) {
+    for (const piece of systemPieces(m)) {
+      if (!piece.text.trim()) continue;
+      pending.push(piece.text);
+      if (piece.mark) flush(piece.mark);
+    }
+  }
+  flush();
+  return blocks;
+}
+
+// ── Content parts ───────────────────────────────────────────────────────────
+
+/** A unified content part, as opposed to arbitrary JSON a tool returned. */
+export function isContentPart(value: unknown): value is ContentPart {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, any>;
+  if (v.type === "text") return typeof v.text === "string";
+  return (v.type === "image" || v.type === "file" || v.type === "audio") && !!v.source && typeof v.source === "object";
+}
+
+/** The `cache_control` for a caller's breakpoint: `ttl` only when it is not the 5-minute default. */
+function wireCacheControl(cc: NonNullable<TextContent["cacheControl"]>): Record<string, any> {
+  return cc.ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
+}
+
+/**
+ * A text block, with the caller's cache breakpoint when it has one. Blank text has
+ * no block (the API rejects it), so a breakpoint on it is dropped with it.
+ */
+function anthropicTextBlock(text: string, cc: TextContent["cacheControl"], marks: Set<object>): Record<string, any> | undefined {
+  if (!text.trim()) return undefined;
+  if (!cc) return { type: "text", text };
+  const cache_control = wireCacheControl(cc);
+  marks.add(cache_control);
+  return { type: "text", text, cache_control };
+}
+
+/** One unified content part as a Messages API block; undefined for blank text. */
+function anthropicPart(part: ContentPart, marks: Set<object>): Record<string, any> | undefined {
+  if (part.type === "text") return anthropicTextBlock(part.text, part.cacheControl, marks);
+  if (part.type === "image") {
+    const src = part.source;
+    if (src.type === "base64") {
+      return { type: "image", source: { type: "base64", media_type: src.mediaType, data: src.data } };
+    }
+    return { type: "image", source: { type: "url", url: src.url } };
+  }
+  if (part.type === "file") {
+    const src = part.source;
+    const title = part.fileName ? { title: part.fileName } : {};
+    if (src.type === "base64") {
+      return { type: "document", source: { type: "base64", media_type: src.mediaType, data: src.data }, ...title };
+    }
+    return { type: "document", source: { type: "url", url: src.url }, ...title };
+  }
+  if (part.type === "audio") {
+    // Anthropic has no audio input; keep the reference visible.
+    const src = part.source;
+    return { type: "text", text: src.type === "url" ? `[audio: ${src.url}]` : "[audio attachment omitted: not supported by this model]" };
+  }
+  return part;
+}
+
+/** The text blocks of an assistant message (its other parts have no place in an assistant turn). */
+function assistantTextBlocks(content: UnifiedMessage["content"], marks: Set<object>): Record<string, any>[] {
+  const blocks: Record<string, any>[] = [];
+  if (typeof content === "string") {
+    const block = anthropicTextBlock(content, undefined, marks);
+    if (block) blocks.push(block);
+  } else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part.type !== "text") continue;
+      const block = anthropicTextBlock(part.text, part.cacheControl, marks);
+      if (block) blocks.push(block);
+    }
+  }
+  return blocks;
+}
+
+function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * `tool_result.content`: the text itself, or blocks when the result is made of
+ * parts (text, images, documents). Never empty: an empty text block is a 400, so
+ * a result with no output says so. Anything that is not text or parts (a JSON
+ * value a host passed through) goes out as its JSON text.
+ */
+function toolResultContent(content: unknown, marks: Set<object>): string | Record<string, any>[] {
+  if (typeof content === "string") return content.trim() ? content : EMPTY_TOOL_RESULT_TEXT;
+  if (Array.isArray(content) && content.length === 0) return EMPTY_TOOL_RESULT_TEXT;
+  const list: unknown[] = Array.isArray(content) ? content : [content];
+  if (list.every(isContentPart)) {
+    const blocks: Record<string, any>[] = [];
+    for (const part of list as ContentPart[]) {
+      const block = anthropicPart(part, marks);
+      if (block) blocks.push(block);
+    }
+    return blocks.length > 0 ? blocks : EMPTY_TOOL_RESULT_TEXT;
+  }
+  const json = content == null ? "" : stringifyJson(content);
+  return json.trim() ? json : EMPTY_TOOL_RESULT_TEXT;
+}
+
+// ── Cache breakpoints ───────────────────────────────────────────────────────
+
+/** Where a `cache_control` came from: the caller's raw JSON (`extra`), a `cacheControl` text part, or the SDK's own strategy. */
+type CacheOrigin = "raw" | "part" | "sdk";
+
+type CacheHolder = { node: Record<string, any>; origin: CacheOrigin };
+
+/**
+ * The blocks of a built body that carry a `cache_control`, in the order the API reads
+ * them: tools, system, messages (a tool result's own content included), then the
+ * top-level field, which lands on the last cacheable block of the request.
+ */
+function cacheHolders(body: Record<string, any>, part: Set<object>, sdk: Set<object>): CacheHolder[] {
+  const found: CacheHolder[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    const marker = (node as Record<string, any>).cache_control;
+    if (marker == null) return;
+    found.push({ node: node as Record<string, any>, origin: part.has(marker) ? "part" : sdk.has(marker) ? "sdk" : "raw" });
+  };
+  if (Array.isArray(body.tools)) body.tools.forEach((tool: unknown) => visit(tool));
+  if (Array.isArray(body.system)) body.system.forEach((block: unknown) => visit(block));
+  if (Array.isArray(body.messages)) {
+    for (const message of body.messages) {
+      const content = message && typeof message === "object" ? (message as Record<string, any>).content : undefined;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        visit(block);
+        const inner = block && typeof block === "object" ? (block as Record<string, any>).content : undefined;
+        if (Array.isArray(inner)) inner.forEach((nested: unknown) => visit(nested));
+      }
+    }
+  }
+  visit(body);
+  return found;
+}
+
+/**
+ * True when the last block of the request carries a breakpoint of another lifetime than
+ * `marker`. That is where top-level automatic caching lands (the last cacheable block: a
+ * thinking block cannot hold one, so the walk back skips it), and the API answers 400
+ * when the two lifetimes differ (the same one is a no-op). A tool result counts when it,
+ * or its last nested block, carries one. A message whose content is a plain string has
+ * no block.
+ */
+function tailClashes(body: Record<string, any>, marker: Record<string, any>): boolean {
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
+  const content = last && typeof last === "object" ? (last as Record<string, any>).content : undefined;
+  if (!Array.isArray(content)) return false;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const block = content[i];
+    if (!block || typeof block !== "object" || block.type === "thinking" || block.type === "redacted_thinking") continue;
+    let tail = block.cache_control;
+    if (tail == null) {
+      const inner = Array.isArray(block.content) ? block.content : undefined;
+      const innerLast = inner && inner.length > 0 ? inner[inner.length - 1] : undefined;
+      tail = innerLast && typeof innerLast === "object" ? innerLast.cache_control : undefined;
+    }
+    // Only "1h" is a longer lifetime; anything else is the 5-minute default.
+    return tail != null && (tail.ttl === "1h") !== (marker.ttl === "1h");
+  }
+  return false;
 }
 
 function safeJsonParse(str: string): any {

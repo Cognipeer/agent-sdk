@@ -149,9 +149,10 @@ describe("explicit caller values win", () => {
     expect(run(FLASH3, { thinkingLevel: "minimal" }).thinkingConfig).toEqual({ thinkingLevel: "minimal" });
   });
 
-  it("an explicit budgetTokens is sent as a budget (and only that) on Gemini 3", () => {
-    expect(run(PRO3, { effort: "high", budgetTokens: 4000 }).thinkingConfig).toEqual({ thinkingBudget: 4000 });
-    expect(run(FLASH3, { budgetTokens: 2000.7 }).thinkingConfig).toEqual({ thinkingBudget: 2000 });
+  // R6 (deliberate change): on a level model a numeric budget picks the nearest level; no thinkingBudget is sent.
+  it("an explicit budgetTokens picks a level (never a budget) on Gemini 3", () => {
+    expect(run(PRO3, { effort: "high", budgetTokens: 4000 }).thinkingConfig).toEqual({ thinkingLevel: "low" });
+    expect(run(FLASH3, { budgetTokens: 2000.7 }).thinkingConfig).toEqual({ thinkingLevel: "medium" });
   });
 
   it("providerExtras.thinkingBudget replaces the derived level on Gemini 3", () => {
@@ -239,7 +240,8 @@ describe("maxOutputTokens headroom", () => {
     expect(run(FLASH3, { thinkingLevel: "high" }, { maxOutputTokens: 100 }).maxOutputTokens).toBe(100);
   });
 
-  it("an explicit budget on Gemini 3 is still a budget and gets headroom", () => {
-    expect(run(PRO3, { budgetTokens: 4000 }, { maxOutputTokens: 1000 }).maxOutputTokens).toBe(6048);
+  // R6 (deliberate change): a budget on a level model becomes a level, so no headroom is added.
+  it("a budget on Gemini 3 becomes a level and adds no headroom", () => {
+    expect(run(PRO3, { budgetTokens: 4000 }, { maxOutputTokens: 1000 }).maxOutputTokens).toBe(1000);
   });
 });

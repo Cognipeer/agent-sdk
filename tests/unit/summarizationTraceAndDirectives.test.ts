@@ -206,12 +206,13 @@ describe('summarization × trace', () => {
     expect(typeof seen[0].call.durationMs).toBe('number');
   });
 
-  it('names the summarizer run for a LangChain model, and passes nothing to any other model', async () => {
+  it('names the summarizer run for a LangChain model, and gives any other model the call own options', async () => {
     const lc = await run({ userMessages: ['Fetch a, b and c.'], summary: {}, modelExtra: { _lc: {} } });
     expect(lc.summaryInvokeOptions[0]).toMatchObject({ runName: 'summarize_context', tags: ['cognipeer:summarization'] });
 
     const plain = await run({ userMessages: ['Fetch a, b and c.'], summary: {} });
-    expect(plain.summaryInvokeOptions[0]).toBeUndefined();
+    // Deliberate change: a non-LangChain model gets the output cap, reasoning effort and purpose.
+    expect(plain.summaryInvokeOptions[0]).toEqual({ maxTokens: 8192, reasoning: { effort: 'none' }, purpose: 'summarization' });
   });
 });
 

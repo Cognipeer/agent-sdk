@@ -44,7 +44,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -59,7 +58,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -140,7 +138,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -155,7 +152,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -236,7 +232,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -251,7 +246,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -412,7 +406,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -427,7 +420,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -508,7 +500,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -523,7 +514,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -684,7 +674,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -699,7 +688,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -780,7 +768,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -795,7 +782,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -876,7 +862,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -891,7 +876,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -972,7 +956,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -987,7 +970,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1068,7 +1050,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1083,7 +1064,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1164,7 +1144,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1179,7 +1158,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1260,7 +1238,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1275,7 +1252,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1315,7 +1291,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / everything / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-4o","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"max_output_tokens":64,"top_p":0.9,"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}],"tool_choice":{"type":"function","name":"lookup"},"text":{"format":{"type":"json_schema","name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
+    "payload": "{"model":"gpt-4o","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"max_output_tokens":64,"temperature":0.2,"top_p":0.9,"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}],"tool_choice":{"type":"function","name":"lookup"},"text":{"format":{"type":"json_schema","name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1353,7 +1329,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / everything / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-4o","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"max_output_tokens":64,"top_p":0.9,"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}],"tool_choice":{"type":"function","name":"lookup"},"text":{"format":{"type":"json_schema","name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
+    "payload": "{"model":"gpt-4o","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"max_output_tokens":64,"temperature":0.2,"top_p":0.9,"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]},"strict":true}],"tool_choice":{"type":"function","name":"lookup"},"text":{"format":{"type":"json_schema","name":"out","schema":{"type":"object"},"strict":true}},"reasoning_effort":"low","parallel_tool_calls":false}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1395,7 +1371,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt5NoReasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium"}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium","include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1433,7 +1409,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt5NoReasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium"}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium","include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1475,7 +1451,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt6NoReasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium"}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium","include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1513,7 +1489,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt6NoReasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium"}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning_effort":"medium","include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1555,7 +1531,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt6Reasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1593,7 +1569,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / gpt6Reasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1795,7 +1771,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1833,7 +1809,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAlways / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -1916,7 +1892,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -1931,7 +1906,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2012,7 +1986,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2027,7 +2000,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2108,7 +2080,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2123,7 +2094,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2163,7 +2133,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -2201,7 +2171,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / gpt6Reasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -2284,7 +2254,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2299,7 +2268,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2380,7 +2348,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2395,7 +2362,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2435,7 +2401,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -2473,7 +2439,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAuto / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -2556,7 +2522,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2571,7 +2536,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2652,7 +2616,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2667,7 +2630,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2748,7 +2710,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2763,7 +2724,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2803,7 +2763,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / gpt6Reasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://res.openai.azure.com/openai/v1/responses",
   },
 ]
@@ -2841,7 +2801,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / gpt6Reasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://res.openai.azure.com/openai/v1/responses",
   },
 ]
@@ -2924,7 +2884,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -2939,7 +2898,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3020,7 +2978,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3035,7 +2992,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3075,7 +3031,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://res.openai.azure.com/openai/v1/responses",
   },
 ]
@@ -3113,7 +3069,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiAzureV1 / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://res.openai.azure.com/openai/v1/responses",
   },
 ]
@@ -3196,7 +3152,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3211,7 +3166,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3292,7 +3246,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3307,7 +3260,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3388,7 +3340,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3403,7 +3354,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3443,7 +3393,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / gpt6Reasoning / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -3481,7 +3431,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / gpt6Reasoning / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"}}",
+    "payload": "{"model":"gpt-6.1-sol","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -3564,7 +3514,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3579,7 +3528,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3660,7 +3608,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3675,7 +3622,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3715,7 +3661,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / reasoningOnGpt5 / complete > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -3753,7 +3699,7 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
 exports[`OpenAI-shaped providers: wire traffic for configs without the new options > openaiDefault / reasoningOnGpt5 / stream > http 1`] = `
 [
   {
-    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"}}",
+    "payload": "{"model":"gpt-5.6-terra","input":[{"role":"system","content":[{"type":"input_text","text":"Be brief."}]},{"role":"user","content":[{"type":"input_text","text":"Find 1"}]},{"type":"function_call","call_id":"call_0","name":"lookup","arguments":"{\\"q\\":1}"},{"type":"function_call_output","call_id":"call_0","output":"found"},{"role":"user","content":[{"type":"input_text","text":"and now?"}]}],"tools":[{"type":"function","name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"number"}},"required":["q"]}}],"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"]}",
     "url": "https://api.openai.com/v1/responses",
   },
 ]
@@ -3836,7 +3782,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3851,7 +3796,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3932,7 +3876,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -3947,7 +3890,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4028,7 +3970,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4043,7 +3984,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4124,7 +4064,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4139,7 +4078,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4220,7 +4158,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4235,7 +4172,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4316,7 +4252,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4331,7 +4266,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4412,7 +4346,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
     "delta": {
       "content": "He",
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },
@@ -4427,7 +4360,6 @@ exports[`OpenAI-shaped providers: wire traffic for configs without the new optio
         },
       ],
     },
-    "finishReason": "stop",
     "id": "c1",
     "model": "m",
   },

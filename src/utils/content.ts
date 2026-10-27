@@ -280,6 +280,19 @@ function isTextPart(part: unknown): part is { type: "text"; text: string } {
 }
 
 /**
+ * The prompt-cache breakpoint on a content part, in the unified shape
+ * (`{ type: "ephemeral", ttl? }`), or undefined. Reads the unified `cacheControl`
+ * and `cache_control`, the spelling Anthropic-style messages use. Anything but an
+ * ephemeral marker is not one a provider can send, so it is not carried.
+ */
+export function cacheControlOf(part: unknown): { type: "ephemeral"; ttl?: "5m" | "1h" } | undefined {
+  if (!isRecord(part)) return undefined;
+  const raw = part.cacheControl ?? part.cache_control;
+  if (!isRecord(raw) || raw.type !== "ephemeral") return undefined;
+  return raw.ttl === "5m" || raw.ttl === "1h" ? { type: "ephemeral", ttl: raw.ttl } : { type: "ephemeral" };
+}
+
+/**
  * Rewrite the text of a message's content, leaving every other part exactly as
  * it was — same objects, same order.
  *
@@ -305,6 +318,9 @@ export function mapTextParts(
  * and the rest are dropped — media parts keep their positions either way. A
  * plugin that needs exact multi-part fidelity should return `content` instead,
  * which is why that field exists.
+ *
+ * A prompt-cache breakpoint is not lost with a merged-away part: when the first
+ * text part carries none, it takes the last one the dropped parts carried.
  */
 export function replaceTextContent(
   content: string | ContentPart[] | unknown,
@@ -324,8 +340,13 @@ export function replaceTextContent(
 
   const [first, ...rest] = textIndexes;
   const dropped = new Set(rest);
+  const inherited = cacheControlOf(content[first])
+    ? undefined
+    : rest.reduce<ReturnType<typeof cacheControlOf>>((found, index) => cacheControlOf(content[index]) ?? found, undefined);
   return content
-    .map((part, index) => (index === first ? { ...(part as object), text } : part))
+    .map((part, index) =>
+      index === first ? { ...(part as object), text, ...(inherited ? { cacheControl: inherited } : {}) } : part,
+    )
     .filter((_part, index) => !dropped.has(index)) as ContentPart[];
 }
 

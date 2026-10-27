@@ -311,7 +311,8 @@
           "xhigh",
           "max"
         ],
-        "off": "disabled"
+        "off": "disabled",
+        "defaultOn": true
       },
       "sampling": {
         "temperature": "unsupported",
@@ -325,7 +326,7 @@
         "reasoning": "any"
       },
       "source": "verified-2026-10-14",
-      "note": "Claude Haiku 5.x: thinking:{type:adaptive} + output_config.effort; thinking:{type:enabled,budget_tokens} is rejected. Off = thinking:{type:disabled}. Sampling params are rejected."
+      "note": "Claude Haiku 5.x: thinking:{type:adaptive} + output_config.effort; thinking:{type:enabled,budget_tokens} is rejected. Off = thinking:{type:disabled}. Sampling params are rejected. Thinks by default with display omitted (empty text): includeThoughts alone sends adaptive + display summarized."
     },
     {
       "id": "claude-sonnet-5",
@@ -340,7 +341,8 @@
           "xhigh",
           "max"
         ],
-        "off": "between_tools"
+        "off": "between_tools",
+        "defaultOn": true
       },
       "sampling": {
         "temperature": "unsupported",
@@ -354,7 +356,7 @@
         "reasoning": "any"
       },
       "source": "verified-2026-10-14",
-      "note": "Claude Sonnet 5.x: adaptive + output_config.effort. thinking:{type:disabled} is rejected; off = thinking:{type:between_tools}. Sampling params are rejected."
+      "note": "Claude Sonnet 5.x: adaptive + output_config.effort. thinking:{type:disabled} is rejected; off = thinking:{type:between_tools}. Sampling params are rejected. Thinks by default with display omitted (empty text): includeThoughts alone sends adaptive + display summarized."
     },
     {
       "id": "claude-opus-5",
@@ -369,7 +371,8 @@
           "xhigh",
           "max"
         ],
-        "off": null
+        "off": null,
+        "defaultOn": true
       },
       "sampling": {
         "temperature": "unsupported",
@@ -383,12 +386,12 @@
         "reasoning": "any"
       },
       "source": "verified-2026-10-14",
-      "note": "Claude Opus 5.x: adaptive + output_config.effort; thinking cannot be turned off (none maps to the lowest effort). Sampling params are rejected."
+      "note": "Claude Opus 5.x: adaptive + output_config.effort; thinking cannot be turned off (none maps to the lowest effort). Sampling params are rejected. Thinks by default with display omitted (empty text): includeThoughts alone sends adaptive + display summarized."
     },
     {
       "id": "claude-fable",
       "family": "anthropic",
-      "match": "^claude-fable",
+      "match": "^claude-(?:fable|mythos-5)",
       "reasoning": {
         "style": "adaptive",
         "efforts": [
@@ -398,7 +401,8 @@
           "xhigh",
           "max"
         ],
-        "off": null
+        "off": null,
+        "defaultOn": true
       },
       "sampling": {
         "temperature": "unsupported",
@@ -412,7 +416,37 @@
         "reasoning": "any"
       },
       "source": "docs",
-      "note": "Claude Fable line: treated like the 5.x adaptive models."
+      "note": "Claude Fable and Mythos 5 lines (5, 5.1): thinking is always on (disabled and budget_tokens are 400s), so treated like the 5.x adaptive models: effort low..max, sampling params rejected, display omitted by default (includeThoughts alone sends adaptive + display summarized)."
+    },
+    {
+      "id": "claude-mythos-preview",
+      "family": "anthropic",
+      "match": "^claude-mythos-preview",
+      "reasoning": {
+        "style": "budget",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "thinking-requires-1",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Claude Mythos Preview: the one 4.7+ model that still takes extended thinking (budget_tokens). Thinking cannot be disabled (type disabled is a 400) and defaults to adaptive when a request says nothing, so effort none sends no thinking field at all."
     },
     {
       "id": "claude-4-7",
@@ -691,6 +725,33 @@
       },
       "source": "docs",
       "note": "Gemini 3 Flash / Flash-Lite and other gemini-3 models accept thinkingLevel minimal, low, medium or high. thinkingLevel replaces thinkingBudget (a request with both is a 400); thinking cannot be switched off, so effort none maps to the lowest level the model accepts."
+    },
+    {
+      "id": "gemini-4-level",
+      "family": "gemini",
+      "match": "^gemini-[4-9]",
+      "reasoning": {
+        "style": "level",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "off": null
+      },
+      "sampling": {
+        "temperature": "any",
+        "topP": true,
+        "topK": true,
+        "penalties": true,
+        "logprobs": true
+      },
+      "maxTokensParam": "max_tokens",
+      "chatTools": {
+        "reasoning": "any"
+      },
+      "source": "docs",
+      "note": "Gemini 4 and later accept thinkingLevel low, medium or high; MINIMAL is not supported on Gemini 4 models. Setting thinkingBudget on Gemini 4 returns a 400 INVALID_ARGUMENT, so no budget is ever derived (a numeric budgetTokens picks the nearest level; only an explicit providerExtras.thinkingBudget sends one); thinking cannot be switched off, so effort none maps to the lowest level."
     },
     {
       "id": "gemini-2.5-pro",

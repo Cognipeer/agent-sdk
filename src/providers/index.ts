@@ -53,6 +53,8 @@ export { AzureProvider } from "./azure.js";
 export { OpenAICompatibleProvider } from "./openaiCompatible.js";
 export { BedrockProvider } from "./bedrock.js";
 export { VertexProvider } from "./vertex.js";
+// Claude models on Vertex: `VertexProvider` delegates to this for Claude ids.
+export { VertexAnthropicProvider, vertexClaudeModelId, type VertexClaudeOptions } from "./vertexAnthropic.js";
 export { JevProvider, JEV_DEFAULT_BASE_URL } from "./jev.js";
 export type { JevQuestion, JevSystemOneRequest, JevSystemOneResult } from "./jev.js";
 

@@ -57,8 +57,11 @@ function markLastText(m: UnifiedMessage, mark: CacheControl): UnifiedMessage | u
 /**
  * Adds the provider's own cache markers to a copy of `messages`: the end of the
  * leading system prompt (`static` and `auto`) and, for `auto`, the last text
- * part of the last user or tool message. At most {@link MAX_CACHE_MARKERS}
- * markers in total, the caller's own included; the caller's are never removed.
+ * part of the last USER message (OpenRouter and LiteLLM document `cache_control`
+ * on system and user text parts only, so a tool result at the tail is never
+ * marked; the marker then stays on the user turn that opened the tool loop).
+ * At most {@link MAX_CACHE_MARKERS} markers in total, the caller's own included;
+ * the caller's are never removed.
  */
 export function applyCacheMarkers(
   messages: UnifiedMessage[],
@@ -82,7 +85,7 @@ export function applyCacheMarkers(
 
   if (caching.strategy === "auto" && room > 0) {
     for (let i = out.length - 1; i >= 0; i--) {
-      if (out[i].role !== "user" && out[i].role !== "tool") continue;
+      if (out[i].role !== "user") continue;
       const marked = markLastText(out[i], mark);
       if (marked) out[i] = marked;
       break;

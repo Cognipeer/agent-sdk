@@ -187,7 +187,7 @@ describe("Anthropic stop reason and default max_tokens", () => {
 });
 
 describe("Bedrock Converse prompt caching strategy", () => {
-  const CLAUDE = "anthropic.claude-sonnet-4-20250514-v1:0";
+  const CLAUDE = "anthropic.claude-sonnet-4-5-20250929-v1:0";
   const CP = { cachePoint: { type: "default" } };
   const CP_1H = { cachePoint: { type: "default", ttl: "1h" } };
 

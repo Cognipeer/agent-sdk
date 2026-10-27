@@ -489,14 +489,22 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
     // The node books the summarizer's own spend on the state it is given. It was
     // given a copy, so hand that bookkeeping back to the state the driver keeps.
     if ((nodeState as any).usage !== (currentState as any).usage) (currentState as any).usage = (nodeState as any).usage;
-    if (!delta || Object.keys(delta).length === 0) {
+    // A skipped pass may still hand back trace events held for the next leg, on ctx alone.
+    const skippedWithHeldTrace = Boolean(delta)
+      && Object.keys(delta).length === 1
+      && Boolean((delta as any).ctx?.[DEFERRED_TRACE_EVENTS_KEY])
+      && (delta as any).ctx[LAST_SUMMARIZATION_CALL_KEY] === undefined;
+    if (!delta || Object.keys(delta).length === 0 || skippedWithHeldTrace) {
       // Stamp the tool-history size: the summarizer could not reclaim anything at
       // THIS point, which is not the same as never. A pass deferred because the
       // only compressable messages were the model's live working set must not
       // disable summarization for the rest of the run — new tool output is what
       // creates new compressable material, so that is what re-arms it.
+      // The skipped node may hand back trace events held for the next leg on ctx.
+      const heldTrace = (delta as any)?.ctx?.[DEFERRED_TRACE_EVENTS_KEY];
       const ctx = {
         ...(currentState.ctx || {}),
+        ...(heldTrace ? { [DEFERRED_TRACE_EVENTS_KEY]: heldTrace } : {}),
         __summarizationExhausted: true,
         __summarizationExhaustedAtToolCount: (currentState.toolHistory || []).length,
       };

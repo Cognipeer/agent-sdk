@@ -82,7 +82,8 @@ describe("OpenAI-compatible prompt caching", () => {
     expect(countCC(body)).toBe(2);
   });
 
-  it("auto: a tool result at the tail is the last marked message; earlier text parts of it stay clean", async () => {
+  // Deliberate change: the auto tail marker goes on the last USER message only; a tool result stays clean.
+  it("auto: a tool result at the tail is left clean; the marker stays on the user turn that opened the loop", async () => {
     const messages: UnifiedMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: "look it up" },
@@ -90,10 +91,10 @@ describe("OpenAI-compatible prompt caching", () => {
       { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "part one" }, { type: "text", text: "part two" }] },
     ];
     const body = await compatBody(messages, { prompt_caching: { enabled: true } });
-    expect(body.messages[1].content).toBe("look it up");
+    expect(body.messages[1].content).toEqual([{ type: "text", text: "look it up", cache_control: EPH }]);
     expect(body.messages[3].content).toEqual([
       { type: "text", text: "part one" },
-      { type: "text", text: "part two", cache_control: EPH },
+      { type: "text", text: "part two" },
     ]);
     expect(body.messages[3].tool_call_id).toBe("c1");
   });

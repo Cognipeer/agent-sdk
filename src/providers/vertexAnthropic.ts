@@ -5,10 +5,12 @@
 // handling, finish-reason mapping and SSE stream parsing are inherited. What
 // changes is the URL (`publishers/anthropic/models/{model}:rawPredict`, or
 // `:streamRawPredict`), the auth (a Google bearer token) and the body (no `model`,
-// `anthropic_version` instead). `VertexProvider` delegates to this for Claude ids.
+// `anthropic_version` instead, and no URL sources: Vertex takes base64 data only, so a
+// body that has one is refused before anything is sent). `VertexProvider` delegates to
+// this for Claude ids.
 
 import { AnthropicProvider } from "./anthropic.js";
-import type { PromptCachingConfig, ProviderRetryConfig, ProviderType, TokenUsage } from "./types.js";
+import { type PromptCachingConfig, type ProviderRetryConfig, type ProviderType, type TokenUsage, ProviderError } from "./types.js";
 import type { ModelRuleLearnedEvent } from "../models/adjust.js";
 
 /** The only `anthropic_version` a rawPredict body carries by default. */
@@ -53,6 +55,29 @@ export function vertexClaudeHost(location: string): string {
   if (location === "global") return "aiplatform.googleapis.com";
   if (location === "us" || location === "eu") return `aiplatform.${location}.rep.googleapis.com`;
   return `${location}-aiplatform.googleapis.com`;
+}
+
+/**
+ * Where a built Messages body carries a URL source: an `image` or `document` block whose
+ * `source` is `{ type: "url" }`, in a message or inside a tool result's own content.
+ * Reported as `messages[i].content[j]` paths (never the URL: it may carry a signature).
+ */
+function urlSources(body: Record<string, any>): Array<{ path: string; type: string }> {
+  const found: Array<{ path: string; type: string }> = [];
+  const visit = (block: unknown, path: string): void => {
+    if (!block || typeof block !== "object") return;
+    const b = block as Record<string, any>;
+    if ((b.type === "image" || b.type === "document") && b.source?.type === "url") found.push({ path, type: b.type });
+    if (b.type === "tool_result" && Array.isArray(b.content)) {
+      b.content.forEach((inner: unknown, k: number) => visit(inner, `${path}.content[${k}]`));
+    }
+  };
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  messages.forEach((message, i) => {
+    const content = message && typeof message === "object" ? (message as Record<string, any>).content : undefined;
+    if (Array.isArray(content)) content.forEach((block: unknown, j: number) => visit(block, `messages[${i}].content[${j}]`));
+  });
+  return found;
 }
 
 export type VertexAnthropicConfig = VertexClaudeOptions & {
@@ -109,6 +134,21 @@ export class VertexAnthropicProvider extends AnthropicProvider {
   }
 
   protected override wireBody(body: Record<string, any>): Record<string, any> {
+    // Claude on Vertex takes image and document data inline only: URL sources (and the
+    // Files API) are not supported there, and the API would answer a 400 for the whole
+    // request. It is refused here with the fix in the message instead, as a 400 that is
+    // not retried. The SDK does not fetch the URL itself: downloading a caller-supplied
+    // URL from the host's network is a server-side request the host has to decide on.
+    const urls = urlSources(body);
+    if (urls.length > 0) {
+      const [first, ...others] = urls;
+      const where = `${first.path} (${first.type})${others.length > 0 ? ` and ${others.length} more` : ""}`;
+      throw new ProviderError(
+        `Claude on Vertex AI does not accept URL sources for images or documents, but ${where} has one. Send the content as base64 data instead (a base64 image or file part); the SDK does not download URLs.`,
+        this.providerName,
+        400,
+      );
+    }
     // The model is named by the URL. A caller's own `anthropic_version` (from `extra`) wins.
     const { model: _model, ...rest } = body;
     return { anthropic_version: VERTEX_ANTHROPIC_VERSION, ...rest };

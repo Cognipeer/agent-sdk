@@ -206,7 +206,7 @@ describe("Vertex gcloud fallback", () => {
     return cp.execFile as ReturnType<typeof vi.fn>;
   };
 
-  it("runs gcloud through execFile (no shell, 10 s timeout) and caches the token on the instance", async () => {
+  it("runs gcloud through execFile (no shell, 30 s default timeout) and caches the token on the instance", async () => {
     const execFile = await execMock();
     execFile.mockReset();
     execFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: (e: any, out?: string, err?: string) => void) => {
@@ -221,7 +221,7 @@ describe("Vertex gcloud fallback", () => {
     const [cmd, args, opts] = execFile.mock.calls[0];
     expect(cmd).toBe("gcloud");
     expect(args).toEqual(["auth", "print-access-token"]);
-    expect(opts.timeout).toBe(10_000);
+    expect(opts.timeout).toBe(30_000); // R12: default raised from 10 s, configurable
     expect(opts.shell).toBe(process.platform === "win32");
     expect(f.calls.map((c) => c.headers.Authorization)).toEqual(["Bearer gcloud-tok", "Bearer gcloud-tok"]);
   });
@@ -323,8 +323,9 @@ describe("sanitizeGeminiSchema", () => {
 
   it("maps const to a one-value enum and stringifies enum values", () => {
     expect(sanitizeGeminiSchema({ type: "string", const: "fixed" })).toEqual({ type: "string", enum: ["fixed"] });
-    expect(sanitizeGeminiSchema({ type: "integer", const: 5 })).toEqual({ type: "integer", enum: ["5"] });
-    expect(sanitizeGeminiSchema({ type: "integer", enum: [1, 2, 3] })).toEqual({ type: "integer", enum: ["1", "2", "3"] });
+    // R1 (deliberate change): an enum on a numeric node also carries format "enum".
+    expect(sanitizeGeminiSchema({ type: "integer", const: 5 })).toEqual({ type: "integer", enum: ["5"], format: "enum" });
+    expect(sanitizeGeminiSchema({ type: "integer", enum: [1, 2, 3] })).toEqual({ type: "integer", enum: ["1", "2", "3"], format: "enum" });
     // An enum next to a const: the enum is the narrower statement of the two sources, const is not added.
     expect(sanitizeGeminiSchema({ type: "string", enum: ["a", "b"], const: "a" })).toEqual({ type: "string", enum: ["a", "b"] });
   });

@@ -11,7 +11,9 @@ export type ImageURL =
   | string;
 
 export type ContentPart =
-  | { type: 'text'; text: string }
+  // `cacheControl` is a prompt-cache breakpoint on the text; a native provider that
+  // supports caching sends it, the others ignore it.
+  | { type: 'text'; text: string; cacheControl?: { type: 'ephemeral'; ttl?: '5m' | '1h' } }
   | { type: 'image_url'; image_url: ImageURL }
   | { type: string; [key: string]: any };
 
@@ -578,6 +580,19 @@ export type SmartAgentSummarizationConfig = {
    * rendered to every later turn as "still in force — follow them".
    */
   groundDirectives?: boolean;
+  /**
+   * Output-token cap of the summarizer call (default 8192; `0` sends no cap). The
+   * summary is a bounded JSON document; a cap far below it cuts the reply off and
+   * the pass is skipped (see `status: "fallback"`), while no cap leaves the provider
+   * default, which on some providers is a few hundred tokens.
+   */
+  outputMaxTokens?: number;
+  /**
+   * Reasoning effort of the summarizer call (default `"none"`). Summarizing is
+   * compression, not problem solving, and reasoning tokens spend the same output
+   * budget as the summary itself. Set a level to let a reasoning model think first.
+   */
+  reasoningEffort?: NonNullable<NativeReasoningConfig["effort"]>;
 };
 
 export type SmartAgentBudgetConfig = {
@@ -691,7 +706,9 @@ export type SmartAgentCustomProfileConfig = {
 
 export type ProfileConfig = {
   limits: Required<AgentLimits>;
-  summarization: Required<SmartAgentSummarizationConfig>;
+  // `outputMaxTokens` / `reasoningEffort` stay optional here: the summarizer applies their defaults.
+  summarization: Required<Omit<SmartAgentSummarizationConfig, "outputMaxTokens" | "reasoningEffort">> &
+    Pick<SmartAgentSummarizationConfig, "outputMaxTokens" | "reasoningEffort">;
   context: Required<SmartAgentContextConfig> & { budget: Required<SmartAgentBudgetConfig> };
   planning: Required<SmartAgentPlanningConfig>;
   memory: Required<Omit<SmartAgentMemoryConfig, "store">> & { store?: MemoryStore };
@@ -1472,8 +1489,11 @@ export type SummarizationEvent = {
   trigger?: "pre_leg" | "mid_leg" | "post_tools";
   /**
    * `ok`; `fallback` when the summarizer failed and a deterministic fallback
-   * summary was used; `error` when the pass itself failed unexpectedly (not the
-   * model call) and ended `skipped` just before the failure was rethrown.
+   * summary was used, or, on a `skipped` pass, when its reply was unusable (cut off
+   * at its output limit, empty, JSON with no summary in it): nothing was replaced and
+   * the previous summary stays the latest; `error` when the pass itself failed
+   * unexpectedly (not the model call) and ended `skipped` just before the failure was
+   * rethrown.
    */
   status?: "ok" | "fallback" | "error";
   /**

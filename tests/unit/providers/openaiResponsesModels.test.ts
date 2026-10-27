@@ -419,6 +419,8 @@ describe("responsesStreaming on a listed model", () => {
         { type: "response.output_item.added", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: "" } },
         { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{\"q\":" },
         { type: "response.output_item.done", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: "{\"q\":5}" } },
+        // A stream must now end with its terminal event (a body that stops short is an error).
+        { type: "response.completed", response: { id: "r", status: "completed", output: [] } },
       ]),
     }]);
     const chunks = await collect(streamingProvider().completeStream({ model: "gpt-6.1-sol", messages: history, tools }));
