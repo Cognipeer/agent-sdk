@@ -1,3 +1,5 @@
+import { isSyntheticSummaryMessage } from "./syntheticMessages.js";
+
 /**
  * Selects the tool_calls that still need to be executed for the current turn.
  *
@@ -42,4 +44,46 @@ export function selectPendingToolCalls(messages: Array<any> | undefined): any[] 
     return calls.filter((c: any) => c?.id == null || !resolvedIds.has(String(c.id)));
   }
   return [];
+}
+
+/**
+ * True when the transcript ends inside a tool exchange that is not finished: the
+ * last assistant turn still has tool_calls with no result after it. That is a
+ * run paused for an approval, a question or a paused sub-agent, or a resume about
+ * to run the approved call. Appending any other turn here buries those calls
+ * (see `selectPendingToolCalls`), so the summarizer must not run at this point.
+ *
+ * A newer user turn moves past such calls, so it ends the exchange.
+ */
+export function hasUnresolvedToolCalls(messages: Array<any> | undefined): boolean {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  const role = messages[messages.length - 1]?.role;
+  if (role !== "assistant" && role !== "tool") return false;
+  return selectPendingToolCalls(messages).length > 0;
+}
+
+/**
+ * Repairs a transcript in which summarize_context exchanges were appended after
+ * a turn whose tool_calls are still open (what 0.22 and earlier stored when a run
+ * paused for a human over the summarization threshold). Those trailing exchanges
+ * are moved in front of the open turn, so the turn and its results are last
+ * again: the pending calls are found, and their results land directly after the
+ * calls, which is the order providers require.
+ *
+ * Returns the input array unchanged when there is nothing to repair.
+ */
+export function unburyPendingToolCalls<T = any>(messages: T[]): T[] {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  let start = messages.length;
+  while (start > 0 && isSyntheticSummaryMessage(messages[start - 1])) start -= 1;
+  if (start === messages.length || start === 0) return messages;
+
+  const body = messages.slice(0, start);
+  if (!hasUnresolvedToolCalls(body)) return messages;
+
+  let owner = body.length - 1;
+  while (owner >= 0 && (body[owner] as any)?.role !== "assistant") owner -= 1;
+  if (owner < 0) return messages;
+
+  return [...body.slice(0, owner), ...messages.slice(start), ...body.slice(owner)];
 }

@@ -17,7 +17,7 @@ import { readMemoryFacts, resolveMemoryStore, writeSummaryFactsToMemory } from "
 import { StructuredOutputManager } from "../structuredOutput/manager.js";
 import { resolveStrategy, getModelCapabilities } from "../structuredOutput/resolver.js";
 import { extractMessageText } from "../utils/content.js";
-import { selectPendingToolCalls } from "../utils/pendingToolCalls.js";
+import { hasUnresolvedToolCalls, selectPendingToolCalls, unburyPendingToolCalls } from "../utils/pendingToolCalls.js";
 import { createSkillRegistryRef, DEFAULT_SKILL_POLICY, type Skill, type SkillPolicy } from "./skills/types.js";
 import { createSkillTools } from "./skills/skillTools.js";
 import { preopenSkills } from "./skills/preopen.js";
@@ -454,6 +454,23 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
   ): Promise<{ state: SmartState; rawMessages: any[]; compressed: boolean }> {
     if (!summarizer) return { state: currentState, rawMessages: currentRawMessages, compressed: false };
 
+    // Not while the transcript ends inside an unfinished tool exchange: a leg
+    // that paused for an approval or a question (post_tools), or a resume about
+    // to run the approved call (pre_leg). The pass appends its summarize_context
+    // turn after the turn that owns the open calls, which buries them: the
+    // resume then finds nothing pending, the approved tool never runs, and the
+    // run dies as "a pending tool response but no subsequent model invocation".
+    // Stamped like an empty pass, so a mid_leg bounce cannot spin; the next tool
+    // result re-arms it, and the pass then runs with the exchange finished.
+    if (hasUnresolvedToolCalls(currentRawMessages)) {
+      const ctx = {
+        ...(currentState.ctx || {}),
+        __summarizationExhausted: true,
+        __summarizationExhaustedAtToolCount: (currentState.toolHistory || []).length,
+      };
+      return { state: { ...currentState, ctx } as SmartState, rawMessages: currentRawMessages, compressed: false };
+    }
+
     // Read from ctx rather than a closure: this helper runs per compaction pass
     // and the host is per-invoke, so binding it at factory time would share one
     // host across concurrent invokes of the same agent.
@@ -762,13 +779,18 @@ export function createSmartAgent<TOutput = unknown>(opts: SmartAgentOptions & { 
       }
       const disclosureBlock = [skillBlock, subagentBlock].filter(Boolean).join("\n\n") || undefined;
 
+      // A transcript stored by 0.22 or earlier may carry a summarize_context
+      // exchange after a turn whose calls are still open (a pass that ran while
+      // the run waited for a human). Put the open turn last again, or the
+      // approval resume finds nothing pending.
+      const inputMessages = unburyPendingToolCalls(input.messages || []);
       // Prepend a single system message once
-      const alreadyHasSystem = Array.isArray(input.messages) && input.messages[0]?.role === 'system';
+      const alreadyHasSystem = inputMessages[0]?.role === 'system';
       const seedMessages = alreadyHasSystem
-        ? [...(input.messages || [])]
+        ? [...inputMessages]
         : [
             systemMessage(disclosureBlock, (input as any).ctx?.__pluginSystemPromptAppend as string | undefined),
-            ...(input.messages || []),
+            ...inputMessages,
           ];
 
       // Deterministic pre-opening: skills the caller requires for this run are
