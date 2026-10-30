@@ -76,6 +76,8 @@ The base agent checks the threshold on every iteration before invoking the model
 
 This keeps the loop progressive even when retention policies temporarily lock out compaction.
 
+Compaction never runs while the transcript ends inside an unfinished tool exchange: a run paused for a tool approval, an `ask_user` question or a paused sub-agent, or a resume about to run the approved call. The pass would append its `summarize_context` turn after the turn that owns the open calls, and the resume would no longer find them. The pass is deferred (stamped like step 3) and runs once the exchange is answered. A transcript stored that way by 0.22 or earlier is put back in order when the run resumes.
+
 ## Recovery after compaction
 
 When large tool outputs are summarized and archived, the runtime keeps a recovery path through `get_tool_response`.
