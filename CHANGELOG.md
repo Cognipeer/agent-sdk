@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1] - 2026-10-30
+
+### Fixed
+- **An approved tool call no longer dies as "a pending tool response but no subsequent model invocation".** When a smart-agent run paused for a tool approval (or an `ask_user` question, or a paused sub-agent) with the context over `summaryTriggerTokens`, the driver ran its post-tools summarization pass anyway. The pass appends its `summarize_context` exchange after the assistant turn that owns the open calls, which buried them: on the resume `selectPendingToolCalls` found the synthetic summary turn fully resolved, the loop broke with zero model calls, the approved tool never ran, and the run threw. The driver now defers compaction while the transcript ends inside an unfinished tool exchange (stamped like an empty pass; the next tool result re-arms it). A transcript stored in the buried shape by 0.22.0 or earlier is repaired when the run resumes: the trailing summary exchanges move in front of the open turn, so the call runs and its result follows it directly, as providers require. New helpers in `src/utils/pendingToolCalls.ts`: `hasUnresolvedToolCalls`, `unburyPendingToolCalls`.
+
 ## [0.22.0] - 2026-10-27
 
 ### Behaviour changes
