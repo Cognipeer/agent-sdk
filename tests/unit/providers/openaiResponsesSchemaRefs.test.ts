@@ -156,7 +156,7 @@ describe("Responses text.format: a schema without $ref is sent byte-for-byte as 
   }
 });
 
-describe("Chat Completions response_format is untouched, refs and all", () => {
+describe("Chat Completions response_format: a reused sub-schema is sent with no $ref either", () => {
   const CHAT_ROUTES: Record<string, () => BaseProvider> = {
     "openai default": () => new OpenAIProvider(key),
     "openai never + listed model": () => new OpenAIProvider({ ...key, responsesApi: "never", responsesApiModels: ["gpt-6-luna"] }),
@@ -173,16 +173,16 @@ describe("Chat Completions response_format is untouched, refs and all", () => {
           stream,
         );
         expect(url).toContain("/chat/completions");
-        expect(body.response_format.json_schema.schema).toEqual(schema);
-        expect(payload).toContain(`"schema":${JSON.stringify(schema)}`);
-        expect(payload).toContain("#/definitions/structured_response/properties/goals/items");
+        expect(body.response_format.json_schema.schema).toEqual(inlineJsonSchemaRefs(schema));
+        expect(payload).not.toContain("$ref");
+        expect(payload).not.toContain("#/definitions/");
       });
     }
   }
 });
 
 describe("through the adapter, as an agent's structured output reaches the provider", () => {
-  it("inlines on /responses and leaves chat alone, from the same cached response_format", async () => {
+  it("inlines on both /responses and chat, from the same cached response_format", async () => {
     const responseFormat = strategy.buildResponseFormat(REUSED, "structured_response").response_format;
     const before = JSON.stringify(responseFormat);
 
@@ -198,7 +198,7 @@ describe("through the adapter, as an agent's structured output reaches the provi
     expect(calls[0].url).toContain("/responses");
     expect(calls[0].payload).not.toContain("$ref");
     expect(calls[1].url).toContain("/chat/completions");
-    expect(calls[1].payload).toContain('"$ref"');
+    expect(calls[1].payload).not.toContain("$ref");
     expect(JSON.stringify(responseFormat)).toBe(before);
   });
 });
