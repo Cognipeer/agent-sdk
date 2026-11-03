@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-11-03
+
 ### Fixed
 - **Structured output no longer fails with a 400 on Chat Completions when a sub-schema is reused.** `response_format.json_schema.schema` was sent with `zod-to-json-schema`'s mid-document `$ref`s (e.g. `durableFacts.items` -> `#/definitions/structured_response/properties/goals/items`), which OpenAI rejects ("reference to component ... was not found in the schema"); the compaction summary (`goals` + `durableFacts`) hit it. The `/responses` path already inlined them (0.10.5); the Chat Completions path (OpenAI, Azure, OpenAI-compatible) now does too.
 
