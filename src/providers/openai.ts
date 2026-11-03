@@ -397,7 +397,7 @@ export class OpenAIProvider extends BaseProvider {
           type: "json_schema",
           json_schema: {
             name: request.responseFormat.name ?? "response",
-            schema: request.responseFormat.schema,
+            schema: inlineJsonSchemaRefs(request.responseFormat.schema),
             strict: true,
           },
         };
