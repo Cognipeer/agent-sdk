@@ -225,7 +225,16 @@ function collectSummaryOnlyBody(body: BaseMessage[], hasSummary: boolean, lastTu
 export function buildModelMessages(state: SmartState, config: ResolvedSmartAgentConfig): BaseMessage[] {
   const rawMessages = (state.messages || []) as BaseMessage[];
   if (config.context.policy === "raw") {
-    return clampToBudget(rawMessages, config.limits.maxContextTokens);
+    // "raw" keeps the conversation as it is, but recalled memory is not part of
+    // the conversation: without this block an agent on the raw policy never saw
+    // the facts it recalled, while every other policy did.
+    const rawMemoryText = renderMemoryBlock(state.memoryFacts);
+    if (!rawMemoryText) return clampToBudget(rawMessages, config.limits.maxContextTokens);
+    const memoryMessage: BaseMessage = { role: "system", name: "memory_context", content: rawMemoryText };
+    const withMemory = rawMessages[0]?.role === "system"
+      ? [rawMessages[0], memoryMessage, ...rawMessages.slice(1)]
+      : [memoryMessage, ...rawMessages];
+    return clampToBudget(withMemory, config.limits.maxContextTokens);
   }
 
   const latestSummary = state.summaryRecords?.[state.summaryRecords.length - 1];
