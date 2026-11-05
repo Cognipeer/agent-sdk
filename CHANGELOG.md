@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Recalled memory now reaches the model on the `raw` context policy.** `buildModelMessages` returned the conversation as it was for `context.policy: "raw"` and skipped the `memory_context` block that every other policy adds, so a raw-policy agent read its memory each turn and never saw it. The block now goes right after the system prompt (or first, when there is none); the conversation is otherwise unchanged.
+
 ## [0.22.2] - 2026-11-03
 
 ### Fixed
