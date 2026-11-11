@@ -291,6 +291,8 @@ export type {
 	ProgressEvent,
 	StreamEvent,
 	CancelledEvent,
+	UserInputEvent,
+	PendingInput,
 	HandoffEvent,
 	SubagentEvent,
 	DelegationEventStamp,

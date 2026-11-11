@@ -1,5 +1,5 @@
 // A minimal agent builder: no system prompt, no summarization, with tool limit and optional structured output finalize.
-import type { AgentInvokeResult, InvokeConfig, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution, UserQuestionResolution, HumanInTheLoopAskUserConfig } from "./types.js";
+import type { AgentInvokeResult, InvokeConfig, PendingInput, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution, UserQuestionResolution, HumanInTheLoopAskUserConfig } from "./types.js";
 import { GuardrailPhase } from "./types.js";
 import { z, ZodSchema } from "zod";
 import { createResolverNode } from "./nodes/resolver.js";
@@ -454,6 +454,67 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return true;
     };
 
+    // Steering: input the host queued while this run was working. Taken only
+    // when no tool call is unanswered, so a user message never lands between a
+    // tool_call and its result. Items are consumed once returned.
+    const drainPendingInputs = config?.drainPendingInputs;
+    const takePendingInputs = async (stage: "before_model" | "after_final"): Promise<boolean> => {
+      if (typeof drainPendingInputs !== "function") return false;
+      if (selectPendingToolCalls(state.messages).length > 0) return false;
+      let items: PendingInput[] = [];
+      try {
+        const out = await drainPendingInputs();
+        items = Array.isArray(out) ? out : [];
+      } catch (err) {
+        console.warn('[agent-sdk] drainPendingInputs callback error:', err);
+        return false;
+      }
+      const taken = items.filter(
+        (item) => item && typeof item.content === "string" && item.content.trim().length > 0,
+      );
+      if (taken.length === 0) return false;
+      const appended = taken.map((item) => ({
+        role: "user",
+        content: item.content,
+        metadata: {
+          ...(item.metadata || {}),
+          injected: true,
+          inputId: item.id,
+          ...(item.source ? { inputSource: item.source } : {}),
+          inputKind: item.kind || "message",
+        },
+      }));
+      state = publish({ ...state, messages: [...state.messages, ...(appended as any[])] } as AgentState);
+      emit?.({
+        type: "user_input",
+        iteration: iterations,
+        stage,
+        inputs: taken.map((item) => ({
+          id: item.id,
+          ...(item.source ? { source: item.source } : {}),
+          kind: item.kind || "message",
+          content: item.content,
+        })),
+      });
+      const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
+      if (traceSession) {
+        const ids = taken.map((item) => ({ id: item.id, source: item.source, kind: item.kind || "message" }));
+        recordTraceEvent(traceSession, {
+          type: "user_input",
+          label: taken.length === 1 ? "User input received" : `User input received (${taken.length})`,
+          actor: { scope: "user", name: taken[0].source || "user", role: "user_input" },
+          parentSpanId: traceSession.currentIterationSpanId ?? traceSession.rootSpanId,
+          sections: [
+            { kind: "metadata", label: "User input ids", data: { stage, inputs: ids }, identity: true },
+            ...(traceSession.resolvedConfig.logData
+              ? [{ kind: "metadata", label: "User input", data: { inputs: taken.map((item) => ({ id: item.id, content: item.content })) } } as any]
+              : []),
+          ],
+        });
+      }
+      return true;
+    };
+
     // R1: "initial_then_after_tool" cadence reflects once up-front (a planning
     // note) before the first model call, then behaves like "after_tool" inside
     // the loop. Only fire on a fresh run (no assistant turn yet, not resuming).
@@ -528,6 +589,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (!skippingAgent) {
         if (cancelIfRequested("before_guardrails")) break;
         if (checkpointIfRequested("before_guardrails")) break;
+
+        // Before the request guardrails, so they see the injected text too.
+        await takePendingInputs("before_model");
 
         const preGuardrails = getGuardrailConfig(state);
         if (preGuardrails.length > 0) {
@@ -714,6 +778,19 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           const nudge = soManager.buildNudgeMessage(false);
           const ctx = { ...(state.ctx || {}), __structuredOutputForceFinalize: true };
           state = { ...state, messages: [...state.messages, nudge as any], ctx } as AgentState;
+          continue;
+        }
+        // Input that arrived while the model wrote its final answer: answer it
+        // in this run instead of ending the turn. Not after a blocked or
+        // cancelled turn, and not for structured output (one answer per run).
+        if (
+          !soManager &&
+          !(state as any).ctx?.__guardrailBlocked &&
+          !(state as any).ctx?.__cancelled &&
+          iterations < iterationLimit &&
+          !isCancelled().cancelled &&
+          (await takePendingInputs("after_final"))
+        ) {
           continue;
         }
         break;

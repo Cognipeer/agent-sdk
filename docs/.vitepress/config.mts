@@ -58,6 +58,7 @@ export default defineConfig({
             { text: 'Structured Output', link: '/guide/structured-output' },
             { text: 'Tool Approvals', link: '/guide/tool-approvals' },
             { text: 'Ask User (Human-in-the-Loop)', link: '/guide/ask-user' },
+            { text: 'Steering (Mid-Run Input)', link: '/guide/steering' },
             { text: 'MCP Integration', link: '/guide/mcp' },
           ],
         },
