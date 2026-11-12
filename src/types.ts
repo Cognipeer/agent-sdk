@@ -1882,6 +1882,14 @@ export type PendingInput = {
   metadata?: Record<string, unknown>;
 };
 
+/** What `InvokeConfig.drainPendingInputs` is told when the loop asks. */
+export type PendingInputAsk = {
+  /** Before a model call, or right after the model gave a final answer. */
+  stage: "before_model" | "after_final";
+  /** Loop iteration (1-based). */
+  iteration: number;
+};
+
 /** Emitted when pending inputs were appended to the transcript mid-run. */
 export type UserInputEvent = {
   type: "user_input";
@@ -1985,8 +1993,13 @@ export type InvokeConfig = RunnableConfig & {
    *
    * Applies to this agent's own loop only. Sub-agents and agents used as tools
    * never receive it.
+   *
+   * `stage` says where the loop asks: `before_model`, or `after_final` (the
+   * model just gave its answer). A host that would rather start a new run with
+   * what arrived after an answer returns nothing at `after_final`; the turn then
+   * ends with that answer.
    */
-  drainPendingInputs?: () => PendingInput[] | Promise<PendingInput[]>;
+  drainPendingInputs?: (ask: PendingInputAsk) => PendingInput[] | Promise<PendingInput[]>;
   /**
    * @internal Session handle threaded from createSmartAgent's driver into each
    * `base.invoke()` leg. It is what makes one logical turn one plugin session:

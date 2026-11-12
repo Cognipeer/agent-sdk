@@ -141,6 +141,35 @@ describe("drainPendingInputs: base agent", () => {
     expect(events.filter((e) => e.type === "finalAnswer")).toHaveLength(1);
   });
 
+  it("tells the host where it asks, so a host can leave what came after the answer for a new run", async () => {
+    const log = { calls: [] as Message[][] };
+    const agent = createAgent({ name: "Release", model: scriptedModel([{ content: "release started" }], log) });
+    const asks: Array<{ stage: string; iteration: number }> = [];
+    const waiting: Array<{ id: string; content: string }> = [];
+    const events: any[] = [];
+
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: (ask) => {
+        asks.push(ask);
+        if (ask.stage === "before_model") {
+          // the person writes while the model answers
+          waiting.push({ id: "in_3", content: "wait, one more PR" });
+          return [];
+        }
+        // the answer is written: the host keeps the message for a run of its own
+        return [];
+      },
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(asks).toEqual([{ stage: "before_model", iteration: 1 }, { stage: "after_final", iteration: 1 }]);
+    expect(log.calls).toHaveLength(1);
+    expect(result.content).toBe("release started");
+    expect((result.messages as any[]).map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(events.some((e) => e.type === "user_input")).toBe(false);
+    expect(waiting).toHaveLength(1);
+  });
+
   it("skips empty items and treats a throwing callback as empty", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const log = { calls: [] as Message[][] };

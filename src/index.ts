@@ -293,6 +293,7 @@ export type {
 	CancelledEvent,
 	UserInputEvent,
 	PendingInput,
+	PendingInputAsk,
 	HandoffEvent,
 	SubagentEvent,
 	DelegationEventStamp,

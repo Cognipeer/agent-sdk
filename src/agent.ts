@@ -463,7 +463,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       if (selectPendingToolCalls(state.messages).length > 0) return false;
       let items: PendingInput[] = [];
       try {
-        const out = await drainPendingInputs();
+        const out = await drainPendingInputs({ stage, iteration: iterations });
         items = Array.isArray(out) ? out : [];
       } catch (err) {
         console.warn('[agent-sdk] drainPendingInputs callback error:', err);
