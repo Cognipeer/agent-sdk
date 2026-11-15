@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`usageCounting` on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`.** It declares how the server counts the prompt against its cache counters. Applies to Chat Completions and Responses, streamed and not.
+  - `"exclusive"`: always add the cache read + write to `prompt_tokens`. Use it for a proxy that forwards Anthropic-style usage.
+  - `"inclusive"`: never add them. A prompt below read + write is raised to them.
+  - `"auto"` (the default): the existing heuristic, unchanged; the cache is added only when it exceeds the prompt. Under `auto`, an exclusive server with a cache smaller than its uncached part is under-counted: for 10000 uncached + 2000 cache read, `auto` gives 10000 and `"exclusive"` gives 12000.
+  - When the cache is added, `totalTokens` is recomputed as prompt + completion.
+- **`TokenUsage.inputTokensReported`** (OpenAI-shaped providers): `false` when the usage carried no `prompt_tokens` / `input_tokens`, or no usage object at all.
+  - In that case `inputTokens` is not a measurement: it is 0, or the cache read + write alone.
+  - An explicit `0` counts as reported. Other providers leave the field out.
+  - A test that compares an OpenAI-shaped `usage` with `toEqual` now sees this extra key.
+
 ### Fixed
 - **Recalled memory now reaches the model on the `raw` context policy.** `buildModelMessages` returned the conversation as it was for `context.policy: "raw"` and skipped the `memory_context` block that every other policy adds, so a raw-policy agent read its memory each turn and never saw it. The block now goes right after the system prompt (or first, when there is none); the conversation is otherwise unchanged.
 

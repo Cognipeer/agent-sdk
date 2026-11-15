@@ -57,9 +57,10 @@ describe("OpenAI-compatible cache dialects (prompt_tokens is inclusive in all of
     expect((await usageOf(chat({ prompt_tokens: 1, completion_tokens: 5, completion_tokens_details: { reasoning_tokens: 30 } }))).reasoningTokens).toBe(5);
   });
 
-  it("a response without usage is all zeros", async () => {
+  it("a response without usage is all zeros, with no prompt count reported", async () => {
     expect(await usageOf({ id: "1", model: "m", choices: [{ message: { content: "x" }, finish_reason: "stop" }] })).toEqual({
       inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cachedWriteTokens: 0, cachedOutputTokens: 0, reasoningTokens: 0,
+      inputTokensReported: false,
     });
   });
 });

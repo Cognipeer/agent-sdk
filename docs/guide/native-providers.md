@@ -364,10 +364,30 @@ type TokenUsage = {
   cachedWriteTokens: number;   // cache write/creation (Anthropic, Bedrock)
   cachedOutputTokens: number;
   reasoningTokens: number;     // OpenAI o-series, Vertex Gemini thinking
+  inputTokensReported?: boolean; // OpenAI-shaped providers: did the server send a prompt count?
 };
 ```
 
 `reasoningTokens` is especially useful when you enable native reasoning, because it shows how much inference budget the provider attributed to the thinking/reasoning path.
+
+### Prompt counting on OpenAI-shaped servers
+
+OpenAI, Azure, OpenRouter, DeepSeek and Moonshot count the cache inside `prompt_tokens`. A proxy that forwards an Anthropic-style usage leaves it out. By default (`usageCounting: "auto"`) the SDK adds the cache read + write to the prompt only when they exceed it, so such a proxy is under-counted whenever its cache is smaller than the uncached part. Declare how the server counts on `OpenAIProvider`, `AzureProvider` or `OpenAICompatibleProvider`:
+
+```ts
+const provider = createProvider({
+  provider: "openai-compatible",
+  baseURL: "https://proxy.example.com/v1",
+  apiKey: "...",
+  usageCounting: "exclusive", // "inclusive" | "exclusive" | "auto" (default)
+});
+```
+
+- `"exclusive"`: the cache read + write are always added to the prompt, and the total is recomputed.
+- `"inclusive"`: the prompt is used as reported. It is never summed with the cache; a prompt below read + write is raised to them.
+- `"auto"`: the heuristic described above (0.22 and earlier).
+
+`inputTokensReported` is `false` when the usage carried no `prompt_tokens` / `input_tokens`. `inputTokens` is then 0, or only the cache counters, and is not a measurement. A host that bills on the prompt should use its own estimate instead. An explicit `0` counts as reported.
 
 Provider-specific field mapping:
 

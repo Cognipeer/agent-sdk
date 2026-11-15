@@ -372,6 +372,7 @@ describe("responsesStreaming on a listed model", () => {
       cachedWriteTokens: 0,
       cachedOutputTokens: 0,
       reasoningTokens: 7,
+      inputTokensReported: true,
     });
   });
 

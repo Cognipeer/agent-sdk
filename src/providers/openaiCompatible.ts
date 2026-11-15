@@ -122,6 +122,7 @@ export class OpenAICompatibleProvider extends OpenAIProvider {
       responsesApi: config.responsesApi,
       responsesApiModels: config.responsesApiModels,
       responsesStreaming: config.responsesStreaming,
+      usageCounting: config.usageCounting,
     });
     this.promptCachingEnabled = config.prompt_caching?.enabled === true;
     this.promptCaching = {
