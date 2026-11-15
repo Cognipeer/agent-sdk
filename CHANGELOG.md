@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-15
+
 ### Added
 - **`usageCounting` on `OpenAIProvider`, `AzureProvider` and `OpenAICompatibleProvider`.** It declares how the server counts the prompt against its cache counters. Applies to Chat Completions and Responses, streamed and not.
   - `"exclusive"`: always add the cache read + write to `prompt_tokens`. Use it for a proxy that forwards Anthropic-style usage.
