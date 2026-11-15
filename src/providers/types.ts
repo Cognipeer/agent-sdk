@@ -249,9 +249,12 @@ export type TokenUsage = {
    * Whether the server reported a completion count (`completion_tokens` /
    * `output_tokens`, a finite number >= 0), as `inputTokensReported` does for
    * the prompt. Set by the OpenAI-shaped providers; other providers leave it
-   * out. When it is `false`, `outputTokens` is 0 and not a measurement (a
-   * reported `total_tokens` is kept as it came). An explicit `0` counts as
-   * reported.
+   * out. When it is `false`, `outputTokens` is 0 and not a measurement. A
+   * reported `total_tokens` is kept as it came only when the cache counters
+   * left the prompt unchanged; when they changed it (see `UsageCounting`), the
+   * total is recomputed as prompt + completion and holds no completion. A host
+   * can take `totalTokens - inputTokens` as the completion when it is above 0,
+   * and bill its own estimate otherwise. An explicit `0` counts as reported.
    */
   outputTokensReported?: boolean;
 };
