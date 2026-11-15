@@ -236,7 +236,34 @@ export type TokenUsage = {
   cachedWriteTokens: number;
   cachedOutputTokens: number;
   reasoningTokens: number;
+  /**
+   * Whether the server reported a prompt count (`prompt_tokens` /
+   * `input_tokens`, a finite number >= 0). Set by the OpenAI-shaped providers
+   * (OpenAI, Azure, OpenAI-compatible); other providers leave it out. When it is
+   * `false`, `inputTokens` is not a measurement: it is 0, or the cache read +
+   * write alone when the server sent those. A host that bills on the prompt
+   * should then use its own estimate. An explicit `0` counts as reported.
+   */
+  inputTokensReported?: boolean;
 };
+
+/**
+ * How an OpenAI-shaped server counts the prompt (`prompt_tokens` /
+ * `input_tokens`) against its cache counters (cache read: `cached_tokens`,
+ * `prompt_cache_hit_tokens`; cache write: `cache_write_tokens`,
+ * `cache_creation_input_tokens`):
+ *  - `"inclusive"`: the prompt already contains the cache read + write (OpenAI,
+ *    Azure, OpenRouter, DeepSeek, Moonshot). The prompt is used as reported; it
+ *    is only raised to read + write when it is smaller than them.
+ *  - `"exclusive"`: the prompt leaves the cache out (an Anthropic-style usage
+ *    forwarded by a proxy). Read + write are always added to it, and the total
+ *    is recomputed as prompt + completion.
+ *  - `"auto"` (default): the heuristic of 0.22 and earlier. The prompt is used
+ *    as reported unless read + write exceed it, in which case they are added.
+ *    An exclusive server whose cache is smaller than the uncached part is
+ *    under-counted by it: declare `"exclusive"` for such a server.
+ */
+export type UsageCounting = "auto" | "inclusive" | "exclusive";
 
 export function emptyUsage(): TokenUsage {
   return {
@@ -478,6 +505,12 @@ export type OpenAIProviderConfig = ProviderTransportConfig & {
    * Has no effect on Chat Completions requests.
    */
   responsesStreaming?: boolean;
+  /**
+   * How the server's usage counts the prompt against the cache counters, for
+   * Chat Completions and Responses alike. Default `"auto"`. See
+   * {@link UsageCounting}.
+   */
+  usageCounting?: UsageCounting;
 };
 
 /** Prompt caching options shared by the Anthropic, Bedrock, Vertex (Claude models) and OpenAI-compatible providers. */
@@ -538,6 +571,8 @@ export type AzureProviderConfig = ProviderTransportConfig & {
   responsesApi?: "auto" | "never" | "always";
   responsesApiModels?: Array<string | RegExp>;
   responsesStreaming?: boolean;
+  /** See OpenAIProviderConfig.usageCounting. Default "auto". */
+  usageCounting?: UsageCounting;
 };
 
 export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
@@ -552,6 +587,12 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
   responsesStreaming?: boolean;
   /** See OpenAIProviderConfig.maxTokensParam. Compatible servers default to `auto`. */
   maxTokensParam?: "auto" | "max_tokens" | "max_completion_tokens";
+  /**
+   * See OpenAIProviderConfig.usageCounting. Default "auto". A proxy that
+   * forwards Anthropic-style usage (cache left out of `prompt_tokens`) should
+   * be declared `"exclusive"`.
+   */
+  usageCounting?: UsageCounting;
   apiKey: string;
   baseURL: string;
   defaultModel?: string;

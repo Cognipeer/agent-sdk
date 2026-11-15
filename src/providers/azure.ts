@@ -35,6 +35,7 @@ export class AzureProvider extends OpenAIProvider {
       responsesApi: config.responsesApi,
       responsesApiModels: config.responsesApiModels,
       responsesStreaming: config.responsesStreaming,
+      usageCounting: config.usageCounting,
     });
     this.endpoint = config.endpoint.replace(/\/$/, "");
     this.apiVersion = config.apiVersion ?? DEFAULT_API_VERSION;

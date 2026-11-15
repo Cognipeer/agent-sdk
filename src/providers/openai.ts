@@ -25,6 +25,7 @@ import {
   type ReasoningPayload,
   type EmbeddingRequest,
   type EmbeddingResponse,
+  type UsageCounting,
   ProviderError,
   emptyUsage,
 } from "./types.js";
@@ -72,6 +73,8 @@ export class OpenAIProvider extends BaseProvider {
   /** `api: "responses"` was passed (the legacy `responsesApi: "always"` keeps its old single-call behaviour). */
   private readonly apiResponsesNative: boolean;
   protected readonly maxTokensParam: "auto" | "max_tokens" | "max_completion_tokens";
+  /** How the server's usage counts the prompt against the cache (see `UsageCounting`). */
+  protected readonly usageCounting: UsageCounting;
   /** Origins (see `responsesOrigin`) whose endpoint refused a replayed reasoning item: not replayed again by this instance. */
   private readonly reasoningReplayRefused = new Set<string>();
 
@@ -79,6 +82,7 @@ export class OpenAIProvider extends BaseProvider {
     super();
     this.configureTransport(config);
     this.maxTokensParam = config.maxTokensParam ?? "auto";
+    this.usageCounting = config.usageCounting === "inclusive" || config.usageCounting === "exclusive" ? config.usageCounting : "auto";
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? "https://api.openai.com/v1").replace(/\/$/, "");
     this.defaultModel = config.defaultModel ?? "gpt-4o";
@@ -860,7 +864,7 @@ export class OpenAIProvider extends BaseProvider {
       textParts.push(json.output_text);
     }
 
-    const tokenUsage = usageFromOpenAIShape(json.usage);
+    const tokenUsage = usageFromOpenAIShape(json.usage, this.usageCounting);
 
     // A limit hit is status "incomplete" + a reason; "incomplete" alone says
     // nothing about the cause, so it is not "length". A cut-off call's
@@ -1017,7 +1021,7 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   protected extractUsage(usage: any): TokenUsage {
-    return usageFromOpenAIShape(usage);
+    return usageFromOpenAIShape(usage, this.usageCounting);
   }
 }
 
@@ -1035,18 +1039,28 @@ export class OpenAIProvider extends BaseProvider {
  *    (docs: "cache reads and writes are already included in `prompt_tokens`")
  *  - cache write: `prompt_tokens_details.cache_write_tokens` (OpenRouter, also
  *    `input_tokens_details.cache_write_tokens`) and LiteLLM's `cache_creation_input_tokens`
- * Defensive guard: read + write above the prompt can only mean a server that
- * leaves the cache out of `prompt_tokens` (an Anthropic-style usage forwarded
- * verbatim), so the cache is added back instead of being billed as a negative.
+ * `counting` (the provider's `usageCounting`) says how the prompt relates to the
+ * cache counters:
+ *  - `auto`: read + write above the prompt can only mean a server that leaves
+ *    the cache out of `prompt_tokens` (an Anthropic-style usage forwarded
+ *    verbatim), so the cache is added back instead of being billed as a
+ *    negative. Smaller cache counts are taken as inclusive.
+ *  - `exclusive`: the cache is always added back.
+ *  - `inclusive`: the prompt is kept, raised to read + write only when it is
+ *    smaller than them (never added).
+ * When the cache is added, the total is recomputed as prompt + completion.
+ * `inputTokensReported` says whether the server sent a prompt count at all.
  * Reasoning is a subset of the output and is 0 when the server does not report it.
  */
-function usageFromOpenAIShape(usage: any): TokenUsage {
-  if (!usage || typeof usage !== "object") return emptyUsage();
+function usageFromOpenAIShape(usage: any, counting: UsageCounting = "auto"): TokenUsage {
+  if (!usage || typeof usage !== "object") return { ...emptyUsage(), inputTokensReported: false };
+  const isCount = (v: any): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
   const count = (...vals: any[]): number => {
-    for (const v of vals) if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    for (const v of vals) if (isCount(v)) return v;
     return 0;
   };
   const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details ?? {};
+  const inputReported = isCount(usage.prompt_tokens) || isCount(usage.input_tokens);
   let input = count(usage.prompt_tokens, usage.input_tokens);
   const output = count(usage.completion_tokens, usage.output_tokens);
   const cachedRead = count(
@@ -1061,8 +1075,9 @@ function usageFromOpenAIShape(usage: any): TokenUsage {
     usage.cache_creation_input_tokens,
   );
   let total = count(usage.total_tokens);
-  if (cachedRead + cachedWrite > input) {
-    input += cachedRead + cachedWrite;
+  const cache = cachedRead + cachedWrite;
+  if (counting === "exclusive" ? cache > 0 : cache > input) {
+    input = counting === "inclusive" ? cache : input + cache;
     total = 0;
   }
   return {
@@ -1073,6 +1088,7 @@ function usageFromOpenAIShape(usage: any): TokenUsage {
     cachedWriteTokens: cachedWrite,
     cachedOutputTokens: 0,
     reasoningTokens: Math.min(count(completionDetails.reasoning_tokens), output),
+    inputTokensReported: inputReported,
   };
 }
 

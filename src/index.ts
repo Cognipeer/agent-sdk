@@ -137,6 +137,7 @@ export type {
   ChatCompletionResponse,
   ChatCompletionChunk,
   TokenUsage,
+  UsageCounting,
   FinishReason,
   ProviderResponseFields,
   EmbeddingRequest,
