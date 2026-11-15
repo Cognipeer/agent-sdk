@@ -390,7 +390,7 @@ const provider = createProvider({
 
 `inputTokensReported` is `false` when the usage carried no `prompt_tokens` / `input_tokens`. `inputTokens` is then 0, or only the cache counters, and is not a measurement. A host that bills on the prompt should use its own estimate instead. An explicit `0` counts as reported.
 
-`outputTokensReported` is the same for the completion: `false` when the usage carried no `completion_tokens` / `output_tokens`. `outputTokens` is then 0 and is not a measurement. A reported `total_tokens` is kept as it came, so the host can derive the completion from it, or bill its own estimate.
+`outputTokensReported` is the same for the completion: `false` when the usage carried no `completion_tokens` / `output_tokens`. `outputTokens` is then 0 and is not a measurement. A reported `total_tokens` is kept as it came only when the cache counters left the prompt unchanged. When they changed it (`"exclusive"` with any cache, or a cache above the prompt under `"auto"` / `"inclusive"`), the total is recomputed as prompt + completion and holds no completion. A host can take `totalTokens - inputTokens` as the completion when it is above 0, and bill its own estimate otherwise.
 
 Provider-specific field mapping:
 
