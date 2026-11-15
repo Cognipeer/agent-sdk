@@ -365,6 +365,7 @@ type TokenUsage = {
   cachedOutputTokens: number;
   reasoningTokens: number;     // OpenAI o-series, Vertex Gemini thinking
   inputTokensReported?: boolean; // OpenAI-shaped providers: did the server send a prompt count?
+  outputTokensReported?: boolean; // OpenAI-shaped providers: did the server send a completion count?
 };
 ```
 
@@ -388,6 +389,8 @@ const provider = createProvider({
 - `"auto"`: the heuristic described above (0.22 and earlier).
 
 `inputTokensReported` is `false` when the usage carried no `prompt_tokens` / `input_tokens`. `inputTokens` is then 0, or only the cache counters, and is not a measurement. A host that bills on the prompt should use its own estimate instead. An explicit `0` counts as reported.
+
+`outputTokensReported` is the same for the completion: `false` when the usage carried no `completion_tokens` / `output_tokens`. `outputTokens` is then 0 and is not a measurement. A reported `total_tokens` is kept as it came, so the host can derive the completion from it, or bill its own estimate.
 
 Provider-specific field mapping:
 
