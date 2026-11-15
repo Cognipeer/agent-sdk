@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`TokenUsage.outputTokensReported`** (OpenAI-shaped providers): the completion-side counterpart of `inputTokensReported`. It is `false` when the usage carried no `completion_tokens` / `output_tokens`, or no usage object at all.
+  - In that case `outputTokens` is 0 and is not a measurement. A reported `total_tokens` is kept as it came, so a host can derive the output from it, or bill its own estimate instead of a free completion.
+  - An explicit `0` counts as reported. Other providers leave the field out.
+  - A test that compares an OpenAI-shaped `usage` with `toEqual` now sees this extra key.
+
 ## [0.23.0] - 2026-11-15
 
 ### Added

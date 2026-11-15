@@ -71,6 +71,7 @@ describe("usageCounting: exclusive", () => {
       cachedOutputTokens: 0,
       reasoningTokens: 0,
       inputTokensReported: true,
+      outputTokensReported: true,
     });
   });
 
@@ -186,5 +187,104 @@ describe("inputTokensReported", () => {
 
   it("is false when the response carries no usage object", async () => {
     expect(await usageOf(undefined)).toMatchObject({ inputTokens: 0, totalTokens: 0, inputTokensReported: false });
+  });
+});
+
+/** A prompt count and a total, but no completion count (an incomplete upstream usage). */
+const NO_COMPLETION = { prompt_tokens: 10_000, total_tokens: 20_000 };
+
+describe("outputTokensReported", () => {
+  it("is false when the usage has no completion count: the output is 0, not a measurement, and the reported total is kept", async () => {
+    for (const mode of [undefined, "auto", "inclusive", "exclusive"] as const) {
+      expect(await usageOf(NO_COMPLETION, mode)).toMatchObject({
+        inputTokens: 10_000,
+        outputTokens: 0,
+        totalTokens: 20_000,
+        inputTokensReported: true,
+        outputTokensReported: false,
+      });
+    }
+  });
+
+  it("is false on the streamed usage chunk too", async () => {
+    expect(await streamedUsageOf(NO_COMPLETION)).toMatchObject({ inputTokens: 10_000, outputTokens: 0, totalTokens: 20_000, outputTokensReported: false });
+  });
+
+  // The review fixture: a 40000-character answer (about 10000 tokens) billed by the upstream, whose usage says
+  // prompt 10000, total 20000 and nothing about the completion. The SDK must not turn that into a measured 0: the
+  // host gets the flag, the upstream's total and the whole answer, so it can bill the completion either way.
+  const ANSWER = "y".repeat(40_000);
+  const EXPECTED = { inputTokens: 10_000, outputTokens: 0, totalTokens: 20_000, inputTokensReported: true, outputTokensReported: false };
+
+  it("review fixture, non-streamed: a 40000-character answer with no completion count is flagged, total and content intact", async () => {
+    const body = { id: "1", model: "m", choices: [{ message: { content: ANSWER }, finish_reason: "stop" }], usage: NO_COMPLETION };
+    const res = await compatible(jsonFetch(body), "exclusive").complete({ model: "m", messages: msgs });
+    expect(res.usage).toMatchObject(EXPECTED);
+    expect(res.content).toBe(ANSWER);
+  });
+
+  it("review fixture, streamed: a 40000-character answer with no completion count is flagged, total and content intact", async () => {
+    const p = compatible(
+      sseFetch([
+        ...Array.from({ length: 4 }, (_, i) => ({
+          id: "1",
+          model: "m",
+          choices: [{ index: 0, delta: { content: ANSWER.slice(i * 10_000, (i + 1) * 10_000) } }],
+        })),
+        { id: "1", model: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { id: "1", model: "m", choices: [], usage: NO_COMPLETION },
+      ]),
+      "exclusive",
+    );
+    let text = "";
+    let last: TokenUsage | undefined;
+    for await (const chunk of p.completeStream({ model: "m", messages: msgs })) {
+      if (chunk.delta.content) text += chunk.delta.content;
+      if (chunk.usage) last = chunk.usage;
+    }
+    expect(last).toMatchObject(EXPECTED);
+    expect(text).toBe(ANSWER);
+  });
+
+  it("is true for an explicit 0 completion", async () => {
+    expect(await usageOf({ prompt_tokens: 10_000, completion_tokens: 0, total_tokens: 10_000 })).toMatchObject({
+      outputTokens: 0,
+      outputTokensReported: true,
+    });
+  });
+
+  it("is false for a completion count that is not a finite number >= 0", async () => {
+    for (const completion_tokens of [null, "100", -1]) {
+      expect(await usageOf({ prompt_tokens: 5, completion_tokens })).toMatchObject({ outputTokens: 0, outputTokensReported: false });
+    }
+  });
+
+  it("reads output_tokens (Responses spelling), on the Responses API too", async () => {
+    expect(await usageOf({ input_tokens: 42, output_tokens: 7 })).toMatchObject({ outputTokens: 7, outputTokensReported: true });
+    const p = new OpenAICompatibleProvider({
+      provider: "openai-compatible",
+      apiKey: "k",
+      baseURL: "http://x/v1",
+      api: "responses",
+      responsesStreaming: false,
+      fetch: jsonFetch({
+        id: "r",
+        model: "m",
+        status: "completed",
+        output: [{ type: "message", content: [{ type: "output_text", text: "x" }] }],
+        usage: { input_tokens: 10_000, total_tokens: 20_000 },
+      }),
+    });
+    expect((await p.complete({ model: "m", messages: msgs })).usage).toMatchObject({
+      inputTokens: 10_000,
+      outputTokens: 0,
+      inputTokensReported: true,
+      outputTokensReported: false,
+    });
+  });
+
+  it("is independent of inputTokensReported", async () => {
+    expect(await usageOf(NO_PROMPT)).toMatchObject({ inputTokensReported: false, outputTokensReported: true });
+    expect(await usageOf(undefined)).toMatchObject({ inputTokensReported: false, outputTokensReported: false });
   });
 });

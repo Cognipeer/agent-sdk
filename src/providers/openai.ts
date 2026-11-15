@@ -1049,11 +1049,12 @@ export class OpenAIProvider extends BaseProvider {
  *  - `inclusive`: the prompt is kept, raised to read + write only when it is
  *    smaller than them (never added).
  * When the cache is added, the total is recomputed as prompt + completion.
- * `inputTokensReported` says whether the server sent a prompt count at all.
+ * `inputTokensReported` / `outputTokensReported` say whether the server sent a
+ * prompt / completion count at all.
  * Reasoning is a subset of the output and is 0 when the server does not report it.
  */
 function usageFromOpenAIShape(usage: any, counting: UsageCounting = "auto"): TokenUsage {
-  if (!usage || typeof usage !== "object") return { ...emptyUsage(), inputTokensReported: false };
+  if (!usage || typeof usage !== "object") return { ...emptyUsage(), inputTokensReported: false, outputTokensReported: false };
   const isCount = (v: any): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
   const count = (...vals: any[]): number => {
     for (const v of vals) if (isCount(v)) return v;
@@ -1061,6 +1062,7 @@ function usageFromOpenAIShape(usage: any, counting: UsageCounting = "auto"): Tok
   };
   const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details ?? {};
   const inputReported = isCount(usage.prompt_tokens) || isCount(usage.input_tokens);
+  const outputReported = isCount(usage.completion_tokens) || isCount(usage.output_tokens);
   let input = count(usage.prompt_tokens, usage.input_tokens);
   const output = count(usage.completion_tokens, usage.output_tokens);
   const cachedRead = count(
@@ -1089,6 +1091,7 @@ function usageFromOpenAIShape(usage: any, counting: UsageCounting = "auto"): Tok
     cachedOutputTokens: 0,
     reasoningTokens: Math.min(count(completionDetails.reasoning_tokens), output),
     inputTokensReported: inputReported,
+    outputTokensReported: outputReported,
   };
 }
 

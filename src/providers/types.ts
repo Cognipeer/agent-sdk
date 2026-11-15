@@ -245,6 +245,15 @@ export type TokenUsage = {
    * should then use its own estimate. An explicit `0` counts as reported.
    */
   inputTokensReported?: boolean;
+  /**
+   * Whether the server reported a completion count (`completion_tokens` /
+   * `output_tokens`, a finite number >= 0), as `inputTokensReported` does for
+   * the prompt. Set by the OpenAI-shaped providers; other providers leave it
+   * out. When it is `false`, `outputTokens` is 0 and not a measurement (a
+   * reported `total_tokens` is kept as it came). An explicit `0` counts as
+   * reported.
+   */
+  outputTokensReported?: boolean;
 };
 
 /**
