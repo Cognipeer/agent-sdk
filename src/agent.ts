@@ -1,5 +1,5 @@
 // A minimal agent builder: no system prompt, no summarization, with tool limit and optional structured output finalize.
-import type { AgentInvokeResult, InvokeConfig, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution, UserQuestionResolution, HumanInTheLoopAskUserConfig } from "./types.js";
+import type { AgentInvokeResult, InvokeConfig, PendingInput, SmartAgentEvent, AgentOptions, AgentState, AgentInstance, AgentRuntimeConfig, HandoffDescriptor, GuardrailOutcome, AgentSnapshot, SnapshotOptions, RestoreSnapshotOptions, ToolApprovalResolution, UserQuestionResolution, HumanInTheLoopAskUserConfig } from "./types.js";
 import { GuardrailPhase } from "./types.js";
 import { z, ZodSchema } from "zod";
 import { createResolverNode } from "./nodes/resolver.js";
@@ -454,6 +454,148 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return true;
     };
 
+    // Request guardrails before a model call. With `ends`, each prefix of the
+    // conversation that ends there is checked with its own last message as the
+    // latest one: every input of a batch is checked by itself, not only the
+    // batch's last item. Without, the conversation as it stands is checked
+    // once, unless it was already checked at this length. True when a
+    // guardrail blocked; the block is recorded on the state.
+    const guardRequest = async (ends?: number[]): Promise<boolean> => {
+      const preGuardrails = getGuardrailConfig(state);
+      if (preGuardrails.length === 0) return false;
+      const store = ensureGuardrailStore(state);
+      const lengths = ends ?? (store.lastRequestLength !== state.messages.length ? [state.messages.length] : []);
+      for (const length of lengths) {
+        const view = length === state.messages.length
+          ? state
+          : ({ ...state, messages: state.messages.slice(0, length) } as AgentState);
+        const outcome = await evaluateGuardrails({
+          guardrails: preGuardrails,
+          phase: GuardrailPhase.Request,
+          state: view,
+          runtime: state.agent || runtime,
+          options: opts,
+          emit,
+        });
+        state.guardrailResult = mergeGuardrailOutcomes(state.guardrailResult, outcome);
+        const blocking = outcome.incidents.find((incident) => incident.disposition === "block");
+        if (blocking) {
+          store.lastRequestLength = state.messages.length;
+          const guardMessage: any = {
+            role: "assistant",
+            name: "guardrail",
+            content: blocking.reason || "Request blocked by guardrail policy.",
+            metadata: {
+              guardrail: {
+                phase: GuardrailPhase.Request,
+                incidents: outcome.incidents,
+              },
+            },
+          };
+          state = { ...state, messages: [...state.messages, guardMessage] } as AgentState;
+          const ctx = (state.ctx = state.ctx || {});
+          (ctx as any).__guardrailBlocked = {
+            phase: GuardrailPhase.Request,
+            incident: blocking,
+          };
+          return true;
+        }
+      }
+      store.lastRequestLength = state.messages.length;
+      return false;
+    };
+
+    // Steering: input the host queued while this run was working. Taken only
+    // when no tool call is unanswered, so a user message never lands between a
+    // tool_call and its result. Items are consumed once returned: they stay in
+    // the transcript even when the run then stops before answering them
+    // (cancelled, a budget ran out while the callback ran), and the run reports
+    // why it stopped. Returns the length of the conversation after each
+    // appended input, for guardRequest.
+    const drainPendingInputs = config?.drainPendingInputs;
+    const takePendingInputs = async (stage: "before_model" | "after_final"): Promise<number[]> => {
+      if (typeof drainPendingInputs !== "function") return [];
+      if (selectPendingToolCalls(state.messages).length > 0) return [];
+      let items: PendingInput[] = [];
+      try {
+        const out = await drainPendingInputs({ stage, iteration: iterations });
+        items = Array.isArray(out) ? out : [];
+      } catch (err) {
+        console.warn('[agent-sdk] drainPendingInputs callback error:', err);
+        return [];
+      }
+      const taken = items.filter(
+        (item) => item && typeof item.content === "string" && item.content.trim().length > 0,
+      );
+      if (taken.length === 0) return [];
+      const before = state.messages.length;
+      const appended = taken.map((item) => ({
+        role: "user",
+        content: item.content,
+        metadata: {
+          ...(item.metadata || {}),
+          injected: true,
+          inputId: item.id,
+          ...(item.source ? { inputSource: item.source } : {}),
+          inputKind: item.kind || "message",
+        },
+      }));
+      state = publish({ ...state, messages: [...state.messages, ...(appended as any[])] } as AgentState);
+      emit?.({
+        type: "user_input",
+        iteration: iterations,
+        stage,
+        inputs: taken.map((item) => ({
+          id: item.id,
+          ...(item.source ? { source: item.source } : {}),
+          kind: item.kind || "message",
+          content: item.content,
+        })),
+      });
+      const traceSession = state.ctx?.__traceSession as import("./types.js").TraceSessionRuntime | undefined;
+      if (traceSession) {
+        const ids = taken.map((item) => ({ id: item.id, source: item.source, kind: item.kind || "message" }));
+        recordTraceEvent(traceSession, {
+          type: "user_input",
+          label: taken.length === 1 ? "User input received" : `User input received (${taken.length})`,
+          actor: { scope: "user", name: taken[0].source || "user", role: "user_input" },
+          parentSpanId: traceSession.currentIterationSpanId ?? traceSession.rootSpanId,
+          sections: [
+            { kind: "metadata", label: "User input ids", data: { stage, inputs: ids }, identity: true },
+            ...(traceSession.resolvedConfig.logData
+              ? [{ kind: "metadata", label: "User input", data: { inputs: taken.map((item) => ({ id: item.id, content: item.content })) } } as any]
+              : []),
+          ],
+        });
+      }
+      return taken.map((_, index) => before + index + 1);
+    };
+
+    // Execution budgets are checked again right before a model call: the loop
+    // awaits between its top-of-iteration check and the call (request
+    // guardrails, the input callback), and a budget can run out meanwhile.
+    // The run stops the way the top-of-iteration check stops it: the limit is
+    // recorded and announced, and input already taken stays in the transcript.
+    // Tools are not gated here: they answer tool_calls the model already made,
+    // and the next model call is gated at the top of the loop.
+    const stopIfOverBudget = async (): Promise<boolean> => {
+      const budget = checkBudgetBreached();
+      if (!budget.breached) return false;
+      await announceLimit(budget.reason);
+      state = { ...state, ctx: { ...(state.ctx || {}), __limitBreached: budget.reason } } as AgentState;
+      return true;
+    };
+
+    // Input is asked for after a final answer only when a next model call can
+    // run: no cancellation, no iteration cap, no execution budget spent. Else
+    // it stays with the host for a run of its own.
+    const canAnswerMoreInput = (): boolean =>
+      !(state as any).ctx?.__guardrailBlocked &&
+      !(state as any).ctx?.__cancelled &&
+      iterations < iterationLimit &&
+      !isCancelled().cancelled &&
+      !checkBudgetBreached().breached;
+
     // R1: "initial_then_after_tool" cadence reflects once up-front (a planning
     // note) before the first model call, then behaves like "after_tool" inside
     // the loop. Only fire on a fresh run (no assistant turn yet, not resuming).
@@ -529,43 +671,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         if (cancelIfRequested("before_guardrails")) break;
         if (checkpointIfRequested("before_guardrails")) break;
 
-        const preGuardrails = getGuardrailConfig(state);
-        if (preGuardrails.length > 0) {
-          const store = ensureGuardrailStore(state);
-          if (store.lastRequestLength !== state.messages.length) {
-            const outcome = await evaluateGuardrails({
-              guardrails: preGuardrails,
-              phase: GuardrailPhase.Request,
-              state,
-              runtime: state.agent || runtime,
-              options: opts,
-              emit,
-            });
-            store.lastRequestLength = state.messages.length;
-            state.guardrailResult = mergeGuardrailOutcomes(state.guardrailResult, outcome);
-            const blocking = outcome.incidents.find((incident) => incident.disposition === "block");
-            if (blocking) {
-              const guardMessage: any = {
-                role: "assistant",
-                name: "guardrail",
-                content: blocking.reason || "Request blocked by guardrail policy.",
-                metadata: {
-                  guardrail: {
-                    phase: GuardrailPhase.Request,
-                    incidents: outcome.incidents,
-                  },
-                },
-              };
-              state = { ...state, messages: [...state.messages, guardMessage] } as AgentState;
-              const ctx = (state.ctx = state.ctx || {});
-              (ctx as any).__guardrailBlocked = {
-                phase: GuardrailPhase.Request,
-                incident: blocking,
-              };
-              break;
-            }
-          }
-        }
+        // The conversation as it stands first: a blocked request takes no
+        // queued input. Then the input, each item checked by itself.
+        if (await guardRequest()) break;
+        const takenEnds = await takePendingInputs("before_model");
+        if (takenEnds.length > 0 && (await guardRequest(takenEnds))) break;
 
         // Defer to a single decision helper for context summarization. The
         // helper returns "trigger" only when the context truly exceeds the
@@ -580,6 +690,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
 
           // Agent step
+          if (await stopIfOverBudget()) break;
           onProgress?.({ stage: "agent", message: "Invoking model" });
           if (cancelIfRequested("before_agent")) break;
           state = publish({ ...state, ...(await agentCore(state)) } as AgentState);
@@ -716,6 +827,17 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           state = { ...state, messages: [...state.messages, nudge as any], ctx } as AgentState;
           continue;
         }
+        // Input that arrived while the model wrote its final answer: answer it
+        // in this run instead of ending the turn. Only when a next model call
+        // can run, and not for structured output (one answer per run). The
+        // request guardrails check it here, before the next model call.
+        if (!soManager && canAnswerMoreInput()) {
+          const takenEnds = await takePendingInputs("after_final");
+          if (takenEnds.length > 0) {
+            if (await guardRequest(takenEnds)) break;
+            continue;
+          }
+        }
         break;
       }
 
@@ -749,7 +871,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         const cadenceWantsIt = refl.shouldReflect
           ? !!refl.shouldReflect({ state: state as any, turn: currentTurn, trigger: cadence, ranToolsThisTurn: true })
           : shouldRunReflection(cadence, state as any, true);
-        if (!budgetExceeded && !cadenceGap && cadenceWantsIt) {
+        // A reflection is a model call: not once the tools spent a budget (the
+        // top of the next iteration then stops the run and announces it).
+        if (!budgetExceeded && !cadenceGap && cadenceWantsIt && !checkBudgetBreached().breached) {
           try {
             const patch = await reflectNode(state as any, cadence);
             if (patch && Object.keys(patch).length > 0) {

@@ -243,7 +243,10 @@ describe("a reflection counts against the budgets", () => {
     const events: any[] = [];
     await agentWith(scriptedModel().model, { limits, costEstimator }).invoke(input(), { onEvent: (e: any) => events.push(e) });
     expect(breachOf(events)).toContain("maxCostUsd ($0.07) exceeded (actual: $0.08");
-    expect(seen.map((args) => args.outputTokens)).toEqual([30, 50]);
+    // Each budget check prices every request so far: the check before the
+    // reflection call prices the agent call (30), the next iteration's check
+    // prices it again and the reflection with its own tokens (50).
+    expect(seen.map((args) => args.outputTokens)).toEqual([30, 30, 50]);
     expect(seen.every((args) => args.modelName === "m")).toBe(true);
   });
 });

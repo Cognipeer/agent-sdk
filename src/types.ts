@@ -1857,8 +1857,53 @@ export type SmartAgentEvent = (
   | CancelledEvent
   | SubagentEvent
   | ReflectionEvent
+  | UserInputEvent
   | import("./plugins/types.js").PluginEvent
 ) & DelegationEventStamp;
+
+/**
+ * Input that arrived for a run while it was already working (a person writing
+ * into the session from chat or a channel, a webhook, a reminder). The host
+ * queues it; the loop pulls it in through `InvokeConfig.drainPendingInputs`
+ * between steps and appends it to the transcript as a user message.
+ */
+export type PendingInput = {
+  /** Host-side id of the queued item; echoed on the message and the event. */
+  id: string;
+  /**
+   * Text appended as the user message. Empty items are skipped. Put the sender
+   * here when the model should know who wrote it: message `name` is not set,
+   * because some providers restrict it.
+   */
+  content: string;
+  /** Where it came from, e.g. "portal", "slack", "webhook", "reminder". */
+  source?: string;
+  /** What it is, e.g. "message", "event". Default "message". */
+  kind?: string;
+  /** Extra metadata stored on the appended message. */
+  metadata?: Record<string, unknown>;
+};
+
+/** What `InvokeConfig.drainPendingInputs` is told when the loop asks. */
+export type PendingInputAsk = {
+  /** Before a model call, or right after the model gave a final answer. */
+  stage: "before_model" | "after_final";
+  /**
+   * Loop iteration (1-based), counted within one model loop. A smart-agent
+   * turn that summarizes mid-turn runs a new loop, which counts from 1 again.
+   */
+  iteration: number;
+};
+
+/** Emitted when pending inputs were appended to the transcript mid-run. */
+export type UserInputEvent = {
+  type: "user_input";
+  /** Loop iteration (1-based) the inputs were taken in. */
+  iteration: number;
+  /** Where in the loop they were taken: before a model call, or after a final answer. */
+  stage: "before_model" | "after_final";
+  inputs: Array<{ id: string; source?: string; kind?: string; content: string }>;
+};
 
 export type ReflectionEvent = {
   type: "reflection";
@@ -1939,6 +1984,32 @@ export type InvokeConfig = RunnableConfig & {
    * unavailable keys are skipped. Ignored when the agent has no `skills`.
    */
   preopenedSkills?: string[];
+  /**
+   * Steering: called by the loop to collect input that arrived while the run
+   * is working. It is called before each model call (never while a tool call
+   * is still unanswered, so tool_call/tool_result pairs stay intact) and once
+   * more when the model gave a final answer, if a next model call can still
+   * run (not cancelled, under the iteration cap and every execution budget);
+   * anything returned there is appended and the loop goes on instead of
+   * ending the turn. Request guardrails check each returned item by itself
+   * before the next model call.
+   *
+   * Returned items are consumed: the loop appends each one as a user message
+   * (`metadata.injected = true`, `metadata.inputId`) and emits one
+   * `user_input` event. Return an empty array when nothing is pending. A
+   * throwing callback is logged and treated as empty. An item the run took
+   * but could not answer (cancelled, or a budget ran out meanwhile) stays in
+   * the transcript, and the run reports why it stopped.
+   *
+   * Applies to this agent's own loop only. Sub-agents and agents used as tools
+   * never receive it.
+   *
+   * `stage` says where the loop asks: `before_model`, or `after_final` (the
+   * model just gave its answer). A host that would rather start a new run with
+   * what arrived after an answer returns nothing at `after_final`; the turn then
+   * ends with that answer.
+   */
+  drainPendingInputs?: (ask: PendingInputAsk) => PendingInput[] | Promise<PendingInput[]>;
   /**
    * @internal Session handle threaded from createSmartAgent's driver into each
    * `base.invoke()` leg. It is what makes one logical turn one plugin session:
