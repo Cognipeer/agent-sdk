@@ -18,6 +18,7 @@ import { createAgent } from "../../src/agent.js";
 import { createSmartAgent } from "../../src/smart/index.js";
 import { createTool } from "../../src/tool.js";
 import { createRegexGuardrail } from "../../src/guardrails/index.js";
+import { createGuardrail } from "../../src/guardrails/engine.js";
 import { GuardrailPhase } from "../../src/types.js";
 import type { Message, PendingInput } from "../../src/types.js";
 
@@ -659,5 +660,135 @@ describe("drainPendingInputs: execution budgets after the answer", () => {
     expect((result.messages as any[]).at(-1)).toMatchObject({ role: "user", metadata: { injected: true, inputId: "late" } });
     expect(events.some((e) => e.type === "cancelled")).toBe(true);
     expect((result.state as any).ctx.__cancelled).toBeDefined();
+  });
+});
+
+describe("execution budgets are checked again before a model call", () => {
+  /** A fake clock for Date.now; the model and the hooks below advance it. */
+  async function withClock<T>(fn: (clock: { now: number }) => Promise<T>): Promise<T> {
+    const clock = { now: 1_000_000 };
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    try {
+      return await fn(clock);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function trackedModel(script: Step[]) {
+    const log = { calls: [] as Message[][] };
+    return { log, model: scriptedModel(script, log) };
+  }
+
+  const limitOf = (events: any[]) => events.find((e) => e.type === "metadata" && e.limitBreached)?.limitBreached;
+
+  it("stops before the model call when a slow callback spent the budget, keeping what it returned", async () => {
+    await withClock(async (clock) => {
+      const { log, model } = trackedModel([{ content: "answer" }]);
+      const agent = createAgent({ name: "R", model, limits: { maxWallClockMs: 10 } });
+      const events: any[] = [];
+      const result = await agent.invoke(userTurn, {
+        drainPendingInputs: async () => {
+          clock.now += 20;
+          return [{ id: "slow", content: "also add #557" }];
+        },
+        onEvent: (e) => events.push(e),
+      });
+      expect(log.calls).toHaveLength(0);
+      expect((result.messages as any[]).at(-1)).toMatchObject({ role: "user", metadata: { injected: true, inputId: "slow" } });
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+      expect(limitOf(events)).toContain("maxWallClockMs");
+    });
+  });
+
+  it("stops before the model call when a slow callback returned nothing", async () => {
+    await withClock(async (clock) => {
+      const { log, model } = trackedModel([{ content: "answer" }]);
+      const agent = createAgent({ name: "R", model, limits: { maxWallClockMs: 10 } });
+      const events: any[] = [];
+      const result = await agent.invoke(userTurn, {
+        drainPendingInputs: async () => {
+          clock.now += 20;
+          return [];
+        },
+        onEvent: (e) => events.push(e),
+      });
+      expect(log.calls).toHaveLength(0);
+      expect((result.messages as any[]).some(injected)).toBe(false);
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+      expect(limitOf(events)).toContain("maxWallClockMs");
+    });
+  });
+
+  it("stops at a tool boundary when the callback after the tools spent the budget", async () => {
+    await withClock(async (clock) => {
+      const { log, model } = trackedModel([{ tool_calls: [call("lookup")] }, { content: "never" }]);
+      const counter = { ran: 0 };
+      const agent = createAgent({ name: "R", model, tools: [lookup(counter)], limits: { maxWallClockMs: 10 } });
+      let asks = 0;
+      const result = await agent.invoke(userTurn, {
+        drainPendingInputs: async () => {
+          asks += 1;
+          if (asks === 1) return [];
+          clock.now += 20;
+          return [{ id: "mid", content: "which PRs are in?" }];
+        },
+      });
+      expect(counter.ran).toBe(1);
+      expect(log.calls).toHaveLength(1);
+      const msgs = result.messages as any[];
+      expectWellPaired(msgs as Message[]);
+      expect(msgs.at(-1)).toMatchObject({ role: "user", metadata: { injected: true, inputId: "mid" } });
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+    });
+  });
+
+  it("stops before the model call when a slow request guardrail spent the budget", async () => {
+    await withClock(async (clock) => {
+      const { log, model } = trackedModel([{ content: "answer" }]);
+      const slowCheck = createGuardrail({
+        appliesTo: [GuardrailPhase.Request],
+        checks: [{ evaluate: async () => { clock.now += 20; return { passed: true }; } }],
+      });
+      const agent = createAgent({ name: "R", model, guardrails: [slowCheck], limits: { maxWallClockMs: 10 } });
+      const events: any[] = [];
+      const result = await agent.invoke(userTurn, { onEvent: (e) => events.push(e) });
+      expect(log.calls).toHaveLength(0);
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+      expect(limitOf(events)).toContain("maxWallClockMs");
+    });
+  });
+
+  it("makes no reflection call once the tools spent the budget", async () => {
+    await withClock(async (clock) => {
+      const calls: Message[][] = [];
+      const model: any = {
+        modelName: "m",
+        bindTools() { return this; },
+        async invoke(msgs: Message[]) {
+          calls.push(msgs);
+          if (calls.length === 1) return { role: "assistant", content: "", tool_calls: [call("slow")] };
+          return { role: "assistant", content: "reflection or answer" };
+        },
+      };
+      const slow = createTool({
+        name: "slow",
+        description: "Takes a while.",
+        schema: z.object({}).strict(),
+        func: async () => { clock.now += 20; return "done"; },
+      });
+      const agent = createAgent({
+        name: "R",
+        model,
+        tools: [slow],
+        limits: { maxWallClockMs: 10 },
+        reasoning: { enabled: true, level: "low", reflection: { cadence: "after_tool", everyNTurns: 1 } },
+      });
+      const events: any[] = [];
+      const result = await agent.invoke(userTurn, { onEvent: (e) => events.push(e) });
+      expect(calls).toHaveLength(1);
+      expect(events.some((e) => e.type === "reflection")).toBe(false);
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+    });
   });
 });

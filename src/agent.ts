@@ -571,6 +571,21 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return taken.map((_, index) => before + index + 1);
     };
 
+    // Execution budgets are checked again right before a model call: the loop
+    // awaits between its top-of-iteration check and the call (request
+    // guardrails, the input callback), and a budget can run out meanwhile.
+    // The run stops the way the top-of-iteration check stops it: the limit is
+    // recorded and announced, and input already taken stays in the transcript.
+    // Tools are not gated here: they answer tool_calls the model already made,
+    // and the next model call is gated at the top of the loop.
+    const stopIfOverBudget = async (): Promise<boolean> => {
+      const budget = checkBudgetBreached();
+      if (!budget.breached) return false;
+      await announceLimit(budget.reason);
+      state = { ...state, ctx: { ...(state.ctx || {}), __limitBreached: budget.reason } } as AgentState;
+      return true;
+    };
+
     // Input is asked for after a final answer only when a next model call can
     // run: no cancellation, no iteration cap, no execution budget spent. Else
     // it stays with the host for a run of its own.
@@ -675,6 +690,7 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         }
 
           // Agent step
+          if (await stopIfOverBudget()) break;
           onProgress?.({ stage: "agent", message: "Invoking model" });
           if (cancelIfRequested("before_agent")) break;
           state = publish({ ...state, ...(await agentCore(state)) } as AgentState);
@@ -855,7 +871,9 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         const cadenceWantsIt = refl.shouldReflect
           ? !!refl.shouldReflect({ state: state as any, turn: currentTurn, trigger: cadence, ranToolsThisTurn: true })
           : shouldRunReflection(cadence, state as any, true);
-        if (!budgetExceeded && !cadenceGap && cadenceWantsIt) {
+        // A reflection is a model call: not once the tools spent a budget (the
+        // top of the next iteration then stops the run and announces it).
+        if (!budgetExceeded && !cadenceGap && cadenceWantsIt && !checkBudgetBreached().breached) {
           try {
             const patch = await reflectNode(state as any, cadence);
             if (patch && Object.keys(patch).length > 0) {

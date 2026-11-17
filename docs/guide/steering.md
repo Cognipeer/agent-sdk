@@ -24,6 +24,8 @@ The callback is told where it is asked: `drainPendingInputs({ stage, iteration }
 
 Request guardrails check the conversation as it stands before the loop asks, so a blocked request takes no input. Then they check each item it took by itself, as the latest message of the conversation up to that item, before the next model call.
 
+Execution budgets are checked again right before every model call, after the callback and the request guardrails returned, so a slow callback never pushes a model call past a budget.
+
 ## What the loop does with an item
 
 Each non-empty item becomes a user message:
