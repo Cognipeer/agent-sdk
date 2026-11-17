@@ -1870,10 +1870,12 @@ export type SmartAgentEvent = (
 export type PendingInput = {
   /** Host-side id of the queued item; echoed on the message and the event. */
   id: string;
-  /** Text appended as the user message. Empty items are skipped. */
+  /**
+   * Text appended as the user message. Empty items are skipped. Put the sender
+   * here when the model should know who wrote it: message `name` is not set,
+   * because some providers restrict it.
+   */
   content: string;
-  /** Optional `name` on the appended user message (e.g. a sender handle). */
-  name?: string;
   /** Where it came from, e.g. "portal", "slack", "webhook", "reminder". */
   source?: string;
   /** What it is, e.g. "message", "event". Default "message". */
@@ -1886,7 +1888,10 @@ export type PendingInput = {
 export type PendingInputAsk = {
   /** Before a model call, or right after the model gave a final answer. */
   stage: "before_model" | "after_final";
-  /** Loop iteration (1-based). */
+  /**
+   * Loop iteration (1-based), counted within one model loop. A smart-agent
+   * turn that summarizes mid-turn runs a new loop, which counts from 1 again.
+   */
   iteration: number;
 };
 
@@ -1897,7 +1902,7 @@ export type UserInputEvent = {
   iteration: number;
   /** Where in the loop they were taken: before a model call, or after a final answer. */
   stage: "before_model" | "after_final";
-  inputs: Array<{ id: string; source?: string; kind?: string; content: string; name?: string }>;
+  inputs: Array<{ id: string; source?: string; kind?: string; content: string }>;
 };
 
 export type ReflectionEvent = {

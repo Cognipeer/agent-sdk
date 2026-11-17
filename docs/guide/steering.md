@@ -20,7 +20,7 @@ const result = await agent.invoke(state, {
 - **Before each model call**, but only when no tool call is still unanswered. A user message never lands between an assistant `tool_call` and its `tool` result, so the transcript stays valid for every provider. On a resume that starts by running approved tools, the first ask comes after those tools ran.
 - **Once more after a final answer.** If something arrived while the model wrote it, the loop appends it and goes on, so the person gets an answer in the same run. `finalAnswer` is emitted once, at the end.
 
-The callback is told where it is asked: `drainPendingInputs({ stage, iteration })`, `stage` being `"before_model"` or `"after_final"`. A host that shows every answer as a message of its own can return nothing at `"after_final"`: the run then ends with the answer it has, and the host starts a new run with what is waiting (the result's `content` is only the last answer of a run, so an answer followed by taken input is otherwise one the host has to pick out of `result.messages`).
+The callback is told where it is asked: `drainPendingInputs({ stage, iteration })`, `stage` being `"before_model"` or `"after_final"`, and `iteration` the 1-based iteration of the model loop (a smart-agent turn that summarizes mid-turn starts a new loop, which counts from 1 again). A host that shows every answer as a message of its own can return nothing at `"after_final"`: the run then ends with the answer it has, and the host starts a new run with what is waiting (the result's `content` is only the last answer of a run, so an answer followed by taken input is otherwise one the host has to pick out of `result.messages`).
 
 Request guardrails run after the ask, so they check injected text too.
 

@@ -255,3 +255,189 @@ describe("drainPendingInputs: smart agent", () => {
     expect((log.calls.at(-1) as any[]).some((m) => m.content === "which PRs are in?")).toBe(true);
   });
 });
+
+/**
+ * The contract the Cognipeer platform's room inbox (agentRooms/inbox.ts
+ * `createSteeringTap`) relies on: it claims `steer` items at `before_model`,
+ * returns nothing at `after_final` (what came in while the answer was written
+ * starts the next run), and reads the taken items back from `result.messages`
+ * by `metadata.injected` + string `metadata.inputId` + string `content`.
+ */
+describe("drainPendingInputs: room host contract", () => {
+  type InboxItem = { id: string; text: string; from: { kind: string; display: string }; status: "queued" | "consumed" };
+
+  function roomInbox() {
+    const items: InboxItem[] = [];
+    const asks: Array<{ stage: string; iteration: number }> = [];
+    let seq = 0;
+    return {
+      items,
+      asks,
+      write(text: string) {
+        seq += 1;
+        items.push({ id: `inbox_${seq}`, text, from: { kind: "slack", display: "Anil" }, status: "queued" });
+      },
+      drain: async (ask: { stage: "before_model" | "after_final"; iteration: number }): Promise<PendingInput[]> => {
+        asks.push(ask);
+        if (ask.stage === "after_final") return [];
+        const claimed = items.filter((item) => item.status === "queued");
+        for (const item of claimed) item.status = "consumed";
+        return claimed.map((item) => ({
+          id: item.id,
+          content: `[${item.from.display} · Slack] ${item.text}`,
+          source: item.from.kind,
+          kind: "message",
+          metadata: { from: item.from },
+        }));
+      },
+    };
+  }
+
+  /** What the platform's `transcriptMessages` reads back from the result. */
+  function storedByInputId(messages: unknown[]) {
+    const stored = new Map<string, string>();
+    for (const message of messages) {
+      const m = message as { role?: string; content?: unknown; metadata?: { injected?: boolean; inputId?: unknown } };
+      if (m?.role === "user" && m.metadata?.injected && typeof m.metadata.inputId === "string" && typeof m.content === "string") {
+        stored.set(m.metadata.inputId, m.content);
+      }
+    }
+    return stored;
+  }
+
+  it("takes a message written mid-run exactly once and leaves one written during the answer for the next run", async () => {
+    const inbox = roomInbox();
+    const calls: Message[][] = [];
+    const script: Step[] = [{ tool_calls: [call("lookup")] }, { content: "#557 is in the release" }];
+    const model = {
+      bindTools() {
+        return this;
+      },
+      async invoke(msgs: Message[]) {
+        calls.push(msgs.map((m: any) => ({ ...m })));
+        const step = script[Math.min(calls.length - 1, script.length - 1)];
+        // The person writes again while the final answer is being written.
+        if (calls.length === 2) inbox.write("and tag it 0.25.0");
+        const msg: any = { role: "assistant", content: step.content ?? "" };
+        if (step.tool_calls) msg.tool_calls = step.tool_calls;
+        return msg as Message;
+      },
+    } as any;
+    const tool = createTool({
+      name: "lookup",
+      description: "Look something up.",
+      schema: z.object({}).strict(),
+      func: async () => {
+        // The person writes while the tool runs.
+        inbox.write("also add #557");
+        return "found";
+      },
+    });
+    const agent = createSmartAgent({ name: "Release", model, tools: [tool] });
+    const events: any[] = [];
+
+    const result = await agent.invoke(userTurn, { drainPendingInputs: inbox.drain, onEvent: (e) => events.push(e) });
+
+    expect(inbox.asks).toEqual([
+      { stage: "before_model", iteration: 1 },
+      { stage: "before_model", iteration: 2 },
+      { stage: "after_final", iteration: 2 },
+    ]);
+    expect(calls).toHaveLength(2);
+    // The model saw the steering message once, after the tool result.
+    const second = calls[1] as any[];
+    expect(second.filter((m) => m.content === "[Anil · Slack] also add #557")).toHaveLength(1);
+    expect(second.at(-1)).toMatchObject({ role: "user", content: "[Anil · Slack] also add #557" });
+
+    const msgs = result.messages as any[];
+    expect(msgs.filter(injected)).toHaveLength(1);
+    expect(storedByInputId(msgs)).toEqual(new Map([["inbox_1", "[Anil · Slack] also add #557"]]));
+    expectWellPaired(msgs as Message[]);
+    expect(result.content).toBe("#557 is in the release");
+    expect(events.filter((e) => e.type === "user_input")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "finalAnswer")).toHaveLength(1);
+    // The message written during the answer is still the host's.
+    expect(inbox.items.map((item) => item.status)).toEqual(["consumed", "queued"]);
+  });
+
+  it("goes on without input when the callback rejects or returns something that is not a list", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = { calls: [] as Message[][] };
+    const agent = createSmartAgent({ name: "R", model: scriptedModel([{ content: "answer" }, { content: "second answer" }], log) });
+    const asks: string[] = [];
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: ((ask: { stage: string }) => {
+        asks.push(ask.stage);
+        if (ask.stage === "before_model") return Promise.reject(new Error("inbox unreachable"));
+        return null;
+      }) as any,
+    });
+    expect(asks).toEqual(["before_model", "after_final"]);
+    expect(log.calls).toHaveLength(1);
+    expect(result.content).toBe("answer");
+    expect((result.messages as any[]).some(injected)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("ends with the answer when the callback throws at after_final", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = { calls: [] as Message[][] };
+    const agent = createAgent({ name: "R", model: scriptedModel([{ content: "answer" }, { content: "never" }], log) });
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: async (ask) => {
+        if (ask.stage === "after_final") throw new Error("inbox unreachable");
+        return [];
+      },
+    });
+    expect(log.calls).toHaveLength(1);
+    expect(result.content).toBe("answer");
+    warn.mockRestore();
+  });
+});
+
+describe("drainPendingInputs: after the final answer", () => {
+  it("smart agent: input taken after the answer is answered in the same turn, once", async () => {
+    const log = { calls: [] as Message[][] };
+    const agent = createSmartAgent({
+      name: "Release",
+      model: scriptedModel([{ content: "release started" }, { content: "ok, adding it" }], log),
+    });
+    const handed: string[] = [];
+    const events: any[] = [];
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: async (ask) => {
+        if (ask.stage !== "after_final" || handed.length > 0) return [];
+        handed.push("in_late");
+        return [{ id: "in_late", content: "wait, one more PR" }];
+      },
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(log.calls).toHaveLength(2);
+    expect((log.calls[1] as any[]).filter((m) => m.content === "wait, one more PR")).toHaveLength(1);
+    const msgs = result.messages as any[];
+    expect(msgs.filter((m) => m.role !== "system").map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(msgs.filter(injected)).toHaveLength(1);
+    expect(result.content).toBe("ok, adding it");
+    expect(events.filter((e) => e.type === "user_input").map((e) => e.stage)).toEqual(["after_final"]);
+    expect(events.filter((e) => e.type === "finalAnswer")).toHaveLength(1);
+  });
+
+  it("stays within the iteration limit when input keeps arriving after every answer", async () => {
+    const log = { calls: [] as Message[][] };
+    const agent = createAgent({ name: "R", model: scriptedModel([{ content: "answer" }], log), limits: { maxToolCalls: 1 } });
+    let n = 0;
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: async (ask) => {
+        if (ask.stage !== "after_final") return [];
+        n += 1;
+        return [{ id: `in_${n}`, content: `more ${n}` }];
+      },
+    });
+    // maxToolCalls 1 → an iteration limit of 40: one model call per iteration, no input after the last.
+    expect(log.calls).toHaveLength(40);
+    expect(n).toBe(39);
+    expect(result.content).toBe("answer");
+  });
+});
