@@ -17,6 +17,8 @@ import { z } from "zod";
 import { createAgent } from "../../src/agent.js";
 import { createSmartAgent } from "../../src/smart/index.js";
 import { createTool } from "../../src/tool.js";
+import { createRegexGuardrail } from "../../src/guardrails/index.js";
+import { GuardrailPhase } from "../../src/types.js";
 import type { Message, PendingInput } from "../../src/types.js";
 
 const call = (name: string, args: Record<string, unknown> = {}, id = `c_${name}`) => ({
@@ -439,5 +441,223 @@ describe("drainPendingInputs: after the final answer", () => {
     expect(log.calls).toHaveLength(40);
     expect(n).toBe(39);
     expect(result.content).toBe("answer");
+  });
+});
+
+describe("drainPendingInputs: request guardrails see every input", () => {
+  const policy = () => createRegexGuardrail(/BLOCKED_TOPIC/, { phases: [GuardrailPhase.Request] });
+
+  function countingModel(script: Step[]) {
+    const log = { calls: [] as Message[][] };
+    return { log, model: scriptedModel(script, log) };
+  }
+
+  it("blocks a single input that the request policy denies (control)", async () => {
+    const { log, model } = countingModel([{ content: "answer" }]);
+    const agent = createAgent({ name: "R", model, guardrails: [policy()] });
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: queue([[{ id: "a", content: "about BLOCKED_TOPIC" }]]),
+    });
+    expect(log.calls).toHaveLength(0);
+    expect((result.state as any).ctx.__guardrailBlocked).toBeDefined();
+  });
+
+  it("checks each input of a batch, not only the last one", async () => {
+    const { log, model } = countingModel([{ content: "answer" }]);
+    const agent = createAgent({ name: "R", model, guardrails: [policy()] });
+    const events: any[] = [];
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: queue([[
+        { id: "a", content: "about BLOCKED_TOPIC" },
+        { id: "b", content: "an ordinary question" },
+      ]]),
+      onEvent: (e) => events.push(e),
+    });
+    expect(log.calls).toHaveLength(0);
+    expect((result.state as any).ctx.__guardrailBlocked).toBeDefined();
+    expect(events.filter((e) => e.type === "guardrail" && e.disposition === "block")).toHaveLength(1);
+  });
+
+  it("checks the run's own request before taking input, and takes none when it is blocked", async () => {
+    const { log, model } = countingModel([{ content: "answer" }]);
+    const agent = createAgent({ name: "R", model, guardrails: [policy()] });
+    const drain = vi.fn(async () => [{ id: "b", content: "an ordinary question" }] as PendingInput[]);
+    const result = await agent.invoke(
+      { messages: [{ role: "user", content: "about BLOCKED_TOPIC" }] } as any,
+      { drainPendingInputs: drain },
+    );
+    expect(log.calls).toHaveLength(0);
+    expect(drain).not.toHaveBeenCalled();
+    expect((result.state as any).ctx.__guardrailBlocked).toBeDefined();
+    expect((result.messages as any[]).some(injected)).toBe(false);
+  });
+
+  it("checks input taken after the answer before the next model call", async () => {
+    const { log, model } = countingModel([{ content: "first answer" }, { content: "never" }]);
+    const agent = createAgent({ name: "R", model, guardrails: [policy()] });
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: async (ask) =>
+        ask.stage === "after_final"
+          ? [
+              { id: "a", content: "about BLOCKED_TOPIC" },
+              { id: "b", content: "an ordinary question" },
+            ]
+          : [],
+    });
+    expect(log.calls).toHaveLength(1);
+    expect((result.state as any).ctx.__guardrailBlocked).toBeDefined();
+  });
+
+  it("lets allowed input through, each checked once", async () => {
+    const { log, model } = countingModel([{ content: "answer" }]);
+    const checked: string[] = [];
+    const agent = createAgent({
+      name: "R",
+      model,
+      guardrails: [
+        createRegexGuardrail(/BLOCKED_TOPIC/, {
+          phases: [GuardrailPhase.Request],
+          rule: { selector: (ctx) => { const text = String(ctx.latestMessage?.content ?? ""); checked.push(text); return text; } },
+        }),
+      ],
+    });
+    const result = await agent.invoke(userTurn, {
+      drainPendingInputs: queue([[
+        { id: "a", content: "first question" },
+        { id: "b", content: "second question" },
+      ]]),
+    });
+    expect(log.calls).toHaveLength(1);
+    expect(checked).toEqual(["start the release", "first question", "second question"]);
+    expect((result.messages as any[]).filter(injected)).toHaveLength(2);
+  });
+});
+
+describe("drainPendingInputs: execution budgets after the answer", () => {
+  function clockedModel(clock: { now: number }, stepMs: number, usage?: { output_tokens: number }) {
+    const log = { calls: [] as Message[][] };
+    const model = {
+      modelName: "budget-mock",
+      bindTools() {
+        return this;
+      },
+      async invoke(msgs: Message[]) {
+        log.calls.push(msgs);
+        clock.now += stepMs;
+        const msg: any = { role: "assistant", content: `answer ${log.calls.length}` };
+        if (usage) msg.usage_metadata = { input_tokens: 10, output_tokens: usage.output_tokens, total_tokens: 10 + usage.output_tokens };
+        return msg as Message;
+      },
+    } as any;
+    return { log, model };
+  }
+
+  function hostQueue() {
+    const waiting: PendingInput[] = [{ id: "late", content: "one more thing" }];
+    const asks: string[] = [];
+    const drain = async (ask: { stage: string }) => {
+      asks.push(ask.stage);
+      if (ask.stage !== "after_final") return [];
+      return waiting.splice(0, waiting.length);
+    };
+    return { waiting, asks, drain };
+  }
+
+  async function runWith(agent: ReturnType<typeof createAgent>, host: ReturnType<typeof hostQueue>) {
+    const events: any[] = [];
+    const result = await agent.invoke(userTurn, { drainPendingInputs: host.drain, onEvent: (e) => events.push(e) });
+    return { result, events };
+  }
+
+  it("does not take input when the answer spent the wall-clock budget", async () => {
+    const clock = { now: 1_000_000 };
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    try {
+      const { log, model } = clockedModel(clock, 11);
+      const agent = createAgent({ name: "R", model, limits: { maxWallClockMs: 10 } });
+      const host = hostQueue();
+      const { result, events } = await runWith(agent, host);
+      expect(log.calls).toHaveLength(1);
+      expect(host.asks).toEqual(["before_model"]);
+      expect(host.waiting).toHaveLength(1);
+      expect(result.content).toBe("answer 1");
+      expect((result.messages as any[]).at(-1)).toMatchObject({ role: "assistant", content: "answer 1" });
+      expect(events.some((e) => e.type === "user_input")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not take input when the answer spent the output-token budget", async () => {
+    const { log, model } = clockedModel({ now: 0 }, 0, { output_tokens: 60 });
+    const agent = createAgent({ name: "R", model, limits: { maxTotalOutputTokens: 50 } });
+    const host = hostQueue();
+    const { result } = await runWith(agent, host);
+    expect(log.calls).toHaveLength(1);
+    expect(host.asks).toEqual(["before_model"]);
+    expect(host.waiting).toHaveLength(1);
+    expect(result.content).toBe("answer 1");
+  });
+
+  it("does not take input when the answer spent the cost budget", async () => {
+    const { log, model } = clockedModel({ now: 0 }, 0, { output_tokens: 20 });
+    const agent = createAgent({
+      name: "R",
+      model,
+      limits: { maxCostUsd: 0.0005 },
+      costEstimator: ({ outputTokens }) => outputTokens * 0.00003,
+    });
+    const host = hostQueue();
+    const { result } = await runWith(agent, host);
+    expect(log.calls).toHaveLength(1);
+    expect(host.asks).toEqual(["before_model"]);
+    expect(host.waiting).toHaveLength(1);
+    expect(result.content).toBe("answer 1");
+  });
+
+  it("keeps input in the transcript and reports the limit when the budget runs out while the callback runs", async () => {
+    const clock = { now: 1_000_000 };
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    try {
+      const { log, model } = clockedModel(clock, 5);
+      const agent = createAgent({ name: "R", model, limits: { maxWallClockMs: 10 } });
+      const events: any[] = [];
+      const result = await agent.invoke(userTurn, {
+        drainPendingInputs: async (ask) => {
+          if (ask.stage !== "after_final") return [];
+          clock.now += 20; // a slow queue
+          return [{ id: "late", content: "one more thing" }];
+        },
+        onEvent: (e) => events.push(e),
+      });
+      expect(log.calls).toHaveLength(1);
+      const msgs = result.messages as any[];
+      expect(msgs.at(-1)).toMatchObject({ role: "user", content: "one more thing", metadata: { injected: true, inputId: "late" } });
+      expect(events.filter((e) => e.type === "user_input").map((e) => e.stage)).toEqual(["after_final"]);
+      expect(events.find((e) => e.type === "metadata" && e.limitBreached)?.limitBreached).toContain("maxWallClockMs");
+      expect((result.state as any).ctx.__limitBreached).toContain("maxWallClockMs");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keeps input in the transcript and reports the cancellation when the run is cancelled while the callback runs", async () => {
+    const { log, model } = clockedModel({ now: 0 }, 0);
+    const agent = createAgent({ name: "R", model });
+    const abort = new AbortController();
+    const events: any[] = [];
+    const result = await agent.invoke(userTurn, {
+      cancellationToken: abort.signal,
+      drainPendingInputs: async (ask) => {
+        if (ask.stage !== "after_final") return [];
+        abort.abort();
+        return [{ id: "late", content: "one more thing" }];
+      },
+      onEvent: (e) => events.push(e),
+    });
+    expect(log.calls).toHaveLength(1);
+    expect((result.messages as any[]).at(-1)).toMatchObject({ role: "user", metadata: { injected: true, inputId: "late" } });
+    expect(events.some((e) => e.type === "cancelled")).toBe(true);
+    expect((result.state as any).ctx.__cancelled).toBeDefined();
   });
 });

@@ -1988,13 +1988,18 @@ export type InvokeConfig = RunnableConfig & {
    * Steering: called by the loop to collect input that arrived while the run
    * is working. It is called before each model call (never while a tool call
    * is still unanswered, so tool_call/tool_result pairs stay intact) and once
-   * more when the model gave a final answer; anything returned there is
-   * appended and the loop goes on instead of ending the turn.
+   * more when the model gave a final answer, if a next model call can still
+   * run (not cancelled, under the iteration cap and every execution budget);
+   * anything returned there is appended and the loop goes on instead of
+   * ending the turn. Request guardrails check each returned item by itself
+   * before the next model call.
    *
    * Returned items are consumed: the loop appends each one as a user message
    * (`metadata.injected = true`, `metadata.inputId`) and emits one
    * `user_input` event. Return an empty array when nothing is pending. A
-   * throwing callback is logged and treated as empty.
+   * throwing callback is logged and treated as empty. An item the run took
+   * but could not answer (cancelled, or a budget ran out meanwhile) stays in
+   * the transcript, and the run reports why it stopped.
    *
    * Applies to this agent's own loop only. Sub-agents and agents used as tools
    * never receive it.

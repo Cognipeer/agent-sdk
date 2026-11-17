@@ -454,25 +454,81 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
       return true;
     };
 
+    // Request guardrails before a model call. With `ends`, each prefix of the
+    // conversation that ends there is checked with its own last message as the
+    // latest one: every input of a batch is checked by itself, not only the
+    // batch's last item. Without, the conversation as it stands is checked
+    // once, unless it was already checked at this length. True when a
+    // guardrail blocked; the block is recorded on the state.
+    const guardRequest = async (ends?: number[]): Promise<boolean> => {
+      const preGuardrails = getGuardrailConfig(state);
+      if (preGuardrails.length === 0) return false;
+      const store = ensureGuardrailStore(state);
+      const lengths = ends ?? (store.lastRequestLength !== state.messages.length ? [state.messages.length] : []);
+      for (const length of lengths) {
+        const view = length === state.messages.length
+          ? state
+          : ({ ...state, messages: state.messages.slice(0, length) } as AgentState);
+        const outcome = await evaluateGuardrails({
+          guardrails: preGuardrails,
+          phase: GuardrailPhase.Request,
+          state: view,
+          runtime: state.agent || runtime,
+          options: opts,
+          emit,
+        });
+        state.guardrailResult = mergeGuardrailOutcomes(state.guardrailResult, outcome);
+        const blocking = outcome.incidents.find((incident) => incident.disposition === "block");
+        if (blocking) {
+          store.lastRequestLength = state.messages.length;
+          const guardMessage: any = {
+            role: "assistant",
+            name: "guardrail",
+            content: blocking.reason || "Request blocked by guardrail policy.",
+            metadata: {
+              guardrail: {
+                phase: GuardrailPhase.Request,
+                incidents: outcome.incidents,
+              },
+            },
+          };
+          state = { ...state, messages: [...state.messages, guardMessage] } as AgentState;
+          const ctx = (state.ctx = state.ctx || {});
+          (ctx as any).__guardrailBlocked = {
+            phase: GuardrailPhase.Request,
+            incident: blocking,
+          };
+          return true;
+        }
+      }
+      store.lastRequestLength = state.messages.length;
+      return false;
+    };
+
     // Steering: input the host queued while this run was working. Taken only
     // when no tool call is unanswered, so a user message never lands between a
-    // tool_call and its result. Items are consumed once returned.
+    // tool_call and its result. Items are consumed once returned: they stay in
+    // the transcript even when the run then stops before answering them
+    // (cancelled, a budget ran out while the callback ran), and the run reports
+    // why it stopped. Returns the length of the conversation after each
+    // appended input, for guardRequest.
     const drainPendingInputs = config?.drainPendingInputs;
-    const takePendingInputs = async (stage: "before_model" | "after_final"): Promise<boolean> => {
-      if (typeof drainPendingInputs !== "function") return false;
-      if (selectPendingToolCalls(state.messages).length > 0) return false;
+    const takePendingInputs = async (stage: "before_model" | "after_final"): Promise<number[]> => {
+      if (typeof drainPendingInputs !== "function") return [];
+      if (selectPendingToolCalls(state.messages).length > 0) return [];
       let items: PendingInput[] = [];
       try {
         const out = await drainPendingInputs({ stage, iteration: iterations });
         items = Array.isArray(out) ? out : [];
       } catch (err) {
         console.warn('[agent-sdk] drainPendingInputs callback error:', err);
-        return false;
+        return [];
       }
       const taken = items.filter(
         (item) => item && typeof item.content === "string" && item.content.trim().length > 0,
       );
-      if (taken.length === 0) return false;
+      if (taken.length === 0) return [];
+      const before = state.messages.length;
       const appended = taken.map((item) => ({
         role: "user",
         content: item.content,
@@ -512,8 +568,18 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           ],
         });
       }
-      return true;
+      return taken.map((_, index) => before + index + 1);
     };
+
+    // Input is asked for after a final answer only when a next model call can
+    // run: no cancellation, no iteration cap, no execution budget spent. Else
+    // it stays with the host for a run of its own.
+    const canAnswerMoreInput = (): boolean =>
+      !(state as any).ctx?.__guardrailBlocked &&
+      !(state as any).ctx?.__cancelled &&
+      iterations < iterationLimit &&
+      !isCancelled().cancelled &&
+      !checkBudgetBreached().breached;
 
     // R1: "initial_then_after_tool" cadence reflects once up-front (a planning
     // note) before the first model call, then behaves like "after_tool" inside
@@ -590,46 +656,11 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
         if (cancelIfRequested("before_guardrails")) break;
         if (checkpointIfRequested("before_guardrails")) break;
 
-        // Before the request guardrails, so they see the injected text too.
-        await takePendingInputs("before_model");
-
-        const preGuardrails = getGuardrailConfig(state);
-        if (preGuardrails.length > 0) {
-          const store = ensureGuardrailStore(state);
-          if (store.lastRequestLength !== state.messages.length) {
-            const outcome = await evaluateGuardrails({
-              guardrails: preGuardrails,
-              phase: GuardrailPhase.Request,
-              state,
-              runtime: state.agent || runtime,
-              options: opts,
-              emit,
-            });
-            store.lastRequestLength = state.messages.length;
-            state.guardrailResult = mergeGuardrailOutcomes(state.guardrailResult, outcome);
-            const blocking = outcome.incidents.find((incident) => incident.disposition === "block");
-            if (blocking) {
-              const guardMessage: any = {
-                role: "assistant",
-                name: "guardrail",
-                content: blocking.reason || "Request blocked by guardrail policy.",
-                metadata: {
-                  guardrail: {
-                    phase: GuardrailPhase.Request,
-                    incidents: outcome.incidents,
-                  },
-                },
-              };
-              state = { ...state, messages: [...state.messages, guardMessage] } as AgentState;
-              const ctx = (state.ctx = state.ctx || {});
-              (ctx as any).__guardrailBlocked = {
-                phase: GuardrailPhase.Request,
-                incident: blocking,
-              };
-              break;
-            }
-          }
-        }
+        // The conversation as it stands first: a blocked request takes no
+        // queued input. Then the input, each item checked by itself.
+        if (await guardRequest()) break;
+        const takenEnds = await takePendingInputs("before_model");
+        if (takenEnds.length > 0 && (await guardRequest(takenEnds))) break;
 
         // Defer to a single decision helper for context summarization. The
         // helper returns "trigger" only when the context truly exceeds the
@@ -781,17 +812,15 @@ export function createAgent<TOutput = unknown>(opts: AgentOptions & { outputSche
           continue;
         }
         // Input that arrived while the model wrote its final answer: answer it
-        // in this run instead of ending the turn. Not after a blocked or
-        // cancelled turn, and not for structured output (one answer per run).
-        if (
-          !soManager &&
-          !(state as any).ctx?.__guardrailBlocked &&
-          !(state as any).ctx?.__cancelled &&
-          iterations < iterationLimit &&
-          !isCancelled().cancelled &&
-          (await takePendingInputs("after_final"))
-        ) {
-          continue;
+        // in this run instead of ending the turn. Only when a next model call
+        // can run, and not for structured output (one answer per run). The
+        // request guardrails check it here, before the next model call.
+        if (!soManager && canAnswerMoreInput()) {
+          const takenEnds = await takePendingInputs("after_final");
+          if (takenEnds.length > 0) {
+            if (await guardRequest(takenEnds)) break;
+            continue;
+          }
         }
         break;
       }
