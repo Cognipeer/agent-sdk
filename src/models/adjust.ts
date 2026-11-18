@@ -148,6 +148,14 @@ export function parseModelError(text: string): ParsedModelError | undefined {
     const sup = /supported values? (?:are|is):?\s*([^\n]*)/i.exec(message);
     return { kind: "unsupported_value", param, value, supportedValues: sup ? quotedList(sup[1]) : undefined, message };
   }
+  // The newer OpenAI wording names the value first and the parameter only in the error object's `param`:
+  // "Unsupported value: 'none' is not supported with the 'gpt-6.1-sol-2026-09-29' model. Supported values are:
+  // 'low', 'medium', 'high', 'xhigh', and 'max'." (param "reasoning.effort").
+  const valueFirst = new RegExp(`unsupported value:?\\s*${Q}([^'"\`]*)${Q}\\s+is not supported with\\b`, "i").exec(message);
+  if (valueFirst && errParam) {
+    const sup = /supported values? (?:are|is):?\s*([^\n]*)/i.exec(message);
+    return { kind: "unsupported_value", param: errParam, value: valueFirst[1], supportedValues: sup ? quotedList(sup[1]) : undefined, message };
+  }
   if (m.includes("only the default") && m.includes("value is supported")) {
     return { kind: "default_only", param: errParam ?? "temperature", message };
   }

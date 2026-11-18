@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **OpenAI's value-first "Unsupported value" 400 is learned again.** Newer OpenAI models answer an unsupported value as `Unsupported value: 'none' is not supported with the 'gpt-6.1-sol-2026-09-29' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.`, with the parameter only in the error object's `param` (`reasoning.effort`). The parser knew only the older `'<param>' does not support '<value>'` wording, so nothing was learned and every call with that value failed. On gpt-6.1-sol this hit every summarization pass, which asks for effort `none`. The value-first wording now parses with `param` taken from the error object: the request is retried with the nearest supported value (`none` becomes the lowest supported effort), and the fix is remembered per (provider, model) for both Chat Completions and Responses. Without a `param` in the error object nothing is learned, as before.
+
 ## [0.25.0] - 2026-11-17
 
 ### Added
