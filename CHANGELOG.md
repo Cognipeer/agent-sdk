@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-19
+
 ### Added
 - **`serverType` on `OpenAICompatibleProvider`: reasoning off/on reaches self-hosted open-weight models.** A hybrid Qwen3 behind mlx_lm.server, vLLM, SGLang or llama.cpp is switched by its chat template (`enable_thinking`) and ignores `reasoning_effort`, so `reasoning: { effort: "none" }` had no effect there. Declare what answers the base URL (`generic` (default) | `openai` | `vllm` | `sglang` | `mlx` | `llamacpp` | `ollama` | `lmstudio` | `dashscope` | `openrouter`) and the request's `reasoning` goes where that server reads it, for models with a known reasoning profile (Chat Completions only):
   - `mlx` / `vllm` / `sglang` / `llamacpp`: a hybrid model gets `chat_template_kwargs.enable_thinking` (`false` for effort `none`, `true` for any other effort or a budget) and no `reasoning_effort`. gpt-oss on `mlx` / `llamacpp` gets its level as `chat_template_kwargs.reasoning_effort` (mapped by its rule: `none` → `low`, `xhigh` / `max` → `high`); on `vllm` / `sglang` it keeps `reasoning_effort`.
