@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-11-19
+
+### Fixed
+- **Streamed answers on template servers no longer lose a CR at the finish signal.** With `serverType` `mlx` / `vllm` / `sglang` / `llamacpp`, the stream cleanup that removes the blank line a reasoning template leaves before the answer held back a lone trailing `"\r"` (a possible CRLF half split over chunks). When that CR came in the chunk carrying the finish reason, it went out only after the finish signal, so a consumer that stops reading there lost it. Now:
+  - the CR is decided by the next answer text (`"\n"` completes the CRLF, anything else makes the CR answer text in front of it), by the finish reason (the CR goes out with that chunk), or by the end of the stream (a last chunk with the CR and the final cumulative usage);
+  - chunks without answer text (an empty delta, `content: ""`, reasoning or usage only) pass in order and leave the CR undecided;
+  - usage on a chunk is not taken as the end of the answer (vLLM `continuous_usage_stats` puts usage on every chunk).
+
+  Every chunk partition of the separator streams the same answer as the non-streamed cleanup, all of it out by the finish reason. Other server types, other providers and non-streamed responses are unchanged.
+
 ## [0.26.0] - 2026-11-19
 
 ### Added
