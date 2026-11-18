@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { OpenAICompatibleProvider } from "../../../src/providers/openaiCompatible.js";
 import { clearLearnedModelRules, describeServingReasoning, SERVER_TYPES } from "../../../src/models/index.js";
-import type { ChatCompletionRequest, OpenAICompatibleProviderConfig, ReasoningRequestConfig } from "../../../src/providers/types.js";
+import { stripAnswerSeparator, stripStreamSeparator } from "../../../src/providers/utils/reasoningSeparator.js";
+import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, OpenAICompatibleProviderConfig, ReasoningRequestConfig } from "../../../src/providers/types.js";
 
 beforeEach(() => clearLearnedModelRules());
 
@@ -473,6 +474,71 @@ describe("answer separator after split-off reasoning (streamed)", () => {
       if (chunk.delta.content !== undefined || chunk.usage) seen.push({ content: chunk.delta.content, usage: !!chunk.usage });
     }
     expect(seen).toEqual([{ content: "\r", usage: true }]);
+  });
+
+  it("usage on every chunk (vLLM continuous_usage_stats) is not an end of the answer", async () => {
+    const u = (n: number) => ({ prompt_tokens: 10, completion_tokens: n, total_tokens: 10 + n });
+    const { p } = provider("vllm", () => new Response(sse([
+      { ...delta({ reasoning_content: THINKING }), usage: u(1) },
+      { ...delta({ content: "\r" }), usage: u(2) },
+      { ...delta({ content: "\n" }), usage: u(3) },
+      { ...delta({ content: "\r" }), usage: u(4) },
+      { ...delta({ content: "\n" }), usage: u(5) },
+      { ...delta({ content: "X" }, "stop"), usage: u(6) },
+    ]), { status: 200 }));
+    let content = "";
+    let outputTokens = 0;
+    for await (const chunk of p.completeStream({ model: "Qwen/Qwen3-8B", messages: USER, extra: { stream_options: { include_usage: true, continuous_usage_stats: true } } })) {
+      content += chunk.delta.content ?? "";
+      if (chunk.usage) outputTokens = chunk.usage.outputTokens;
+    }
+    expect(content).toBe("X");
+    expect(outputTokens).toBe(6);
+  });
+
+  it("every chunk partition streams the same answer as the non-streamed cleanup", async () => {
+    const answers = ["\r\n\r\nX", "\n\r\n    y", "\r\n\n\tz", "\n\n\nZ", "\r\rA", "\rB", "\n\rC", "\r\n", "\n\r", "\n\n", "\r"];
+    const partitions = (text: string): string[][] => {
+      if (text.length <= 1) return [[text]];
+      const out: string[][] = [];
+      for (let mask = 0; mask < 1 << (text.length - 1); mask++) {
+        const parts: string[] = [];
+        let cur = text[0];
+        for (let i = 1; i < text.length; i++) {
+          if (mask & (1 << (i - 1))) { parts.push(cur); cur = text[i]; } else cur += text[i];
+        }
+        parts.push(cur);
+        out.push(parts);
+      }
+      return out;
+    };
+    const base = { id: "c", model: "m" };
+    const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedInputTokens: 0, cachedWriteTokens: 0, cachedOutputTokens: 0, reasoningTokens: 0 };
+    let checked = 0;
+    for (const answer of answers) {
+      const expected = stripAnswerSeparator({ ...base, content: answer, toolCalls: [], usage, finishReason: "stop", reasoning: { summary: THINKING }, raw: {} } as ChatCompletionResponse).content ?? "";
+      for (const parts of partitions(answer)) {
+        for (const withUsage of [false, true]) {
+          async function* source(): AsyncGenerator<ChatCompletionChunk> {
+            yield { ...base, delta: { reasoning: { summary: THINKING } }, ...(withUsage ? { usage } : {}) };
+            for (let i = 0; i < parts.length; i++) {
+              yield { ...base, delta: { content: parts[i] }, ...(withUsage ? { usage } : {}), ...(i === parts.length - 1 ? { finishReason: "stop" as const } : {}) };
+            }
+          }
+          let got = "";
+          let finishSeenWith = "";
+          for await (const chunk of stripStreamSeparator(source())) {
+            got += chunk.delta.content ?? "";
+            if (chunk.finishReason) finishSeenWith = got;
+          }
+          expect(got, JSON.stringify({ parts, withUsage })).toBe(expected);
+          // Every character is out by the time the finish reason arrives.
+          expect(finishSeenWith, JSON.stringify({ parts, withUsage })).toBe(expected);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50);
   });
 
   it("without reasoning a leading newline is the model's own and is kept", async () => {

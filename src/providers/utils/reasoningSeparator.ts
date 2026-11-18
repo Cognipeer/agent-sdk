@@ -38,19 +38,30 @@ export function stripAnswerSeparator(response: ChatCompletionResponse): ChatComp
   return { ...response, content: content.length > 0 ? content : null };
 }
 
+/** `chunk` with its delta's `content` replaced (removed when `content` is empty or undefined); everything else kept. */
+function withContent(chunk: ChatCompletionChunk, content?: string): ChatCompletionChunk {
+  const delta = { ...chunk.delta };
+  if (content) delta.content = content;
+  else delete delta.content;
+  return { ...chunk, delta };
+}
+
 /**
  * `stripAnswerSeparator` for a stream: after reasoning deltas, the first answer
  * deltas lose up to two leading line breaks in total, however the server split
  * them over chunks (`"\n"`, `"\n"`, `"    print"` gives `"    print"`; a CRLF
  * split as `"\r"`, `"\n"` is one line break). A chunk left empty still arrives,
- * without `content`. A trailing `"\r"` that may open a CRLF is held back until
- * the next content decides: a `"\n"` completes the line break, anything else
- * makes the CR answer text, which is then delivered in front of it (or on the
- * finish / usage chunk, or in a chunk of its own at the end of the stream). A
- * CR in a chunk that itself carries the finish reason or the final usage is
- * never held: it goes out with that chunk, before or with the finish signal.
- * Once the answer has a character that is not one of those line breaks, every
- * chunk passes as it came.
+ * without `content`, with its other fields (usage, finish reason, ...).
+ *
+ * A chunk whose answer text is a lone trailing `"\r"` (the possible first half of
+ * a CRLF) is held back, whole, until the next chunk decides: content starting
+ * with `"\n"` completes the line break (the held chunk goes out without content);
+ * anything else, or the end of the stream, makes the CR answer text (the held
+ * chunk goes out with it, before the next chunk). Usage on a chunk is not an end
+ * of the answer (vLLM `continuous_usage_stats` puts it on every chunk); a finish
+ * reason is, so a chunk that carries one is never held and every character is
+ * out by the time the finish reason arrives. Once the answer has a character
+ * that is not one of those line breaks, every chunk passes as it came.
  */
 export async function* stripStreamSeparator(
   chunks: AsyncIterable<ChatCompletionChunk>,
@@ -58,62 +69,49 @@ export async function* stripStreamSeparator(
   let reasoningSeen = false;
   let budget = SEPARATOR_BREAKS;
   let answerStarted = false;
-  /** A trailing CR held back: the first half of a CRLF split over chunks, or answer text. */
-  let heldCR = false;
-  let last: ChatCompletionChunk | undefined;
+  /** The chunk held back on a lone trailing CR, while the separator budget lasts. */
+  let held: ChatCompletionChunk | undefined;
   for await (const chunk of chunks) {
-    last = chunk;
+    let current = chunk;
+    if (held) {
+      const content = current.delta?.content;
+      if (typeof content === "string" && content.startsWith("\n")) {
+        // CRLF: one separator line break; the rest of this chunk goes on below.
+        yield withContent(held);
+        budget--;
+        current = withContent(current, content.slice(1));
+      } else {
+        // The CR is answer text.
+        yield withContent(held, "\r");
+        answerStarted = true;
+      }
+      held = undefined;
+    }
     if (answerStarted) {
-      yield chunk;
+      yield current;
       continue;
     }
-    if (chunk.delta?.reasoning?.summary) reasoningSeen = true;
-    const content = chunk.delta?.content;
+    if (current.delta?.reasoning?.summary) reasoningSeen = true;
+    const content = current.delta?.content;
     if (typeof content !== "string" || content.length === 0) {
-      // The answer is over (finish reason or final usage) with the CR undecided: it is the answer's own.
-      if (heldCR && (chunk.finishReason || chunk.usage)) {
-        heldCR = false;
-        answerStarted = true;
-        yield { ...chunk, delta: { ...chunk.delta, content: "\r" } };
-        continue;
-      }
-      yield chunk;
+      yield current;
       continue;
     }
     if (!reasoningSeen) {
       answerStarted = true;
-      yield chunk;
+      yield current;
       continue;
     }
-    let text = content;
-    if (heldCR) {
-      heldCR = false;
-      if (text.startsWith("\n")) {
-        budget--;
-        text = text.slice(1);
-      } else {
-        text = `\r${text}`;
-      }
-    }
-    const { end, used } = skipBreaks(text, budget);
+    const { end, used } = skipBreaks(content, budget);
     budget -= used;
-    let rest = text.slice(end);
-    // Held only while the answer can go on: a chunk that also ends it (finish reason or
-    // final usage) keeps its CR, so a consumer that stops at the finish signal still gets it.
-    if (budget > 0 && rest === "\r" && !chunk.finishReason && !chunk.usage) {
-      heldCR = true;
-      rest = "";
+    const rest = content.slice(end);
+    if (budget > 0 && rest === "\r" && !current.finishReason) {
+      held = current;
+      continue;
     }
     if (rest.length > 0) answerStarted = true;
-    if (rest === content) {
-      yield chunk;
-      continue;
-    }
-    const delta = { ...chunk.delta };
-    if (rest.length > 0) delta.content = rest;
-    else delete delta.content;
-    yield { ...chunk, delta };
+    yield end === 0 ? current : withContent(current, rest);
   }
   // The stream ended on the undecided CR: it was answer text.
-  if (heldCR && last) yield { id: last.id, model: last.model, delta: { content: "\r" } };
+  if (held) yield withContent(held, "\r");
 }
