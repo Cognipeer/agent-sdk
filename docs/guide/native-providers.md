@@ -205,6 +205,44 @@ createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "https:/
 createProvider({ provider: "openai-compatible", apiKey: "token", baseURL: "http://vllm-host:8000/v1", defaultModel: "meta-llama/Llama-3.1-8B-Instruct" })
 ```
 
+### Reasoning on self-hosted servers (`serverType`)
+
+`reasoning` maps to `reasoning_effort` on Chat Completions. Servers that render the model's own chat template (mlx_lm.server, vLLM, SGLang, llama.cpp) ignore that field for a hybrid model such as Qwen3: its thinking is switched by the template variable `enable_thinking`. Declare what answers the base URL with `serverType`:
+
+```ts
+const provider = createProvider({
+  provider: "openai-compatible",
+  apiKey: "token",
+  baseURL: "http://localhost:8080/v1",
+  serverType: "mlx", // generic (default) | openai | vllm | sglang | mlx | llamacpp | ollama | lmstudio | dashscope | openrouter
+});
+
+await provider.complete({
+  model: "mlx-community/Qwen3.5-9B-4bit",
+  messages: [{ role: "user", content: "2+2?" }],
+  reasoning: { effort: "none" }, // → chat_template_kwargs: { enable_thinking: false }, no reasoning_effort
+});
+```
+
+The wire form depends on the server type and on the model's reasoning profile (model-rules.json `reasoningProfiles`, see `resolveReasoningProfile`):
+
+| `serverType` | `toggle` (hybrid Qwen3 / 3.5 / 3.6) | `effort` (gpt-oss) | `always` (QwQ, DeepSeek-R1, Qwen3 Thinking-2507) / `none` (Qwen3 Instruct-2507, Coder) |
+|---|---|---|---|
+| `mlx`, `llamacpp` | `chat_template_kwargs.enable_thinking` | `chat_template_kwargs.reasoning_effort` | nothing sent |
+| `vllm`, `sglang` | `chat_template_kwargs.enable_thinking` | `reasoning_effort` | nothing sent |
+| `dashscope` | top-level `enable_thinking` | `reasoning_effort` | nothing sent |
+| `openrouter` | `reasoning: { enabled: false }` for `none`, else `{ effort }` | `reasoning: { effort }` | nothing sent |
+| `generic`, `openai`, `ollama`, `lmstudio` | `reasoning_effort` | `reasoning_effort` | `reasoning_effort` |
+
+- `enable_thinking` is `false` for effort `none` and `true` for any other effort or a positive `budgetTokens`. A gpt-oss level is mapped by its model rule (`none` → `low`, `xhigh` / `max` → `high`).
+- A request that leaves `reasoning` unset sends nothing new. A model without a profile, and the Responses API, keep `reasoning_effort`. Unset `serverType` (or `generic`) leaves the request byte for byte as it was.
+- A `chat_template_kwargs` (or `reasoning`) object in `extra` is merged one level deep: its other keys stay, and the resolved reasoning wins for its own key. `reasoning.providerExtras` are merged last and win.
+- Ids are matched case-insensitively with org prefixes stripped (`Qwen/`, `mlx-community/`) and Ollama colon tags understood (`qwen3-coder:30b`, `qwen3:4b-instruct-2507-q4_K_M`).
+
+The reasoning text comes back as `reasoning.summary` from `reasoning` (MLX, newer vLLM) or `reasoning_content` (vLLM, SGLang); vLLM and SGLang need `--reasoning-parser` (`profile.parser`). The template leaves a blank line between the thinking and the answer, so on `mlx`, `vllm`, `sglang` and `llamacpp` the answer that follows split-off reasoning loses at most two leading line breaks, streamed or not, however the chunks split them. Spaces and tabs are never removed, so indented code survives; an answer that was only the separator becomes `null`.
+
+For a UI, `describeServingReasoning(serverType, model)` (also in the client-safe `@cognipeer/agent-sdk/model-rules`) returns `{ serverType, profile?, wire, effective }`: `effective` is `no` for a model that always or never thinks, `unknown` for a hybrid model on a server not known to read `reasoning_effort` as its switch (pick the server type), and `yes` otherwise.
+
 ## Unified request schema
 
 All providers consume the same `ChatCompletionRequest`:

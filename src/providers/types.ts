@@ -5,6 +5,7 @@
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 import type { ModelRuleLearnedEvent } from "../models/adjust.js";
+import type { ServerType } from "../models/serving.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
@@ -634,6 +635,30 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
    * in the server's own documentation before enabling it.
    */
   replayReasoningContent?: boolean;
+  /**
+   * What answers `baseURL`. It decides how the request's `reasoning` is sent to a
+   * model whose reasoning profile is known (model-rules.json
+   * `reasoningProfiles`: hybrid Qwen3, Qwen3 Instruct/Coder/Thinking-2507, QwQ,
+   * DeepSeek-R1, gpt-oss), on Chat Completions:
+   *
+   *  - `mlx`, `vllm`, `sglang`, `llamacpp`: a hybrid model is switched by its chat
+   *    template, `chat_template_kwargs.enable_thinking` (no `reasoning_effort`);
+   *    gpt-oss on `mlx` / `llamacpp` gets `chat_template_kwargs.reasoning_effort`.
+   *    The blank line the template leaves before the answer, once the server has
+   *    split the reasoning out, is removed (line breaks only, never indentation).
+   *  - `dashscope`: a top-level `enable_thinking`.
+   *  - `openrouter`: the `reasoning` object (`{ enabled: false }`, `{ effort }`).
+   *  - `generic` (default), `openai`, `ollama`, `lmstudio`: `reasoning_effort`,
+   *    as without this option.
+   *
+   * On the servers above, a model that always or never thinks is sent no
+   * reasoning field. A caller's `chat_template_kwargs` (or `reasoning`) in
+   * `extra` is merged one level deep; the resolved reasoning wins for its own
+   * key. Unset reasoning sends nothing new. A model without a profile, and the
+   * Responses API, keep the default mapping. Unset or `generic`: the request is
+   * exactly what it was before this option existed.
+   */
+  serverType?: ServerType;
 };
 
 export type BedrockProviderConfig = ProviderTransportConfig & {

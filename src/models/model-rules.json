@@ -877,5 +877,55 @@
       "source": "docs",
       "note": "Permissive default for model families the SDK has no rules for."
     }
+  ],
+  "reasoningProfiles": [
+    {
+      "id": "qwen3-instruct",
+      "match": "^qwen-?3[\\w.:-]*?[-_:](?:instruct|coder)(?=[-_.:]|$)",
+      "style": "none",
+      "source": "docs",
+      "note": "Qwen3 Instruct-2507, Coder, VL-/Next-Instruct releases: no thinking mode. Listed before the hybrid profile; matches HF ids and Ollama colon tags (qwen3-coder:30b, qwen3:4b-instruct-2507)."
+    },
+    {
+      "id": "qwen3-thinking",
+      "match": "^qwen-?3[\\w.:-]*?[-_:]thinking(?=[-_.:]|$)",
+      "style": "always",
+      "parser": "deepseek_r1",
+      "source": "docs",
+      "note": "Qwen3 Thinking-2507 and VL-/Next-Thinking releases: always think; the template opens <think> itself."
+    },
+    {
+      "id": "qwen3-hybrid",
+      "match": "^qwen-?3",
+      "style": "toggle",
+      "templateSwitch": "enable_thinking",
+      "parser": "qwen3",
+      "source": "docs",
+      "note": "Qwen3 / 3.5 / 3.6 hybrid models: think by default, switched by the chat-template variable enable_thinking (servers that render the template ignore reasoning_effort)."
+    },
+    {
+      "id": "qwq",
+      "match": "^qwq",
+      "style": "always",
+      "parser": "deepseek_r1",
+      "source": "docs",
+      "note": "QwQ: always thinks."
+    },
+    {
+      "id": "deepseek-r1",
+      "match": "^deepseek-(?:r\\d|reasoner)",
+      "style": "always",
+      "parser": "deepseek_r1",
+      "source": "docs",
+      "note": "DeepSeek-R1, its distills and deepseek-reasoner: always think."
+    },
+    {
+      "id": "gpt-oss",
+      "match": "^gpt-?oss",
+      "style": "effort",
+      "templateSwitch": "reasoning_effort",
+      "source": "docs",
+      "note": "gpt-oss: low / medium / high, never off. Servers that render the template without reading a reasoning_effort field (MLX, llama.cpp) take the level as the template variable of that name."
+    }
   ]
 }

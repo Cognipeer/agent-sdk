@@ -112,6 +112,10 @@ export {
   getLearnedModelRulePatch,
   rememberModelRulePatch,
   clearLearnedModelRules,
+  resolveReasoningProfile,
+  SERVER_TYPES,
+  normalizeServerType,
+  describeServingReasoning,
 } from "./models/index.js";
 export type {
   ModelRule,
@@ -131,6 +135,11 @@ export type {
   ModelRequestErrorCode,
   ModelRequestErrorInit,
   ModelRuleLearnedEvent,
+  ReasoningProfile,
+  ReasoningProfileStyle,
+  ServerType,
+  ServingReasoningWire,
+  ServingReasoningInfo,
 } from "./models/index.js";
 export type {
   ChatCompletionRequest,

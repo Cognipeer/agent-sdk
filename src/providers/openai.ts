@@ -414,7 +414,7 @@ export class OpenAIProvider extends BaseProvider {
       Object.assign(body, request.extra);
     }
 
-    applyOpenAIReasoning(body, request.reasoning, "legacy_effort", modelId, rule);
+    this.applyChatReasoning(body, request, modelId, rule);
 
     // Function tools + a reasoning effort is a 400 on Chat Completions for these
     // models (and their default effort is not `none`): say `none` explicitly.
@@ -424,6 +424,16 @@ export class OpenAIProvider extends BaseProvider {
     applyDropParams(body, rule);
 
     return body;
+  }
+
+  /**
+   * Puts the request's reasoning on a Chat Completions body: after `extra`, before
+   * the rule's dropped params are removed. `reasoning_effort` here; the
+   * OpenAI-compatible provider overrides it for servers that read reasoning
+   * somewhere else (see its `serverType`).
+   */
+  protected applyChatReasoning(body: Record<string, any>, request: ChatCompletionRequest, modelId: string, rule: ResolvedModelRule): void {
+    applyOpenAIReasoning(body, request.reasoning, "legacy_effort", modelId, rule);
   }
 
   // ─── Responses API (reasoning models) ──────────────────────────────────────
