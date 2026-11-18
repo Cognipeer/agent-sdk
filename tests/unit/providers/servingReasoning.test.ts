@@ -469,11 +469,13 @@ describe("answer separator after split-off reasoning (streamed)", () => {
       delta({ reasoning_content: THINKING }),
       { ...delta({ content: "\r" }), usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
     ]), { status: 200 }));
-    const seen: Array<{ content?: string; usage: boolean }> = [];
+    const seen: Array<{ content?: string; outputTokens?: number }> = [];
     for await (const chunk of q.completeStream({ model: QWEN_MLX, messages: USER })) {
-      if (chunk.delta.content !== undefined || chunk.usage) seen.push({ content: chunk.delta.content, usage: !!chunk.usage });
+      if (chunk.delta.content !== undefined || chunk.usage) seen.push({ content: chunk.delta.content, outputTokens: chunk.usage?.outputTokens });
     }
-    expect(seen).toEqual([{ content: "\r", usage: true }]);
+    // The CR arrives, and the last chunk still carries the final (cumulative) usage.
+    expect(seen.map((c) => c.content ?? "").join("")).toBe("\r");
+    expect(seen.at(-1)).toEqual({ content: "\r", outputTokens: 1 });
   });
 
   it("usage on every chunk (vLLM continuous_usage_stats) is not an end of the answer", async () => {
@@ -494,6 +496,29 @@ describe("answer separator after split-off reasoning (streamed)", () => {
     }
     expect(content).toBe("X");
     expect(outputTokens).toBe(6);
+  });
+
+  it("a chunk without answer text between CR and LF leaves the CR undecided (empty delta, empty content, reasoning only)", async () => {
+    const interruptions: Array<[string, Record<string, unknown>]> = [
+      ["empty delta", {}],
+      ["empty content", { content: "" }],
+      ["reasoning only", { reasoning_content: " more" }],
+    ];
+    for (const [label, between] of interruptions) {
+      const { p } = provider("vllm", () => new Response(sse([
+        delta({ reasoning_content: THINKING }),
+        delta({ content: "\r" }),
+        delta(between),
+        delta({ content: "\n" }),
+        delta({ content: "\r" }),
+        delta({ content: "\n" }),
+        delta({ content: "X" }, "stop"),
+        usageChunk,
+      ]), { status: 200 }));
+      let content = "";
+      for await (const chunk of p.completeStream({ model: "Qwen/Qwen3-8B", messages: USER })) content += chunk.delta.content ?? "";
+      expect(content, label).toBe("X");
+    }
   });
 
   it("every chunk partition streams the same answer as the non-streamed cleanup", async () => {
@@ -518,11 +543,13 @@ describe("answer separator after split-off reasoning (streamed)", () => {
     for (const answer of answers) {
       const expected = stripAnswerSeparator({ ...base, content: answer, toolCalls: [], usage, finishReason: "stop", reasoning: { summary: THINKING }, raw: {} } as ChatCompletionResponse).content ?? "";
       for (const parts of partitions(answer)) {
-        for (const withUsage of [false, true]) {
+        for (const [withUsage, between] of [[false, undefined], [true, undefined], [false, {}], [true, { content: "" }], [false, { reasoning: { summary: "." } }]] as const) {
           async function* source(): AsyncGenerator<ChatCompletionChunk> {
             yield { ...base, delta: { reasoning: { summary: THINKING } }, ...(withUsage ? { usage } : {}) };
             for (let i = 0; i < parts.length; i++) {
               yield { ...base, delta: { content: parts[i] }, ...(withUsage ? { usage } : {}), ...(i === parts.length - 1 ? { finishReason: "stop" as const } : {}) };
+              // A chunk without answer text after every part but the last (it carries the finish reason).
+              if (between && i < parts.length - 1) yield { ...base, delta: { ...between }, ...(withUsage ? { usage } : {}) };
             }
           }
           let got = "";
@@ -531,9 +558,9 @@ describe("answer separator after split-off reasoning (streamed)", () => {
             got += chunk.delta.content ?? "";
             if (chunk.finishReason) finishSeenWith = got;
           }
-          expect(got, JSON.stringify({ parts, withUsage })).toBe(expected);
+          expect(got, JSON.stringify({ parts, withUsage, between })).toBe(expected);
           // Every character is out by the time the finish reason arrives.
-          expect(finishSeenWith, JSON.stringify({ parts, withUsage })).toBe(expected);
+          expect(finishSeenWith, JSON.stringify({ parts, withUsage, between })).toBe(expected);
           checked++;
         }
       }
