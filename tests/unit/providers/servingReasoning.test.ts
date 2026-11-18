@@ -450,6 +450,31 @@ describe("answer separator after split-off reasoning (streamed)", () => {
     expect(bare.reasoning).toBe(THINKING);
   });
 
+  it("a CR in the chunk that carries the finish reason arrives with it, not after (a consumer may stop there)", async () => {
+    const { p } = provider("mlx", () => new Response(sse([
+      delta({ reasoning: THINKING }),
+      delta({ content: "\n" }),
+      delta({ content: "\r" }, "stop"),
+      usageChunk,
+    ]), { status: 200 }));
+    let content = "";
+    for await (const chunk of p.completeStream({ model: QWEN_MLX, messages: USER })) {
+      content += chunk.delta.content ?? "";
+      if (chunk.finishReason) break; // an early-closing consumer
+    }
+    expect(content).toBe("\r");
+    // Same when the CR closes the answer and only usage follows in the same chunk.
+    const { p: q } = provider("vllm", () => new Response(sse([
+      delta({ reasoning_content: THINKING }),
+      { ...delta({ content: "\r" }), usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+    ]), { status: 200 }));
+    const seen: Array<{ content?: string; usage: boolean }> = [];
+    for await (const chunk of q.completeStream({ model: QWEN_MLX, messages: USER })) {
+      if (chunk.delta.content !== undefined || chunk.usage) seen.push({ content: chunk.delta.content, usage: !!chunk.usage });
+    }
+    expect(seen).toEqual([{ content: "\r", usage: true }]);
+  });
+
   it("without reasoning a leading newline is the model's own and is kept", async () => {
     const out = await streamWith("mlx", [delta({ content: "\n" }), delta({ content: "Hi" }, "stop")]);
     expect(out.content).toBe("\nHi");

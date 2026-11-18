@@ -46,7 +46,9 @@ export function stripAnswerSeparator(response: ChatCompletionResponse): ChatComp
  * without `content`. A trailing `"\r"` that may open a CRLF is held back until
  * the next content decides: a `"\n"` completes the line break, anything else
  * makes the CR answer text, which is then delivered in front of it (or on the
- * finish / usage chunk, or in a chunk of its own at the end of the stream).
+ * finish / usage chunk, or in a chunk of its own at the end of the stream). A
+ * CR in a chunk that itself carries the finish reason or the final usage is
+ * never held: it goes out with that chunk, before or with the finish signal.
  * Once the answer has a character that is not one of those line breaks, every
  * chunk passes as it came.
  */
@@ -96,7 +98,9 @@ export async function* stripStreamSeparator(
     const { end, used } = skipBreaks(text, budget);
     budget -= used;
     let rest = text.slice(end);
-    if (budget > 0 && rest === "\r") {
+    // Held only while the answer can go on: a chunk that also ends it (finish reason or
+    // final usage) keeps its CR, so a consumer that stops at the finish signal still gets it.
+    if (budget > 0 && rest === "\r" && !chunk.finishReason && !chunk.usage) {
       heldCR = true;
       rest = "";
     }
