@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { OpenAICompatibleProvider } from "../../../src/providers/openaiCompatible.js";
 import { clearLearnedModelRules, describeServingReasoning, SERVER_TYPES } from "../../../src/models/index.js";
-import type { ChatCompletionRequest, OpenAICompatibleProviderConfig, ReasoningRequestConfig } from "../../../src/providers/types.js";
+import { stripAnswerSeparator, stripStreamSeparator } from "../../../src/providers/utils/reasoningSeparator.js";
+import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, OpenAICompatibleProviderConfig, ReasoningRequestConfig } from "../../../src/providers/types.js";
 
 beforeEach(() => clearLearnedModelRules());
 
@@ -448,6 +449,123 @@ describe("answer separator after split-off reasoning (streamed)", () => {
     const bare = await streamWith("vllm", [delta({ reasoning_content: THINKING }), delta({ content: "\r" })]);
     expect(bare.content).toBe("\r");
     expect(bare.reasoning).toBe(THINKING);
+  });
+
+  it("a CR in the chunk that carries the finish reason arrives with it, not after (a consumer may stop there)", async () => {
+    const { p } = provider("mlx", () => new Response(sse([
+      delta({ reasoning: THINKING }),
+      delta({ content: "\n" }),
+      delta({ content: "\r" }, "stop"),
+      usageChunk,
+    ]), { status: 200 }));
+    let content = "";
+    for await (const chunk of p.completeStream({ model: QWEN_MLX, messages: USER })) {
+      content += chunk.delta.content ?? "";
+      if (chunk.finishReason) break; // an early-closing consumer
+    }
+    expect(content).toBe("\r");
+    // Same when the CR closes the answer and only usage follows in the same chunk.
+    const { p: q } = provider("vllm", () => new Response(sse([
+      delta({ reasoning_content: THINKING }),
+      { ...delta({ content: "\r" }), usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+    ]), { status: 200 }));
+    const seen: Array<{ content?: string; outputTokens?: number }> = [];
+    for await (const chunk of q.completeStream({ model: QWEN_MLX, messages: USER })) {
+      if (chunk.delta.content !== undefined || chunk.usage) seen.push({ content: chunk.delta.content, outputTokens: chunk.usage?.outputTokens });
+    }
+    // The CR arrives, and the last chunk still carries the final (cumulative) usage.
+    expect(seen.map((c) => c.content ?? "").join("")).toBe("\r");
+    expect(seen.at(-1)).toEqual({ content: "\r", outputTokens: 1 });
+  });
+
+  it("usage on every chunk (vLLM continuous_usage_stats) is not an end of the answer", async () => {
+    const u = (n: number) => ({ prompt_tokens: 10, completion_tokens: n, total_tokens: 10 + n });
+    const { p } = provider("vllm", () => new Response(sse([
+      { ...delta({ reasoning_content: THINKING }), usage: u(1) },
+      { ...delta({ content: "\r" }), usage: u(2) },
+      { ...delta({ content: "\n" }), usage: u(3) },
+      { ...delta({ content: "\r" }), usage: u(4) },
+      { ...delta({ content: "\n" }), usage: u(5) },
+      { ...delta({ content: "X" }, "stop"), usage: u(6) },
+    ]), { status: 200 }));
+    let content = "";
+    let outputTokens = 0;
+    for await (const chunk of p.completeStream({ model: "Qwen/Qwen3-8B", messages: USER, extra: { stream_options: { include_usage: true, continuous_usage_stats: true } } })) {
+      content += chunk.delta.content ?? "";
+      if (chunk.usage) outputTokens = chunk.usage.outputTokens;
+    }
+    expect(content).toBe("X");
+    expect(outputTokens).toBe(6);
+  });
+
+  it("a chunk without answer text between CR and LF leaves the CR undecided (empty delta, empty content, reasoning only)", async () => {
+    const interruptions: Array<[string, Record<string, unknown>]> = [
+      ["empty delta", {}],
+      ["empty content", { content: "" }],
+      ["reasoning only", { reasoning_content: " more" }],
+    ];
+    for (const [label, between] of interruptions) {
+      const { p } = provider("vllm", () => new Response(sse([
+        delta({ reasoning_content: THINKING }),
+        delta({ content: "\r" }),
+        delta(between),
+        delta({ content: "\n" }),
+        delta({ content: "\r" }),
+        delta({ content: "\n" }),
+        delta({ content: "X" }, "stop"),
+        usageChunk,
+      ]), { status: 200 }));
+      let content = "";
+      for await (const chunk of p.completeStream({ model: "Qwen/Qwen3-8B", messages: USER })) content += chunk.delta.content ?? "";
+      expect(content, label).toBe("X");
+    }
+  });
+
+  it("every chunk partition streams the same answer as the non-streamed cleanup", async () => {
+    const answers = ["\r\n\r\nX", "\n\r\n    y", "\r\n\n\tz", "\n\n\nZ", "\r\rA", "\rB", "\n\rC", "\r\n", "\n\r", "\n\n", "\r"];
+    const partitions = (text: string): string[][] => {
+      if (text.length <= 1) return [[text]];
+      const out: string[][] = [];
+      for (let mask = 0; mask < 1 << (text.length - 1); mask++) {
+        const parts: string[] = [];
+        let cur = text[0];
+        for (let i = 1; i < text.length; i++) {
+          if (mask & (1 << (i - 1))) { parts.push(cur); cur = text[i]; } else cur += text[i];
+        }
+        parts.push(cur);
+        out.push(parts);
+      }
+      return out;
+    };
+    const base = { id: "c", model: "m" };
+    const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedInputTokens: 0, cachedWriteTokens: 0, cachedOutputTokens: 0, reasoningTokens: 0 };
+    let checked = 0;
+    for (const answer of answers) {
+      const expected = stripAnswerSeparator({ ...base, content: answer, toolCalls: [], usage, finishReason: "stop", reasoning: { summary: THINKING }, raw: {} } as ChatCompletionResponse).content ?? "";
+      for (const parts of partitions(answer)) {
+        for (const [withUsage, between] of [[false, undefined], [true, undefined], [false, {}], [true, { content: "" }], [false, { reasoning: { summary: "." } }]] as const) {
+          async function* source(): AsyncGenerator<ChatCompletionChunk> {
+            yield { ...base, delta: { reasoning: { summary: THINKING } }, ...(withUsage ? { usage } : {}) };
+            for (let i = 0; i < parts.length; i++) {
+              yield { ...base, delta: { content: parts[i] }, ...(withUsage ? { usage } : {}), ...(i === parts.length - 1 ? { finishReason: "stop" as const } : {}) };
+              // A chunk without answer text after every part but the last (it carries the finish reason).
+              if (between && i < parts.length - 1) yield { ...base, delta: { ...between }, ...(withUsage ? { usage } : {}) };
+            }
+          }
+          let got = "";
+          let finishSeenWith = "";
+          for await (const chunk of stripStreamSeparator(source())) {
+            got += chunk.delta.content ?? "";
+            if (chunk.finishReason) finishSeenWith = got;
+          }
+          expect(got, JSON.stringify({ parts, withUsage, between })).toBe(expected);
+          // Every character is out by the time the finish reason arrives.
+          expect(finishSeenWith, JSON.stringify({ parts, withUsage, between })).toBe(expected);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50);
   });
 
   it("without reasoning a leading newline is the model's own and is kept", async () => {
