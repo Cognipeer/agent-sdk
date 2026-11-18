@@ -41,9 +41,14 @@ export function stripAnswerSeparator(response: ChatCompletionResponse): ChatComp
 /**
  * `stripAnswerSeparator` for a stream: after reasoning deltas, the first answer
  * deltas lose up to two leading line breaks in total, however the server split
- * them over chunks (`"\n"`, `"\n"`, `"    print"` gives `"    print"`). A chunk
- * left empty still arrives, without `content`. Once the answer has a character
- * that is not one of those line breaks, every chunk passes as it came.
+ * them over chunks (`"\n"`, `"\n"`, `"    print"` gives `"    print"`; a CRLF
+ * split as `"\r"`, `"\n"` is one line break). A chunk left empty still arrives,
+ * without `content`. A trailing `"\r"` that may open a CRLF is held back until
+ * the next content decides: a `"\n"` completes the line break, anything else
+ * makes the CR answer text, which is then delivered in front of it (or on the
+ * finish / usage chunk, or in a chunk of its own at the end of the stream).
+ * Once the answer has a character that is not one of those line breaks, every
+ * chunk passes as it came.
  */
 export async function* stripStreamSeparator(
   chunks: AsyncIterable<ChatCompletionChunk>,
@@ -51,7 +56,11 @@ export async function* stripStreamSeparator(
   let reasoningSeen = false;
   let budget = SEPARATOR_BREAKS;
   let answerStarted = false;
+  /** A trailing CR held back: the first half of a CRLF split over chunks, or answer text. */
+  let heldCR = false;
+  let last: ChatCompletionChunk | undefined;
   for await (const chunk of chunks) {
+    last = chunk;
     if (answerStarted) {
       yield chunk;
       continue;
@@ -59,6 +68,13 @@ export async function* stripStreamSeparator(
     if (chunk.delta?.reasoning?.summary) reasoningSeen = true;
     const content = chunk.delta?.content;
     if (typeof content !== "string" || content.length === 0) {
+      // The answer is over (finish reason or final usage) with the CR undecided: it is the answer's own.
+      if (heldCR && (chunk.finishReason || chunk.usage)) {
+        heldCR = false;
+        answerStarted = true;
+        yield { ...chunk, delta: { ...chunk.delta, content: "\r" } };
+        continue;
+      }
       yield chunk;
       continue;
     }
@@ -67,16 +83,33 @@ export async function* stripStreamSeparator(
       yield chunk;
       continue;
     }
-    const { end, used } = skipBreaks(content, budget);
+    let text = content;
+    if (heldCR) {
+      heldCR = false;
+      if (text.startsWith("\n")) {
+        budget--;
+        text = text.slice(1);
+      } else {
+        text = `\r${text}`;
+      }
+    }
+    const { end, used } = skipBreaks(text, budget);
     budget -= used;
-    if (end < content.length) answerStarted = true;
-    if (end === 0) {
+    let rest = text.slice(end);
+    if (budget > 0 && rest === "\r") {
+      heldCR = true;
+      rest = "";
+    }
+    if (rest.length > 0) answerStarted = true;
+    if (rest === content) {
       yield chunk;
       continue;
     }
     const delta = { ...chunk.delta };
-    if (end < content.length) delta.content = content.slice(end);
+    if (rest.length > 0) delta.content = rest;
     else delete delta.content;
     yield { ...chunk, delta };
   }
+  // The stream ended on the undecided CR: it was answer text.
+  if (heldCR && last) yield { id: last.id, model: last.model, delta: { content: "\r" } };
 }

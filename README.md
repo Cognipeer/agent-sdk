@@ -134,7 +134,7 @@ A hybrid open-weight model such as Qwen3 is switched by its chat template (`enab
 | `openrouter` | `reasoning: { enabled: false }` / `{ effort }` | `reasoning: { effort }` | nothing sent |
 | `generic` (default), `openai`, `ollama`, `lmstudio` | `reasoning_effort` | `reasoning_effort` | `reasoning_effort` |
 
-Unset or `generic` leaves the request exactly as before. On `mlx` / `vllm` / `sglang` / `llamacpp` the blank line the template leaves before the answer (after split-off reasoning) is removed; indentation is kept. `describeServingReasoning(serverType, model)` (also exported from `@cognipeer/agent-sdk/model-rules`) tells a UI whether a reasoning setting takes effect. Details: [Native providers](docs/guide/native-providers.md#reasoning-on-self-hosted-servers-servertype).
+Unset or `generic` leaves the request exactly as before. On `mlx` / `vllm` / `sglang` / `llamacpp` (Chat Completions) the blank line the template leaves before the answer (after split-off reasoning) is removed; indentation is kept. `describeServingReasoning(serverType, model)` (also exported from `@cognipeer/agent-sdk/model-rules`) tells a UI whether a reasoning setting takes effect. Details: [Native providers](docs/guide/native-providers.md#reasoning-on-self-hosted-servers-servertype).
 
 ### Embeddings
 

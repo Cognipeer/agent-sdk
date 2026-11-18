@@ -153,15 +153,25 @@ export class OpenAICompatibleProvider extends OpenAIProvider {
     this.stripsReasoningSeparator = leavesReasoningSeparator(this.serverType);
   }
 
-  /** The answer without the blank line a reasoning template leaves after split-off reasoning (template servers only). */
+  /**
+   * Whether this request's answer can carry the blank line a reasoning template
+   * leaves after split-off reasoning: a template server, on Chat Completions
+   * (where the server's reasoning parser splits `</think>` out of the text). The
+   * Responses API returns reasoning as items of its own and is left as sent.
+   */
+  private stripsSeparatorFor(request: ChatCompletionRequest): boolean {
+    return this.stripsReasoningSeparator && !this.useResponsesApi(request);
+  }
+
+  /** The answer without the blank line a reasoning template leaves after split-off reasoning (see `stripsSeparatorFor`). */
   override async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const response = await super.complete(request);
-    return this.stripsReasoningSeparator ? stripAnswerSeparator(response) : response;
+    return this.stripsSeparatorFor(request) ? stripAnswerSeparator(response) : response;
   }
 
   override async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     const chunks = super.completeStream(request);
-    if (this.stripsReasoningSeparator) yield* stripStreamSeparator(chunks);
+    if (this.stripsSeparatorFor(request)) yield* stripStreamSeparator(chunks);
     else yield* chunks;
   }
 
