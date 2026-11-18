@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { OpenAICompatibleProvider } from "../../../src/providers/openaiCompatible.js";
-import { clearLearnedModelRules } from "../../../src/models/index.js";
+import { clearLearnedModelRules, describeServingReasoning, SERVER_TYPES } from "../../../src/models/index.js";
 import type { ChatCompletionRequest, OpenAICompatibleProviderConfig, ReasoningRequestConfig } from "../../../src/providers/types.js";
 
 beforeEach(() => clearLearnedModelRules());
@@ -254,6 +254,29 @@ describe("hosted servers", () => {
   });
 });
 
+/* ── describeServingReasoning says what the wire does ──────────────────── */
+
+describe("describeServingReasoning matches the request the provider builds", () => {
+  const MODELS = [
+    QWEN_MLX, "qwen3:8b", "Qwen/QwQ-32B", "qwen3-coder:30b", "Qwen/Qwen3-30B-A3B-Thinking-2507", "gpt-oss-20b",
+    "deepseek-r1:8b", "meta-llama/Llama-3.1-8B-Instruct", "gpt-4o", "chatgpt-4o-latest", "o3-mini", "openai/gpt-5",
+  ];
+  const FIELDS = ["chat_template_kwargs", "enable_thinking", "reasoning", "reasoning_effort"] as const;
+
+  it("the wire it names is the one reasoning field sent, and `none` sends none, for every server type", async () => {
+    for (const server of SERVER_TYPES) {
+      for (const model of MODELS) {
+        const described = describeServingReasoning(server, model).wire;
+        for (const effort of ["none", "high"] as const) {
+          const body = await wire(server, model, { reasoning: { effort } });
+          const sent = FIELDS.filter((f) => f in body);
+          expect(sent, `${server} ${model} ${effort}`).toEqual(described === "none" ? [] : [described]);
+        }
+      }
+    }
+  });
+});
+
 /* ── The answer after split-off reasoning ──────────────────────────────── */
 
 const THINKING = "The user asks 2+2. That is 4.";
@@ -312,6 +335,48 @@ describe("answer separator after split-off reasoning (non-streamed)", () => {
     expect((await completeWith("mlx", { content: "\n\n4" })).content).toBe("\n\n4");
   });
 
+  it("the Responses API answer is left as sent, with a reasoning summary, through every completion path", async () => {
+    const answer = "\n\n    print(1)";
+    const responseJson = {
+      id: "r1", object: "response", status: "completed", model: "m",
+      output: [
+        { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: THINKING }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: answer }] },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    const events = [
+      { type: "response.created", response: { id: "r1", model: "m" } },
+      { type: "response.reasoning_summary_text.delta", delta: THINKING },
+      { type: "response.output_text.delta", delta: "\n" },
+      { type: "response.output_text.delta", delta: "\n" },
+      { type: "response.output_text.delta", delta: "    print(1)" },
+      { type: "response.completed", response: responseJson },
+    ];
+    const make = (responsesStreaming: boolean | undefined, stream: boolean) => {
+      const fetchImpl = (async () => stream
+        ? new Response(sse(events), { status: 200 })
+        : new Response(JSON.stringify(responseJson), { status: 200 })) as unknown as typeof fetch;
+      return new OpenAICompatibleProvider({
+        provider: "openai-compatible", apiKey: "k", baseURL: "http://pool.local/v1", fetch: fetchImpl, retry: { maxRetries: 0 },
+        serverType: "vllm", api: "responses", ...(responsesStreaming !== undefined ? { responsesStreaming } : {}),
+      });
+    };
+    const done = await make(undefined, false).complete({ model: "Qwen/Qwen3-8B", messages: USER });
+    expect(done.reasoning?.summary).toBe(THINKING);
+    expect(done.content).toBe(answer);
+    for (const [label, p] of [["synthetic stream", make(false, false)], ["event stream", make(true, true)]] as const) {
+      let content = "";
+      let reasoning = "";
+      for await (const chunk of p.completeStream({ model: "Qwen/Qwen3-8B", messages: USER })) {
+        content += chunk.delta.content ?? "";
+        reasoning += chunk.delta.reasoning?.summary ?? "";
+      }
+      expect(reasoning, label).toBe(THINKING);
+      expect(content, label).toBe(answer);
+    }
+  });
+
   it("unset, generic and servers that do not leave the separator: the answer is untouched", async () => {
     for (const server of [undefined, "generic", "openai", "ollama", "lmstudio", "dashscope", "openrouter"]) {
       expect((await completeWith(server, { content: "\n\n4", reasoning: THINKING })).content, String(server)).toBe("\n\n4");
@@ -360,6 +425,29 @@ describe("answer separator after split-off reasoning (streamed)", () => {
     const out = await streamWith("mlx", events("reasoning", [{ content: "\n" }, { content: "\n" }, { content: "4" }]));
     expect(out.contents.filter((c) => c === "\n")).toHaveLength(0);
     expect(out.content).toBe("4");
+  });
+
+  it("a CRLF split across chunks counts as one line break", async () => {
+    const out = await streamWith("mlx", events("reasoning", [{ content: "\r" }, { content: "\n" }, { content: "\r\n" }, { content: "4" }]));
+    expect(out.content).toBe("4");
+    const mixed = await streamWith("vllm", events("reasoning_content", [{ content: "\n\r" }, { content: "\n    x" }]));
+    expect(mixed.content).toBe("    x");
+    const third = await streamWith("vllm", events("reasoning_content", [{ content: "\r" }, { content: "\n\r" }, { content: "\n" }, { content: "\r" }, { content: "\nX" }]));
+    expect(third.content).toBe("\r\nX");
+  });
+
+  it("a lone CR is answer text and is kept, also when the stream ends on it", async () => {
+    const text = await streamWith("mlx", events("reasoning", [{ content: "\r" }, { content: "X" }]));
+    expect(text.content).toBe("\rX");
+    // The CR is the last content and its chunk carries the finish reason: it arrives, and so does the finish.
+    const last = await streamWith("mlx", events("reasoning", [{ content: "\n" }, { content: "\r" }]));
+    expect(last.content).toBe("\r");
+    expect(last.finish).toBe("stop");
+    expect(last.outputTokens).toBe(148);
+    // Nothing follows the CR at all (no finish chunk, no usage): it is still delivered.
+    const bare = await streamWith("vllm", [delta({ reasoning_content: THINKING }), delta({ content: "\r" })]);
+    expect(bare.content).toBe("\r");
+    expect(bare.reasoning).toBe(THINKING);
   });
 
   it("without reasoning a leading newline is the model's own and is kept", async () => {

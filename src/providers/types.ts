@@ -645,7 +645,8 @@ export type OpenAICompatibleProviderConfig = ProviderTransportConfig & {
    *    template, `chat_template_kwargs.enable_thinking` (no `reasoning_effort`);
    *    gpt-oss on `mlx` / `llamacpp` gets `chat_template_kwargs.reasoning_effort`.
    *    The blank line the template leaves before the answer, once the server has
-   *    split the reasoning out, is removed (line breaks only, never indentation).
+   *    split the reasoning out, is removed (line breaks only, never indentation;
+   *    Chat Completions only).
    *  - `dashscope`: a top-level `enable_thinking`.
    *  - `openrouter`: the `reasoning` object (`{ enabled: false }`, `{ effort }`).
    *  - `generic` (default), `openai`, `ollama`, `lmstudio`: `reasoning_effort`,

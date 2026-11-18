@@ -140,10 +140,23 @@ describe("describeServingReasoning", () => {
     expect(describeServingReasoning("openrouter", "openai/gpt-oss-120b")).toMatchObject({ wire: "reasoning", effective: "yes" });
   });
 
-  it("a model outside the table keeps the rule-driven reasoning_effort", () => {
-    const d = describeServingReasoning("vllm", "meta-llama/Llama-3.1-8B-Instruct");
-    expect(d.profile).toBeUndefined();
-    expect(d).toMatchObject({ wire: "reasoning_effort", effective: "yes" });
+  it("a model outside the table: its model rule decides (no claim of an effect the wire does not have)", () => {
+    // Only the permissive default rule matched: whether the model reasons is not known.
+    for (const server of ["vllm", "generic", "openrouter"]) {
+      const d = describeServingReasoning(server, "meta-llama/Llama-3.1-8B-Instruct");
+      expect(d.profile, server).toBeUndefined();
+      expect(d, server).toMatchObject({ wire: "reasoning_effort", effective: "unknown" });
+    }
+    // A rule without reasoning control: nothing is sent, nothing takes effect.
+    for (const model of ["gpt-4o", "openai/gpt-4o-mini", "chatgpt-4o-latest", "gpt-3.5-turbo"]) {
+      for (const server of ["vllm", "generic", "openrouter", "mlx"]) {
+        expect(describeServingReasoning(server, model), `${server} ${model}`).toMatchObject({ wire: "none", effective: "no" });
+      }
+    }
+    // A rule that knows the model's effort values: the setting takes effect.
+    for (const model of ["openai/gpt-5", "o3-mini", "gpt-5.1"]) {
+      expect(describeServingReasoning("openrouter", model), model).toMatchObject({ wire: "reasoning_effort", effective: "yes" });
+    }
   });
 });
 

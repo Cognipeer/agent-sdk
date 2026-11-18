@@ -15,7 +15,7 @@
 // out exactly as it did before `serverType` existed.
 
 import type { ReasoningRequestConfig } from "../providers/types.js";
-import { mapReasoningEffort, resolveReasoningProfile, type ModelRule, type ReasoningEffort, type ReasoningProfile } from "./rules.js";
+import { mapReasoningEffort, resolveModelRule, resolveReasoningProfile, type ModelRule, type ReasoningEffort, type ReasoningProfile } from "./rules.js";
 
 /**
  * What answers an OpenAI-compatible base URL. `generic` (the default) keeps the
@@ -54,7 +54,8 @@ const LEVEL_IN_TEMPLATE: ReadonlySet<ServerType> = new Set<ServerType>(["mlx", "
  * `chat_template_kwargs` (a template variable), `enable_thinking` (a top-level
  * switch, Alibaba Model Studio / DashScope), `reasoning` (OpenRouter's reasoning
  * object), `reasoning_effort` (the SDK's default mapping) or `none` (the model
- * has nothing to switch and the server is sent nothing).
+ * has nothing to switch, or its model rule has no reasoning control, and the
+ * server is sent nothing).
  */
 export type ServingReasoningWire = "chat_template_kwargs" | "enable_thinking" | "reasoning" | "reasoning_effort" | "none";
 
@@ -85,11 +86,15 @@ export type ServingReasoningInfo = {
   wire: ServingReasoningWire;
   /**
    * Whether a reasoning setting (off / on / an effort) takes effect for this
-   * model on this server: `no` for a model that always or never thinks,
-   * `unknown` for a hybrid model on a server not known to read
-   * `reasoning_effort` as its switch (`generic`, `openai`, `lmstudio`: set the
-   * server type), `yes` otherwise, including a model outside the profile table,
-   * whose reasoning follows its model rule as before.
+   * model on this server:
+   *  - `no`: the model always or never thinks, or (outside the profile table)
+   *    its model rule has no reasoning control (`gpt-4o`), so nothing is sent;
+   *  - `unknown`: a hybrid model on a server not known to read
+   *    `reasoning_effort` as its switch (`generic`, `openai`, `lmstudio`: set
+   *    the server type), or a model only the permissive default rule matched,
+   *    whose `reasoning_effort` is sent but may be ignored;
+   *  - `yes`: otherwise (the server's switch for a profiled model, or a model
+   *    rule that lists the model's effort values).
    */
   effective: "yes" | "no" | "unknown";
 };
@@ -98,11 +103,17 @@ export type ServingReasoningInfo = {
 export function describeServingReasoning(serverType: unknown, model: string | undefined): ServingReasoningInfo {
   const type = normalizeServerType(serverType);
   const profile = resolveReasoningProfile(model);
+  if (!profile) {
+    // The provider's own mapping decides: the model's rule (the openai family, as on any compatible server).
+    const rule = resolveModelRule({ provider: "openai-compatible", model });
+    if (rule.reasoning.style === "none" || rule.reasoning.efforts.length === 0) return { serverType: type, wire: "none", effective: "no" };
+    return { serverType: type, wire: "reasoning_effort", effective: rule.isDefault ? "unknown" : "yes" };
+  }
   const wire = wireFor(type, profile);
   let effective: ServingReasoningInfo["effective"] = "yes";
-  if (profile?.style === "always" || profile?.style === "none") effective = "no";
-  else if (profile?.style === "toggle" && wire === "reasoning_effort" && type !== "ollama") effective = "unknown";
-  return { serverType: type, ...(profile ? { profile } : {}), wire, effective };
+  if (profile.style === "always" || profile.style === "none") effective = "no";
+  else if (profile.style === "toggle" && wire === "reasoning_effort" && type !== "ollama") effective = "unknown";
+  return { serverType: type, profile, wire, effective };
 }
 
 /**
