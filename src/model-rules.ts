@@ -8,6 +8,7 @@ export {
   modelIdCandidates,
   allowsSampling,
   effortBudget,
+  resolveReasoningProfile,
 } from "./models/rules.js";
 export type {
   ModelRule,
@@ -23,4 +24,8 @@ export type {
   EffortMapping,
   SamplingField,
   ReasoningEffort,
+  ReasoningProfile,
+  ReasoningProfileStyle,
 } from "./models/rules.js";
+export { SERVER_TYPES, normalizeServerType, describeServingReasoning } from "./models/serving.js";
+export type { ServerType, ServingReasoningWire, ServingReasoningInfo } from "./models/serving.js";

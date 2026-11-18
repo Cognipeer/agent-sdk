@@ -117,7 +117,24 @@ createProvider({ provider: "vertex", projectId: "my-project", accessToken: proce
 
 // Any OpenAI-compatible endpoint (Ollama, Groq, Together, vLLM, …)
 createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "https://custom.endpoint/v1" })
+
+// A self-hosted server: `serverType` decides how `reasoning` reaches the model (see below)
+createProvider({ provider: "openai-compatible", apiKey: "...", baseURL: "http://localhost:8080/v1", serverType: "mlx" })
 ```
+
+#### Reasoning on self-hosted servers (`serverType`)
+
+A hybrid open-weight model such as Qwen3 is switched by its chat template (`enable_thinking`), not by `reasoning_effort`, on servers that render that template. Set `serverType` on an OpenAI-compatible provider and the request's `reasoning` goes where the server reads it, for models with a known reasoning profile (model-rules.json `reasoningProfiles`):
+
+| `serverType` | Hybrid (Qwen3) | Levels (gpt-oss) | Always / never thinks (QwQ, DeepSeek-R1, Qwen3 Thinking-2507 / Instruct-2507 / Coder) |
+|---|---|---|---|
+| `mlx`, `llamacpp` | `chat_template_kwargs.enable_thinking` | `chat_template_kwargs.reasoning_effort` | nothing sent |
+| `vllm`, `sglang` | `chat_template_kwargs.enable_thinking` | `reasoning_effort` | nothing sent |
+| `dashscope` | `enable_thinking` | `reasoning_effort` | nothing sent |
+| `openrouter` | `reasoning: { enabled: false }` / `{ effort }` | `reasoning: { effort }` | nothing sent |
+| `generic` (default), `openai`, `ollama`, `lmstudio` | `reasoning_effort` | `reasoning_effort` | `reasoning_effort` |
+
+Unset or `generic` leaves the request exactly as before. On `mlx` / `vllm` / `sglang` / `llamacpp` the blank line the template leaves before the answer (after split-off reasoning) is removed; indentation is kept. `describeServingReasoning(serverType, model)` (also exported from `@cognipeer/agent-sdk/model-rules`) tells a UI whether a reasoning setting takes effect. Details: [Native providers](docs/guide/native-providers.md#reasoning-on-self-hosted-servers-servertype).
 
 ### Embeddings
 

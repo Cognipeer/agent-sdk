@@ -4,14 +4,18 @@
 
 import { OpenAIProvider } from "./openai.js";
 import type {
+  ChatCompletionChunk,
   ChatCompletionRequest,
+  ChatCompletionResponse,
   OpenAICompatibleProviderConfig,
   PromptCachingConfig,
   ProviderType,
   TextContent,
   UnifiedMessage,
 } from "./types.js";
-import type { RulePatch } from "../models/rules.js";
+import type { ResolvedModelRule, RulePatch } from "../models/rules.js";
+import { leavesReasoningSeparator, normalizeServerType, planServingReasoning, type ServerType } from "../models/serving.js";
+import { stripAnswerSeparator, stripStreamSeparator } from "./utils/reasoningSeparator.js";
 
 /** Anthropic allows 4 cache breakpoints per request; OpenRouter and LiteLLM forward the same limit. */
 const MAX_CACHE_MARKERS = 4;
@@ -94,12 +98,27 @@ export function applyCacheMarkers(
   return out;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Lays `fields` over `body`; a plain object over a plain object merges one level deep (into a new object: never the caller's). */
+function mergeFields(body: Record<string, any>, fields: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(fields)) {
+    const existing = body[key];
+    body[key] = isPlainObject(existing) && isPlainObject(value) ? { ...existing, ...value } : value;
+  }
+}
+
 export class OpenAICompatibleProvider extends OpenAIProvider {
   override readonly providerName: ProviderType = "openai-compatible";
 
   private readonly promptCachingEnabled: boolean;
   private readonly promptCaching: Required<Omit<PromptCachingConfig, "enabled">>;
   private readonly replayReasoningContent: boolean;
+  /** What answers `baseURL` (`serverType`, normalised): decides the reasoning wire form. */
+  readonly serverType: ServerType;
+  private readonly stripsReasoningSeparator: boolean;
 
   constructor(config: OpenAICompatibleProviderConfig) {
     super({
@@ -130,6 +149,39 @@ export class OpenAICompatibleProvider extends OpenAIProvider {
       ttl: config.prompt_caching?.ttl ?? "5m",
     };
     this.replayReasoningContent = config.replayReasoningContent === true;
+    this.serverType = normalizeServerType(config.serverType);
+    this.stripsReasoningSeparator = leavesReasoningSeparator(this.serverType);
+  }
+
+  /** The answer without the blank line a reasoning template leaves after split-off reasoning (template servers only). */
+  override async complete(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    const response = await super.complete(request);
+    return this.stripsReasoningSeparator ? stripAnswerSeparator(response) : response;
+  }
+
+  override async *completeStream(request: ChatCompletionRequest): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    const chunks = super.completeStream(request);
+    if (this.stripsReasoningSeparator) yield* stripStreamSeparator(chunks);
+    else yield* chunks;
+  }
+
+  /**
+   * The request's reasoning in the form this server reads for this model
+   * (`serverType` x the model's reasoning profile, see `models/serving.ts`):
+   * `chat_template_kwargs`, a top-level `enable_thinking`, OpenRouter's
+   * `reasoning`, or nothing. A combination without a plan keeps `reasoning_effort`.
+   * `reasoning.providerExtras` still have the last word.
+   */
+  protected override applyChatReasoning(body: Record<string, any>, request: ChatCompletionRequest, modelId: string, rule: ResolvedModelRule): void {
+    const plan = this.serverType === "generic"
+      ? undefined
+      : planServingReasoning({ serverType: this.serverType, model: modelId, reasoning: request.reasoning, rule });
+    if (!plan) {
+      super.applyChatReasoning(body, request, modelId, rule);
+      return;
+    }
+    mergeFields(body, plan.fields);
+    if (request.reasoning?.providerExtras) mergeFields(body, request.reasoning.providerExtras);
   }
 
   /** Adds this provider's cache markers (when `prompt_caching` is on) before the body is built. */

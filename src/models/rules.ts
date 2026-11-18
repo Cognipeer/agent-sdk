@@ -60,6 +60,35 @@ export type ModelRule = {
   note: string;
 };
 
+/**
+ * How an open-weight model family reasons, whoever serves it:
+ * `toggle` = thinks by default and can be switched off (hybrid Qwen3),
+ * `always` = always thinks (QwQ, DeepSeek-R1, Qwen3 Thinking-2507),
+ * `none` = never thinks (Qwen3 Instruct-2507, Qwen3-Coder),
+ * `effort` = discrete levels, never off (gpt-oss).
+ */
+export type ReasoningProfileStyle = "toggle" | "always" | "none" | "effort";
+
+/**
+ * A model-rules.json `reasoningProfiles` entry. The wire rules (`rules`) say what
+ * a request field accepts; a profile says what the MODEL can do with reasoning
+ * and which chat-template variable switches it, so a server that renders the
+ * template (and ignores `reasoning_effort`) can be reached. Used by
+ * `OpenAICompatibleProvider` with a `serverType` (see `models/serving.ts`).
+ */
+export type ReasoningProfile = {
+  id: string;
+  /** Case-insensitive regex tested against the normalised candidate ids (see `modelIdCandidates`). */
+  match: string;
+  style: ReasoningProfileStyle;
+  /** The chat-template variable that carries the switch: a boolean (`enable_thinking`) or a level (`reasoning_effort`). */
+  templateSwitch?: "enable_thinking" | "reasoning_effort";
+  /** The vLLM / SGLang `--reasoning-parser` that splits this family's thinking out of `content`. */
+  parser?: string;
+  source: RuleSource;
+  note: string;
+};
+
 export type ModelRules = {
   version: number;
   effortLadder: ReasoningEffort[];
@@ -69,6 +98,8 @@ export type ModelRules = {
   adaptiveMaxTokens: Record<Exclude<ReasoningEffort, "none">, number>;
   geminiBudgets: Record<Exclude<ReasoningEffort, "none">, number>;
   rules: ModelRule[];
+  /** Open-weight reasoning profiles, first match wins (absent in a hand-built table). */
+  reasoningProfiles?: ReasoningProfile[];
 };
 
 /** A sparse override merged over a rule (what a provider 400 teaches us). */
@@ -249,6 +280,29 @@ export function resolveModelRule(opts: { provider?: string; model?: string; patc
   if (known) effective = mergeRulePatch(effective, known);
   if (opts.patch) effective = mergeRulePatch(effective, opts.patch);
   return { ...effective, matchedRuleId: rule.id, isDefault, learned: !!known };
+}
+
+const profileRegex = new Map<string, RegExp>();
+
+/**
+ * The reasoning profile of an open-weight model (model-rules.json
+ * `reasoningProfiles`), or undefined when the table does not know the model.
+ * Matched case-insensitively against every id candidate, so an org prefix
+ * (`Qwen/`, `mlx-community/`) or a gateway prefix does not matter; colon tags
+ * (`qwen3-coder:30b`) are part of the patterns. First match wins.
+ */
+export function resolveReasoningProfile(model: string | undefined): ReasoningProfile | undefined {
+  const ids = modelIdCandidates(model);
+  if (ids.length === 0) return undefined;
+  for (const profile of MODEL_RULES.reasoningProfiles ?? []) {
+    let re = profileRegex.get(profile.id);
+    if (!re) {
+      re = new RegExp(profile.match, "i");
+      profileRegex.set(profile.id, re);
+    }
+    if (ids.some((id) => re.test(id))) return profile;
+  }
+  return undefined;
 }
 
 export type EffortMapping = {
