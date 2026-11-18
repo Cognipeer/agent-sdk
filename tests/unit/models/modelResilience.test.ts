@@ -99,6 +99,35 @@ describe("OpenAI-wire 400 shapes -> corrected retry", () => {
     expect(m.bodies[1].reasoning.effort).toBe("high");
     expect(resolveModelRule({ provider: "openai", model: "acme-r1" }).reasoning.efforts).toContain("max");
   });
+
+  // The newer wording names the value first; the parameter is only in the error object.
+  const VALUE_FIRST = "Unsupported value: 'none' is not supported with the 'gpt-6.1-sol-2026-09-29' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.";
+  it("value-first wording parses with the param from the error object", () => {
+    expect(parseModelError(JSON.stringify({ error: { message: VALUE_FIRST, type: "invalid_request_error", param: "reasoning.effort", code: "unsupported_value" } })))
+      .toMatchObject({ kind: "unsupported_value", param: "reasoning.effort", value: "none", supportedValues: ["low", "medium", "high", "xhigh", "max"] });
+    // without a param there is nothing to learn
+    expect(parseModelError(JSON.stringify({ error: { message: VALUE_FIRST, param: null } }))).toBeUndefined();
+  });
+  it("Responses API, value-first wording: effort none falls back to the lowest supported and is remembered", async () => {
+    const OK = { status: 200, body: { id: "r", model: "m", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }], usage: { input_tokens: 1, output_tokens: 1 } } };
+    const m = mock([oaiErr(VALUE_FIRST, "reasoning.effort", "unsupported_value"), OK, OK]);
+    const events: ModelRuleLearnedEvent[] = [];
+    const p = new OpenAIProvider({ provider: "openai", apiKey: "k", api: "responses", baseURL: "http://x/v1", fetch: m.fn, retry: NO_RETRY, onModelRuleLearned: (e) => events.push(e) });
+    const r = await p.complete({ model: "gpt-6.1-sol", messages: msgs, reasoning: { effort: "none" } });
+    expect(r.content).toBe("ok");
+    expect(m.bodies[0].reasoning.effort).toBe("none");
+    expect(m.bodies[1].reasoning.effort).toBe("low");
+    expect(events).toHaveLength(1);
+    await p.complete({ model: "gpt-6.1-sol", messages: msgs, reasoning: { effort: "none" } });
+    expect(m.bodies).toHaveLength(3);
+    expect(m.bodies[2].reasoning.effort).toBe("low");
+  });
+  it("Chat Completions, value-first wording: same fallback", async () => {
+    const { p, bodies } = oai([oaiErr(VALUE_FIRST, "reasoning_effort", "unsupported_value"), OAI_OK]);
+    await p.complete({ model: "gpt-6.1-sol", messages: msgs, reasoning: { effort: "none" } });
+    expect(bodies[0].reasoning_effort).toBe("none");
+    expect(bodies[1].reasoning_effort).toBe("low");
+  });
 });
 
 describe("learned cache", () => {
