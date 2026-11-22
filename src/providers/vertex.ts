@@ -1,6 +1,7 @@
 // Google Vertex AI provider: Gemini models, and Claude models (see vertexAnthropic.ts).
 // Direct fetch-based implementation – supports both access token and service account auth.
 
+import { customAlphabet } from "nanoid";
 import { BaseProvider } from "./base.js";
 import { parseSSEStream } from "./utils/sse.js";
 import { applyGeminiReasoning } from "./utils/reasoning.js";
@@ -640,6 +641,7 @@ export class VertexProvider extends BaseProvider {
     const thoughtParts: string[] = [];
     const signatures: string[] = [];
     let toolCallIdx = 0;
+    let scope: string | undefined;
 
     for (const part of parts) {
       // The signature of a part that is not a function call (the last text part, or an empty one).
@@ -658,7 +660,7 @@ export class VertexProvider extends BaseProvider {
         const suppliedId = typeof part.functionCall.id === "string" && part.functionCall.id ? part.functionCall.id : undefined;
         const position = toolCallIdx++;
         toolCalls.push({
-          id: suppliedId ?? `call_${position}`,
+          id: suppliedId ?? synthesizedCallId((scope ??= callScopeOf()), position),
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
           ...(suppliedId ? {} : { idSynthesized: true }),
@@ -722,8 +724,8 @@ export class VertexProvider extends BaseProvider {
         const suppliedId = typeof part.functionCall.id === "string" && part.functionCall.id ? part.functionCall.id : undefined;
         const position = counter.next++;
         delta.toolCalls.push({
-          // Unique across the whole stream: the adapter merges chunks by id.
-          id: suppliedId ?? `call_${position}`,
+          // Unique across the whole stream (the adapter merges chunks by id) and among every response's.
+          id: suppliedId ?? synthesizedCallId((counter.scope ??= callScopeOf()), position),
           index: position,
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args ?? {}),
@@ -833,7 +835,21 @@ type StreamState = {
   next: number;
   /** Thought signatures of non-function-call parts, in order. */
   signatures: string[];
+  /** This stream's part of every id made up for it (see `synthesizedCallId`). */
+  scope?: string;
 };
+
+const callScopeOf = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
+
+/**
+ * The id of a function call that Gemini sent without one. A consumer keys a call by its id (results, approvals,
+ * a cache of answers), so an id made up here is unique to its response: `call_<scope>_<position>`, where the scope
+ * is new for every response or stream and the position counts the calls in it. A position alone would start at 0
+ * again in the next response, and two different calls would share `call_0`.
+ */
+function synthesizedCallId(scope: string, position: number): string {
+  return `call_${scope}_${position}`;
+}
 
 /** A part's `thoughtSignature`, when it has one. */
 function signatureOf(part: any): string | undefined {

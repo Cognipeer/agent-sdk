@@ -114,7 +114,8 @@ describe("Vertex tool call ids", () => {
     ]));
     expect(response.toolCalls[0]).toMatchObject({ id: "gm_abc", name: "lookup" });
     expect(response.toolCalls[0].idSynthesized).toBeUndefined();
-    expect(response.toolCalls[1]).toMatchObject({ id: "call_1", name: "other", idSynthesized: true });
+    // A made-up id is unique to its response (CC-360): call_<scope>_<position>.
+    expect(response.toolCalls[1]).toMatchObject({ id: expect.stringMatching(/^call_[0-9a-z]{12}_1$/), name: "other", idSynthesized: true });
   });
 
   it("the same holds for streamed chunks", () => {
@@ -123,7 +124,7 @@ describe("Vertex tool call ids", () => {
     const made = parseChunk(reply([{ functionCall: { name: "other", args: {} } }]), counter);
     expect(supplied.delta.toolCalls![0]).toMatchObject({ id: "gm_s", index: 0 });
     expect(supplied.delta.toolCalls![0].idSynthesized).toBeUndefined();
-    expect(made.delta.toolCalls![0]).toMatchObject({ id: "call_1", index: 1, idSynthesized: true });
+    expect(made.delta.toolCalls![0]).toMatchObject({ id: expect.stringMatching(/^call_[0-9a-z]{12}_1$/), index: 1, idSynthesized: true });
   });
 
   it("the marker travels on the message the adapter builds, for invoke and stream", async () => {
