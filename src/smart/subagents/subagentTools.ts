@@ -31,6 +31,7 @@ import {
 } from "./registry.js";
 import type {
   SubagentDef,
+  SubagentDispatchOutcome,
   SubagentPendingRecord,
   SubagentPolicy,
   SubagentRegistryRef,
@@ -240,6 +241,8 @@ type ResolvedSpec = {
   limits?: any;
   childContextPolicy: SubagentPolicy["childContextPolicy"];
   metadata?: Record<string, any>;
+  /** The host runs the task itself (`SubagentDef.dispatch`); registry sub-agents only. */
+  dispatch?: SubagentDef["dispatch"];
   /** Preserved for HITL resume of an ad-hoc child. */
   adhoc?: { role: string; prompt?: string; toolNames?: string[]; outputContract?: string };
 };
@@ -404,7 +407,8 @@ async function runChild(
     result.durationMs ??= Date.now() - start;
     deps.registryRef.results.push(result);
     const message = result.error || result.note || result.status;
-    const traceStatus = result.status === "ok" || result.status === "incomplete" ? "success" : result.status === "blocked" ? "skipped" : "error";
+    // A task a host took (`started`) is not a failure: it goes on elsewhere.
+    const traceStatus = result.status === "ok" || result.status === "incomplete" || result.status === "started" ? "success" : result.status === "blocked" ? "skipped" : "error";
     recordSegment(traceStatus, {
       subagentStatus: result.status,
       input,
@@ -449,6 +453,39 @@ async function runChild(
       return conclude({ name: spec.name, mode: spec.mode, status: "blocked", input, error: reason });
     }
     if (gate.input.task !== input) input = gate.input.task as string;
+  }
+
+  // The host may run the task itself (`SubagentDef.dispatch`), for example in the
+  // background. A dispatched task never pauses, so only a fresh one asks.
+  if (!opts.isResume && spec.dispatch) {
+    let taken: SubagentDispatchOutcome | null | undefined;
+    try {
+      taken = await spec.dispatch({
+        name: spec.name,
+        input,
+        parentToolCallId: opts.parentToolCallId,
+        spawnId,
+        parallel: opts.parallel === true,
+        depth: childDepth,
+        ...(spec.metadata ? { metadata: spec.metadata } : {}),
+      });
+    } catch (error) {
+      emitStart(input);
+      return conclude({ name: spec.name, mode: spec.mode, status: "error", input, error: `The sub-agent could not be started: ${error instanceof Error ? error.message : String(error)}` });
+    }
+    if (taken && typeof taken === "object" && typeof taken.status === "string") {
+      emitStart(input);
+      return conclude({
+        name: spec.name,
+        mode: spec.mode,
+        status: taken.status,
+        input,
+        ...(taken.content !== undefined ? { content: taken.content } : {}),
+        ...(taken.output !== undefined ? { output: taken.output } : {}),
+        ...(taken.error ? { error: taken.error } : {}),
+        ...(taken.note ? { note: taken.note } : {}),
+      });
+    }
   }
 
   const child = deps.buildChild({
@@ -637,6 +674,7 @@ async function specFromRegistry(def: SubagentDef, deps: SubagentToolDeps, parent
     limits: def.limits,
     childContextPolicy: def.childContextPolicy ?? deps.policy.childContextPolicy,
     metadata: def.metadata,
+    ...(typeof def.dispatch === "function" ? { dispatch: def.dispatch } : {}),
   };
 }
 

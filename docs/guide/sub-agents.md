@@ -61,10 +61,32 @@ type SubagentDef = {
   childContextPolicy?: "minimal" | "scoped" | "full";  // override the policy default
   isAvailable?: () => boolean | Promise<boolean>;       // hide from the catalog when false
   metadata?: Record<string, any>;
+  dispatch?: (call: SubagentDispatchCall) => Promise<SubagentDispatchOutcome | null | undefined>;  // the host runs the task itself
 };
 ```
 
 `tools` accepts concrete tools, a list of **parent tool names** to borrow, or a lazy builder. When omitted the child runs tool-free (pure reasoning).
+
+### The host runs the task: `dispatch`
+
+A sub-agent with a `dispatch` is not run as an in-process child. For each new task of `delegate_to` and `spawn_subagents_parallel`, the SDK calls `dispatch({ name, input, parentToolCallId, spawnId, parallel, depth, metadata })`. Whatever it returns (`{ status, content?, output?, error?, note? }`) is the task's result. Use it to queue the work as a job of your own, for example one that runs in the background and reports back into the conversation later:
+
+```ts
+const researcher: SubagentDef = {
+  name: "researcher",
+  header: "answers research questions",
+  dispatch: async ({ input, spawnId }) => {
+    if (!(await queue.hasRoom())) return null;   // run it in process as usual
+    const job = await queue.add({ task: input, spawnId });
+    return { status: "started", content: `Started in the background (${job.id}). Its result will reach this conversation.` };
+  },
+};
+```
+
+- The `subagentStart` gate and the depth and budget checks run first. The task gets the usual `subagent` start and terminal events, trace span and `subagentStop` observer.
+- `null` / `undefined` runs the child in process. A throw ends the task as `error`.
+- `started` means the host took the task and its result comes later. It is not a failure. When any sub-agent has a `dispatch`, the catalog tells the model not to wait or retry such a task.
+- Ad-hoc `spawn_subagent` children are always run in process.
 
 ## Policy
 
@@ -120,6 +142,7 @@ The model gets one JSON result per child:
 | `needs_input` | wanted a human inside a parallel fan-out | `error` |
 | `cancelled` | the run was cancelled while the child worked | partial `content`, `note` |
 | `error` | the child threw, its structured output failed, or the delegation was refused before it ran (unknown sub-agent, depth/budget, unknown `tools`) | `error` |
+| `started` | a host [`dispatch`](#the-host-runs-the-task-dispatch) took the task; its result comes later | `content` / `note` from the host |
 
 Anything but `ok` is not a clean completion. The catalog tells the model to retry `incomplete` and `error` at most once with a better `input`, otherwise do the work itself or tell the user what is missing; not to retry, rephrase or work around a `blocked` result (a policy refusal) or retry a `cancelled` one; to rerun a `needs_input` task with `delegate_to`; and never to present partial work as complete. A failed `delegate_to` / `spawn_subagent` call (`error`, `cancelled`, or a refusal) is also marked as failed for you: the `tool_call` event has `phase: "error"` (with the result still in `result`), the tool-history entry has `status: "error"` and the trace step is an error. A parallel call is marked failed only when every task failed; read each entry's `status`.
 
