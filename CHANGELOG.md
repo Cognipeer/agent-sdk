@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`SubagentDef.dispatch`: the host can run a sub-agent's task itself (CC-406).** A registry sub-agent with a `dispatch` is no longer run as an in-process child when the model calls `delegate_to` or `spawn_subagents_parallel`. Instead the SDK calls `dispatch({ name, input, parentToolCallId, spawnId, parallel, depth, metadata })`, and what it returns is the task's result. A host can use this to queue the work as a job of its own and report back later.
+  - The `subagentStart` gate and the depth and budget checks still run first, and the task gets the usual `subagent` start and terminal events, trace span and `subagentStop` observer.
+  - Return `null` / `undefined` to run the child in process as before, for example when the host's own capacity is full. A throw ends the task as `error`.
+  - New status `started`: the host took the task and its result comes later. It is not a failure. The `<available_subagents>` catalog explains it to the model, but only when some sub-agent has a `dispatch`.
+  - Ad-hoc `spawn_subagent` children are unchanged.
+
 ## [0.26.1] - 2026-11-22
 
 ### Fixed

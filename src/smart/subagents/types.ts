@@ -51,6 +51,43 @@ export type SubagentDef = {
   isAvailable?: () => boolean | Promise<boolean>;
   /** Free-form metadata surfaced on `subagent` events. */
   metadata?: Record<string, any>;
+  /**
+   * The host runs this sub-agent itself instead of the SDK running a child in
+   * process (for example as a job in the background). Called for each new task
+   * of `delegate_to` and `spawn_subagents_parallel`, after the `subagentStart`
+   * gate and the depth and budget checks. What it returns is the task's result,
+   * shown to the model like any other (`status: "started"` for a task that goes
+   * on elsewhere and reports back later). Return `null` / `undefined` to have the
+   * SDK run the child in process as usual. A throw ends the task as `error`.
+   */
+  dispatch?: (call: SubagentDispatchCall) => Promise<SubagentDispatchOutcome | null | undefined> | SubagentDispatchOutcome | null | undefined;
+};
+
+/** One task the model gave a sub-agent that has a `dispatch`. */
+export type SubagentDispatchCall = {
+  /** The sub-agent's name (`SubagentDef.name`). */
+  name: string;
+  /** The task, after a `subagentStart` gate rewrote it. */
+  input: string;
+  /** The tool call that asked for it (`<id>#<index>` inside a parallel fan-out). */
+  parentToolCallId: string;
+  /** The id of this task on `subagent` events and trace spans. */
+  spawnId: string;
+  /** True inside `spawn_subagents_parallel`. */
+  parallel: boolean;
+  /** The depth the child would run at (1 under the top-level agent). */
+  depth: number;
+  /** `SubagentDef.metadata`. */
+  metadata?: Record<string, any>;
+};
+
+/** What a `dispatch` reports for a task it took. */
+export type SubagentDispatchOutcome = {
+  status: SubagentStatus;
+  content?: string;
+  output?: any;
+  error?: string;
+  note?: string;
 };
 
 export type SubagentMode = "off" | "registry_only" | "registry_and_adhoc";
@@ -94,8 +131,9 @@ export const DEFAULT_SUBAGENT_POLICY: SubagentPolicy = {
  *  - `needs_input`  — wanted a human (parallel fan-out cannot ask).
  *  - `cancelled`    — the run was cancelled while the child was working.
  *  - `error`        — threw, or its structured output failed.
+ *  - `started`      — a host `dispatch` took the task and runs it elsewhere; its result comes later, not in this call.
  */
-export type SubagentStatus = "ok" | "incomplete" | "blocked" | "needs_input" | "cancelled" | "error";
+export type SubagentStatus = "ok" | "incomplete" | "blocked" | "needs_input" | "cancelled" | "error" | "started";
 
 /** Model calls a child made, in the parent's `state.usage` shape. */
 export type SubagentUsage = {
